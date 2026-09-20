@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>chill-institute/renovate-config"],
+  "packageRules": [
+    {
+      "description": "Playback dependencies require fresh real-client evidence before merge",
+      "matchPackageNames": [
+        "stremio-addon-sdk",
+        "stremio-addon-client",
+        "stremio-addon-linter",
+        "stremio-web",
+        "effect",
+        "@effect/platform-node",
+        "sharp",
+        "@playwright/test",
+        "playwright"
+      ],
+      "automerge": false
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "name": "@chill-institute/stremio",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "setup": "node harness/setup.ts",
+    "check": "vp check",
+    "test": "vp test",
+    "verify": "vp check && vp test",
+    "fixture:smoke": "node harness/run.ts",
+    "fixture:serve": "node harness/serve.ts",
+    "cleanup": "node harness/cleanup.ts",
+    "format": "vp fmt",
+    "format:check": "vp fmt --check",
+    "native:android:setup": "node harness/native/android.ts setup",
+    "native:android:probe": "node harness/native/android.ts probe",
+    "native:desktop:probe": "node harness/native/desktop.ts",
+    "live:setup": "node harness/live/probe.ts setup",
+    "live:probe": "node harness/live/probe.ts probe",
+    "native:desktop:setup": "node harness/native/desktop-setup.ts",
+    "adapter:serve": "node src/run.ts",
+    "adapter:smoke": "node harness/adapter-smoke.ts",
+    "adapter:live": "node harness/live/adapter-run.ts",
+    "hosted:serve": "node src/hosted-run.ts",
+    "hosted:smoke": "node harness/hosted-smoke.ts",
+    "hosted:container": "node harness/hosted-container.ts",
+    "hosted:live": "node harness/live/hosted.ts",
+    "hosted:public": "node harness/live/public.ts",
+    "native:android:account": "node harness/native/android-account.ts"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.12.1",
+    "@chill-institute/contracts": "2.7.0",
+    "@connectrpc/connect": "2.1.1",
+    "@connectrpc/connect-web": "2.1.1",
+    "effect": "4.0.0-rc.112",
+    "stremio-addon-sdk": "1.6.10"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.0.0-rc.112",
+    "@playwright/test": "1.63.0",
+    "@types/node": "26.5.0",
+    "@types/stremio-addon-sdk": "1.6.12",
+    "sharp": "0.35.4",
+    "stremio-addon-client": "1.16.1",
+    "stremio-addon-linter": "1.7.0",
+    "typescript": "7.0.2",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "engines": {
+    "node": ">=24.20.0 <25"
+  },
+  "packageManager": "pnpm@12.2.1"
+}

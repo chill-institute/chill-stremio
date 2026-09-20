@@ -1,0 +1,85 @@
+[tools]
+node = "24.20.0"
+pnpm = "12.2.1"
+actionlint = "1.7.12"
+zizmor = "1.30.0"
+
+[tasks.setup]
+description = "Install locked dependencies, pinned Web client, browser and fixture media"
+run = ["pnpm install --frozen-lockfile", "pnpm exec vp run setup"]
+
+[tasks.verify]
+description = "Run credential-free type, protocol and workflow checks"
+run = ["pnpm exec vp run verify", "actionlint", "zizmor .github/workflows"]
+
+[tasks."fixture:smoke"]
+description = "Run real Stremio Web playback twice from fresh state"
+run = "pnpm exec vp run fixture:smoke"
+
+[tasks."fixture:serve"]
+description = "Serve local fixtures in the foreground"
+run = "pnpm exec vp run fixture:serve"
+
+[tasks.cleanup]
+description = "Remove generated media after stopping foreground services; preserve evidence"
+run = "pnpm exec vp run cleanup"
+
+[tasks."native:android:setup"]
+description = "Verify Android runner prerequisites and cache the pinned TV APK"
+run = "pnpm exec vp run native:android:setup"
+
+[tasks."native:android:probe"]
+description = "Probe two isolated TV boots and client entrypoints; playback stays blocked"
+run = "pnpm exec vp run native:android:probe"
+
+[tasks."native:desktop:probe"]
+description = "Probe two isolated headless Linux desktop runs; append `hosted` for the actual hosted adapter"
+run = "pnpm exec vp run native:desktop:probe"
+
+[tasks."live:setup"]
+description = "Encode the lawful fixture movie and prepare the live allowance cache"
+run = "pnpm exec vp run live:setup"
+
+[tasks."live:probe"]
+description = "Upload the fixture to the designated put.io account, decode it, and clean up"
+run = "pnpm exec vp run live:probe"
+
+[tasks."native:desktop:setup"]
+description = "Install and verify the pinned Linux Flatpak client in its own installation"
+run = "pnpm exec vp run native:desktop:setup"
+
+[tasks."adapter:serve"]
+description = "Run the loopback Engine-backed adapter with private environment configuration"
+run = "pnpm exec vp run adapter:serve"
+
+[tasks."adapter:smoke"]
+description = "Prove Engine-backed adapter installation and decoded playback against local fakes"
+run = "pnpm exec vp run adapter:smoke"
+
+[tasks."adapter:live"]
+description = "Sign in to designated accounts and prove Stremio playback through Engine"
+run = "pnpm exec vp run adapter:live"
+
+[tasks."hosted:serve"]
+description = "Run the durable multi-user adapter with private runtime configuration"
+run = "pnpm exec vp run hosted:serve"
+
+[tasks."hosted:smoke"]
+description = "Record and verify the hosted discovery/acquisition/playback flow with local fakes"
+run = "pnpm exec vp run hosted:smoke"
+
+[tasks."hosted:container"]
+description = "Prove a built Linux image with private durable state and fake credentials"
+run = "pnpm exec vp run hosted:container"
+
+[tasks."hosted:live"]
+description = "Prove bounded real Engine acquisition with generated discovery and owned fixture media"
+run = "pnpm exec vp run hosted:live"
+
+[tasks."hosted:public"]
+description = "Create, read and revoke a designated-account installation on the deployed adapter"
+run = "pnpm exec vp run hosted:public"
+
+[tasks."native:android:account"]
+description = "Pair the designated Stremio account and probe fixture playback in an isolated TV emulator"
+run = "pnpm exec vp run native:android:account"

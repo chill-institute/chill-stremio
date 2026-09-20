@@ -1,0 +1,10 @@
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!src/
+!src/**
+!Dockerfile
+
+!scripts/
+!scripts/status-media.ts

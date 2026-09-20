@@ -1,0 +1,18 @@
+export const liveVersions = {
+  putioSdkCommit: "04273b9c34ae2b656f3c2b1cd689d48606572302",
+  byteLimit: 10 * 1024 * 1024 * 1024,
+  probeTimeoutMs: 12 * 60 * 1000,
+  accountNameEnv: "PUTIO_ACCOUNT_NAME",
+  usernameEnv: "PUTIO_USERNAME",
+  passwordEnv: "PUTIO_PASSWORD",
+  otpEnv: "PUTIO_OTP_SECRET",
+  putioTokenEnv: "PUTIO_TEST_TOKEN",
+  apiBase: "https://api.put.io",
+  uploadBase: "https://upload.put.io",
+  mediaDirectory: ".cache/media",
+  sourceFile: "movie.mp4",
+  subtitleFile: "english.vtt",
+  folderPrefix: "chill-stremio-live",
+  fixtureSubtitle: "FIXTURE SUBTITLE ENGLISH",
+  egressProxyEnv: "LIVE_EGRESS_PROXY",
+} as const;

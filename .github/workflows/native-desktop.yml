@@ -1,0 +1,40 @@
+name: Linux desktop playback
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - name: Install Linux runtime prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes flatpak pulseaudio pulseaudio-utils xdotool xclip xvfb xauth dbus ffmpeg fonts-dejavu-core tesseract-ocr
+      - run: mise run setup
+      - run: mise run native:desktop:setup
+      - run: mise run native:desktop:probe
+      - name: Retain native fixture evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: linux-desktop-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Clean fixture media
+        if: always()
+        run: mise run cleanup

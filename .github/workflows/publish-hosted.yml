@@ -1,0 +1,155 @@
+name: Publish hosted adapter
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (defaults to the latest GitHub release)
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: publish-hosted-adapter
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    environment:
+      name: publish
+      deployment: false
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_NAME: ghcr.io/chill-institute/chill-stremio
+    steps:
+      - name: Resolve the release to publish
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="$INPUT_TAG"
+          [ -n "$tag" ] || tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::no release tag to publish ($tag)"; exit 1; }
+          # Only published, non-draft releases may be built and pushed.
+          [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft)" = "false" ] || { echo "::error::$tag is not a published release"; exit 1; }
+          sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" -q .sha)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve $tag to a commit"; exit 1; }
+          {
+            echo "tag=$tag"
+            echo "version=${tag#v}"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.tag.outputs.sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - run: pnpm install --frozen-lockfile
+      - run: mise run verify
+      - name: Install fixture encoder and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ffmpeg fonts-dejavu-core
+      - run: mise run setup
+      - run: pnpm exec playwright install-deps chromium
+      - run: mise run hosted:smoke
+      - name: Build the release payload
+        env:
+          SHA: ${{ steps.tag.outputs.sha }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: docker build --build-arg "VERSION=$VERSION" --label "org.opencontainers.image.revision=$SHA" --label "org.opencontainers.image.version=$VERSION" -t chill-stremio:release-candidate .
+      - name: Verify the exact payload
+        run: mise run hosted:container
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish the versioned image
+        id: publish
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          SHA: ${{ steps.tag.outputs.sha }}
+        run: |
+          set -euo pipefail
+          major="${VERSION%%.*}"; minor="${VERSION%.*}"
+          for tag in "$VERSION" "$minor" "$major" latest "sha-${SHA::12}"; do
+            docker tag chill-stremio:release-candidate "$IMAGE_NAME:$tag"
+            docker push "$IMAGE_NAME:$tag"
+          done
+          digest_ref="$(docker image inspect "$IMAGE_NAME:$VERSION" --format '{{join .RepoDigests "\n"}}' | grep -E "^$IMAGE_NAME@sha256:[0-9a-f]{64}$" | head -n1)"
+          [ -n "$digest_ref" ] || { echo "no digest reference for $IMAGE_NAME:$VERSION"; exit 1; }
+          echo "ref=$digest_ref" >> "$GITHUB_OUTPUT"
+          printf '%s:%s\n%s\n' "$IMAGE_NAME" "$VERSION" "$digest_ref" >> "$GITHUB_STEP_SUMMARY"
+      - name: Mint a chill-ci token for chill-engine
+        id: releaser
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CHILL_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CHILL_CI_APP_PRIVATE_KEY }}
+          owner: chill-institute
+          repositories: chill-engine
+          permission-actions: write
+      - name: Mint a chill-ci token for this repository
+        id: notes
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CHILL_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CHILL_CI_APP_PRIVATE_KEY }}
+          owner: chill-institute
+          repositories: chill-stremio
+          permission-contents: write
+
+      - name: Record the image on the release
+        env:
+          GH_TOKEN: ${{ steps.notes.outputs.token }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+          IMAGE_REF: ${{ steps.publish.outputs.ref }}
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body > "$RUNNER_TEMP/body.md"
+          # Idempotent: drop any earlier image section before appending this one.
+          awk '/^## Image$/ {exit} {print}' "$RUNNER_TEMP/body.md" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > "$RUNNER_TEMP/notes.md"
+          printf '\n\n## Image\n\n~~~\n%s:%s\n%s\n~~~\n' "$IMAGE_NAME" "$VERSION" "$IMAGE_REF" >> "$RUNNER_TEMP/notes.md"
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
+
+      - name: Deploy through chill-engine
+        env:
+          GH_TOKEN: ${{ steps.releaser.outputs.token }}
+          IMAGE_REF: ${{ steps.publish.outputs.ref }}
+        run: |
+          set -euo pipefail
+          dispatch_id="$GITHUB_REPOSITORY-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          gh workflow run deploy-stremio.yml -R chill-institute/chill-engine --ref main -f image="$IMAGE_REF" -f dispatch_id="$dispatch_id"
+          run_id=""
+          for _ in $(seq 1 12); do
+            sleep 10
+            run_id="$(gh run list -R chill-institute/chill-engine -w deploy-stremio.yml -L 10 --json databaseId,displayTitle -q "[.[] | select(.displayTitle | endswith(\" $dispatch_id\"))] | first | .databaseId // empty")"
+            [ -n "$run_id" ] && break
+          done
+          [ -n "$run_id" ] || { echo "::error::could not find the dispatched deploy run $dispatch_id"; exit 1; }
+          echo "Deploy run: https://github.com/chill-institute/chill-engine/actions/runs/$run_id" >> "$GITHUB_STEP_SUMMARY"
+          gh run watch "$run_id" -R chill-institute/chill-engine --exit-status
+      - name: Retain fake-only release proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hosted-release-proof-${{ github.run_id }}
+          path: |
+            artifacts/hosted-*/results.json
+            artifacts/container-*/results.json
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Clean fixture runtime
+        if: always()
+        run: mise run cleanup
