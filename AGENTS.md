@@ -1,7 +1,7 @@
 # Agent guide
 
 This repository owns the hosted Stremio adapter for chill.institute. Read
-[README.md](./README.md) for commands and [architecture](./docs/ARCHITECTURE.md)
+[CONTRIBUTING.md](./CONTRIBUTING.md) for commands and [architecture](./docs/ARCHITECTURE.md)
 before changing boundaries. Fixture setup and smoke stay local and credential-free.
 `mise run live:probe` is a maintainer-only lane. It may contact put.io only
 with its designated test token; it must not use Engine or production tokens.

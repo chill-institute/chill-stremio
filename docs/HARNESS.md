@@ -24,7 +24,7 @@ performs this step explicitly. macOS runs headless without a GUI or keychain.
 
 ## Setup and run
 
-Follow the [local workflow](../README.md#local-workflow). With the pinned
+Follow the [local workflow](../CONTRIBUTING.md#local-workflow). With the pinned
 toolchain already installed, run individual package scripts with
 `pnpm exec vp run <task>`. Mise setup also installs frozen dependencies; mise
 verify also runs `actionlint` and `zizmor .github/workflows`.
