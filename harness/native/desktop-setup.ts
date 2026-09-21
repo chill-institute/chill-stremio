@@ -17,9 +17,9 @@ const run = async (args: string[]) => {
   return stdout.trim();
 };
 
-if (process.platform !== "linux" || process.arch !== "x64")
+if (process.platform !== "linux" || !["x64", "arm64"].includes(process.arch))
   throw new Error(
-    "Desktop setup requires Linux x86_64; no native pins exist for this architecture",
+    "Desktop setup requires Linux x86_64 or ARM64; no native pins exist for this architecture",
   );
 
 for (const executable of [

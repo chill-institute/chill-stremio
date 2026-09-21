@@ -102,7 +102,8 @@ const guestSource =
     : "harness/native/desktop-guest.ts";
 const trialSeconds = mode !== "fixture" ? 540 : 300;
 const directory = `artifacts/desktop${mode !== "fixture" ? `-${mode}` : ""}-${Date.now()}`;
-const localLinux = process.platform === "linux" && process.arch === "x64";
+const localLinux =
+  process.platform === "linux" && ["x64", "arm64"].includes(process.arch);
 const flatpakDirectory = `${homedir()}/.local/share/chill-stremio/flatpak`;
 let guestDirectory = `/tmp/chill-desktop-${Date.now()}`;
 let guestScript = "/tmp/chill-desktop-guest.mjs";
@@ -545,7 +546,7 @@ const program = Effect.gen(function* () {
   yield* validateProvenance();
   if (!localLinux)
     return yield* new DesktopFailure({
-      message: "Desktop probe requires Linux x86_64",
+      message: "Desktop probe requires Linux x86_64 or ARM64",
     });
   ownedDirectory = yield* acquireDesktopDirectory;
   guestDirectory = ownedDirectory.path;

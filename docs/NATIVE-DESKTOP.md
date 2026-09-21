@@ -1,8 +1,8 @@
 # Linux desktop trial
 
 This lane runs the GTK4/WebKitGTK/libmpv Stremio shell directly on a
-Linux x86_64 host. Each trial owns a fresh XDG profile, private D-Bus session,
-Xvfb display and Pulse null sink. It uses local fixture content without account
+Linux x86_64 or ARM64 host. Each trial owns a fresh XDG profile, private D-Bus
+session, Xvfb display and Pulse null sink. It uses local fixture content without account
 credentials. Results are separate from [Web](./HARNESS.md) and
 [Android TV](./NATIVE-ANDROID.md).
 
@@ -24,8 +24,9 @@ mise task. Setup checks prerequisites and installs/verifies the exact client and
 GNOME runtime commits from [desktop-versions.ts](../harness/native/desktop-versions.ts).
 The private Flatpak installation is `~/.local/share/chill-stremio/flatpak`; setup
 does not change the user's normal app installation. It is repeatable and does
-not require a desktop session. Currently verified pins cover Linux x86_64;
-other architectures fail explicitly until they have their own verified pins.
+not require a desktop session. Verified pins cover Linux x86_64 and ARM64; setup
+selects the native architecture.
+Other architectures fail explicitly until they have their own verified pins.
 
 The probe fixes the client locale to `C`, uses Cairo for GTK rendering, software
 GL for video and shared-memory WebKit composition, and keeps the client home
@@ -161,6 +162,12 @@ artwork. The client, TLS verification, Flatpak isolation and host trust remain
 unchanged. Profile cleanup removes the certificate and wrapper.
 
 ## Current Linux result
+
+Both fresh ARM64 fixture trials passed on 2026-09-21 with the architecture-specific
+pins: decoded advancing video, PCM audio, seeking, subtitles on/off, next episode,
+restart-assisted interruption recovery and cleanup. The matching source passed
+all 223 unit tests and static checks. This extends the credential-free fixture
+lane to ARM64; hosted-adapter and live-account playback on ARM64 remain untested.
 
 Both fresh hosted HLS trials passed on 2026-09-20 in
 `artifacts/desktop-hosted-hls-1789912720594/results.json`. They installed the
