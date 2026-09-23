@@ -49,15 +49,9 @@ export function desktopTextTarget(
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-export function desktopInstallStage(
-  rgb: Uint8Array,
-  width: number,
-  height: number,
-): DesktopInstallStage | undefined {
-  if (width !== 1280 || height !== 720 || rgb.length !== width * height * 3)
-    return undefined;
+const activeButton = (rgb: Uint8Array, width: number) => {
   // Only an active button counts; modal backdrops dim the underlying controls.
-  const active = (left: number, top: number) => {
+  return (left: number, top: number) => {
     let green = 0;
     for (let y = top; y < top + 16; y++) {
       for (let x = left; x < left + 16; x++) {
@@ -72,8 +66,46 @@ export function desktopInstallStage(
     }
     return green >= 230;
   };
-  // The Install button sits lower and further right when the addon is configurable.
-  if (active(675, 522) || active(880, 530)) return "manifest";
+};
+
+/**
+ * The Install button of a configurable addon's manifest dialog. It sits lower
+ * as the dialog grows with a long, wrapped add-on URL.
+ */
+export function desktopConfigurableInstall(
+  rgb: Uint8Array,
+  width: number,
+  height: number,
+) {
+  if (width !== 1280 || height !== 720 || rgb.length !== width * height * 3)
+    return undefined;
+  const active = activeButton(rgb, width);
+  for (let y = 500; y <= 690; y += 4) if (active(880, y)) return { x: 782, y };
+  return undefined;
+}
+
+/** The region hiding a private add-on URL in retained installation frames. */
+export function desktopSecretBox(
+  rgb: Uint8Array,
+  width: number,
+  height: number,
+) {
+  const install = desktopConfigurableInstall(rgb, width, height);
+  return install
+    ? { left: 340, top: 140, width: 600, height: install.y - 152 }
+    : { left: 340, top: 340, width: 600, height: 56 };
+}
+
+export function desktopInstallStage(
+  rgb: Uint8Array,
+  width: number,
+  height: number,
+): DesktopInstallStage | undefined {
+  if (width !== 1280 || height !== 720 || rgb.length !== width * height * 3)
+    return undefined;
+  const active = activeButton(rgb, width);
+  if (active(675, 522) || desktopConfigurableInstall(rgb, width, height))
+    return "manifest";
   if (active(675, 462)) return "add-url";
   if (active(846, 114)) return "addons";
   return undefined;
