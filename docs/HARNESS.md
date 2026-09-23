@@ -93,14 +93,12 @@ timeouts and no whole-run automatic retries.
 ## Results and recovery
 
 Inspect `artifacts/<run timestamp>/results.json` after each smoke attempt.
-It records
-scenario status, actual browser/Node/FFmpeg versions, pinned package versions,
+It records scenario status, actual browser/Node/FFmpeg versions, pinned package versions,
 client/media SHA256 manifests, decoded frame evidence and verified resource
 cleanup. Runs that reach playback also write `result.json`, `metrics.json`
 and scenario screenshots under `run-1/` and `run-2/`. Browser failures attempt
 to retain `failure.png`, redacted `page.txt` and a Playwright `trace.zip`. Open
-the trace with
-`pnpm exec playwright show-trace <path-to-trace.zip>`. A failed assertion,
+the trace with `pnpm exec playwright show-trace <path-to-trace.zip>`. A failed assertion,
 missing prerequisite or failed cleanup produces a nonzero exit code. Cleanup
 failures appear in `cleanupErrors`, preserving the primary `error`. Preflight
 or browser-startup failures may have only structured results; start with the
@@ -132,8 +130,8 @@ Use one writable checkout per task. Setup and cleanup mutate checkout-local
 state; never run either alongside playback or a foreground fixture server in
 the same checkout. The runner owns allocating separate workspaces for concurrent
 tasks. CI jobs use separate checkouts; browser contexts and loopback listeners
-are isolated per run. After a forced process kill, inspect owned resources before retrying;
-finalizers and artifact writes may not have completed.
+are isolated per run. After a forced process kill, inspect owned resources
+before retrying; finalizers and artifact writes may not have completed.
 
 For implementation, start with the requested issue's acceptance criteria, run
 the affected verification gate, and run playback when client, media, protocol
@@ -155,9 +153,9 @@ capabilities and unavailable native or live checks separately.
 ## Native and live validation
 
 Never run the Web fixture screenshot capture against authenticated URLs or
-private media. Maintainer-only live validation uses the designated test account, the
-self-generated fixture movie, and a capture policy that excludes credentials
-and sensitive playback URLs. See [LIVE.md](./LIVE.md).
+private media. Maintainer-only live validation uses the designated test
+account, the self-generated fixture movie, and a capture policy that excludes
+credentials and sensitive playback URLs. See [LIVE.md](./LIVE.md).
 
 Native desktop and Android TV require separately pinned client builds, an
 automatable device or emulator, installation/reset commands and decoded-video,
@@ -166,21 +164,21 @@ native support. Run `mise run native:android:probe` and
 `mise run native:desktop:probe` on a compatible Linux runner, and
 `mise run native:desktop:probe hosted` for the actual hosted adapter; interpret
 those results with [Android TV](./NATIVE-ANDROID.md) and
-[desktop](./NATIVE-DESKTOP.md). The [authenticated Android lane](./NATIVE-ANDROID.md#authenticated-emulator-lane)
-owns pairing with the separate Stremio test login. The
-put.io login is not a Stremio login and must
-not be typed into TV. The runner classifies the pairing/QR wall from
-allowlisted labels only: no login codes, QR images, UI XML, or
-account-linking screenshots.
+[desktop](./NATIVE-DESKTOP.md). The
+[authenticated Android lane](./NATIVE-ANDROID.md#authenticated-emulator-lane)
+owns pairing with the separate Stremio test login. The put.io login is not a
+Stremio login and must not be typed into TV. The runner classifies the
+pairing/QR wall from allowlisted labels only: no login codes, QR images, UI
+XML, or account-linking screenshots.
 
 Live put.io validation is a separate lane: `mise run live:setup` and
 `mise run live:probe`. Follow the
 [sole-executor allowance contract](./LIVE.md#credential-and-budget)
-before running it. With the designated token loaded it uploads the self-generated fixture
-movie and captions, decodes playback, checks Range pause/resume and URL
-reissue, requires put.io-delivered English cue text when the account exposes
-it, and adds a URL transfer of that file. See
-[LIVE.md](./LIVE.md). Generic Engine put.io hooks do not identify that account.
+before running it. With the designated token loaded it uploads the
+self-generated fixture movie and captions, decodes playback, checks Range
+pause/resume and URL reissue, requires put.io-delivered English cue text when
+the account exposes it, and adds a URL transfer of that file. Generic Engine
+put.io hooks do not identify that account.
 
 ## HLS playback
 

@@ -58,7 +58,7 @@ Gaps:
 - Keep the primary checkout on `main`.
 - Run `mise trust`, `mise install`, then `mise run setup` from a fresh checkout.
 - A Web pass does not establish native support.
-  The opt-in `native:android:account` lane uses only generated fixture media;
+- The opt-in `native:android:account` lane uses only generated fixture media;
   serialize account addon edits, keep pairing/UI captures in memory, and verify
   exact owned-addon removal.
 - For direct put.io validation, follow [LIVE.md](./docs/LIVE.md) and its
@@ -70,8 +70,9 @@ Gaps:
   preserves evidence; use the [handoff and recovery contract](./docs/HARNESS.md#autonomous-handoff)
   when reporting completion or a blocked attempt.
 - Run harness TypeScript directly with Node; use explicit `.ts` and type-only
-  imports. Vite+ owns static checks and tests in [vite.config.ts](./vite.config.ts); use its public
-  `vite-plus/test` imports. Mise owns Node and pnpm.
+  imports. Vite+ owns static checks and tests in
+  [vite.config.ts](./vite.config.ts); use its public `vite-plus/test` imports.
+  Mise owns Node and pnpm.
 - Use TypeScript for service and harness orchestration. Keep resources scoped,
   deadlines finite, and SDK Promise conversion at the protocol boundary.
 - Preserve read-only CI, hooks and organization policy.

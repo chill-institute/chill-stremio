@@ -28,9 +28,10 @@ CHILL_FOLDER_ID=0 mise run adapter:serve
 ```
 
 The process binds `127.0.0.1:7000`; `CHILL_ADAPTER_PORT` can select another
-unprivileged port, or `0` for an automatically allocated port. It writes `.cache/adapter/install.json` with owner-only
-permissions. Read its `manifestUrl` privately and enter it in Stremio's add-on
-installation field. The folder appears as **put.io library**, with filenames as titles.
+unprivileged port, or `0` for an automatically allocated port. It writes
+`.cache/adapter/install.json` with owner-only permissions. Read its
+`manifestUrl` privately and enter it in Stremio's add-on installation field.
+The folder appears as **put.io library**, with filenames as titles.
 
 The manifest URL contains a random installation capability, never the chill
 bearer. Anyone with that URL and network access to this process can browse and

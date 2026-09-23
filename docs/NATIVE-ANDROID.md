@@ -16,15 +16,18 @@ device. It keeps allowlisted static labels such as `Link Account` and
 `Sync Addons`. It drops pairing codes, emails, URLs, raw XML, and never
 screenshots the login wall. Completing pairing requires a Stremio test account
 on a second surface. The maintainer-only lane uses a separate test login;
-this probe does not consume it or automate pairing. The opt-in authenticated command below owns pairing. Never load those credentials into the Web fixture lane.
+this probe does not consume it or automate pairing. The opt-in authenticated
+command below owns pairing. Never load those credentials into the Web fixture
+lane.
 
 ## Setup
 
 Provide `emulator`, `adb`, `sdkmanager` and `avdmanager` on PATH using the
 standard Android SDK. The probe discovers its SDK from the emulator executable;
-it has no devbox-specific path or username. The emulator, TV system image and APK pins live in
-[android-versions.ts](../harness/native/android-versions.ts). Other host architectures fail explicitly. A Google APIs phone image
-cannot certify TV behavior.
+it has no devbox-specific path or username. The emulator, TV system image and
+APK pins live in [android-versions.ts](../harness/native/android-versions.ts).
+Other host architectures fail explicitly. A Google APIs phone image cannot
+certify TV behavior.
 
 The checkout filesystem needs at least 13 GiB free for the pinned image's
 userdata partition. A small `/tmp` tmpfs cannot hold the disposable AVD; use
@@ -57,9 +60,8 @@ commands have shorter deadlines, each trial is bounded to eight minutes and
 the complete invocation to seventeen minutes. After Android reports boot
 completion, the runner allows 45 seconds for a read-only Package Manager query
 to resolve the built-in Android package before installing the APK. Results retain
-`packageManagerReady`, query count and failing command exit code.
-It never restarts a whole trial
-in response to failure.
+`packageManagerReady`, query count and failing command exit code. It never
+restarts a whole trial in response to failure.
 
 ## Interpret the result
 
@@ -69,8 +71,8 @@ Android booted, the APK installed, and UI Automator reported the app package.
 It does not establish decoded playback. Authenticated APK failures retain only
 an allowlisted package-manager or transport `failureCode`; empty output,
 missing failure details, disconnected transport, unavailable package service,
-locked user and package-manager exceptions have separate static categories. Unknown output becomes
-`unclassified-install-failure`. Unauthenticated attempts also retain sanitized
+locked user and package-manager exceptions have separate static categories.
+Unknown output becomes `unclassified-install-failure`. Unauthenticated attempts also retain sanitized
 pre-login command diagnostics. Authenticated account installation stages
 distinguish collection read, write, readback and verification without retaining
 provider data. `loginWall` / `pairingChallenge`
@@ -124,8 +126,8 @@ mise run native:android:account
 Set `STREMIO_TEST_EMAIL` to the designated test identity and supply its
 `STREMIO_EMAIL` and `STREMIO_PASSWORD`. The command requires both email values
 to match and removes the login credentials from the child-process environment
-before starting Android or Chromium. It does not load
-put.io or Engine credentials, upload media, or start transfers.
+before starting Android or Chromium. It does not load put.io or Engine
+credentials, upload media, or start transfers.
 
 The official linking confirmation and disappearance of the TV login wall are
 separate assertions. A temporary fixture addon is added to a fresh account
@@ -135,9 +137,8 @@ is reversed only into the owned emulator. Playback uses the documented TV
 and selects the generated direct source through D-pad focus and Select.
 The probe checks focus moves to another source and back before selection, then
 uses Back to return to sources after playback. Cleanup rereads the account
-collection,
-removes exactly that attempt's transport URL, and verifies unrelated descriptors
-remain. A failed or uncertain install still runs that cleanup.
+collection, removes exactly that attempt's transport URL, and verifies
+unrelated descriptors remain. A failed or uncertain install still runs that cleanup.
 
 Pairing codes, credentials, raw UI XML, browser traces, account screenshots and
 emulator logs are never retained. UI XML and fixture frames are inspected only
@@ -146,8 +147,7 @@ contains per-run static stages, booleans, allowlisted labels, source/media
 SHA256 hashes, frame measurements and PCM measurements; the companion Android
 artifact records emulator/ADB cleanup. `installation: passed-partial-proof`
 requires linking, exact descriptor readback, a fixture-origin TV stream request
-and
-account/browser/fixture cleanup; check the companion emulator cleanup too.
+and account/browser/fixture cleanup; check the companion emulator cleanup too.
 It does not change the blocked playback verdict. Intact fixture borders,
 changing frame hashes and an advancing decoded marker are required together
 for picture proof.
@@ -159,7 +159,8 @@ socket is closed and removes its private directory. A silent pre-playback
 capture is the negative control for a two-second 48 kHz stereo PCM sample.
 Movie audio requires more than -40 dBFS and the generated 440 Hz tone. PCM
 and UI images stay in memory. The harness requests media volume 10 on its owned
-emulator; evidence retains the actual numeric readback and private Pulse active-input counts.
+emulator; evidence retains the actual numeric readback and private Pulse
+active-input counts.
 Emulator audio errors are reduced to static backend categories without retaining
 the log. A working host capture path does not establish emulator audio output.
 Seek uses paused D-pad navigation, retains decoded origin and destination, and
@@ -167,7 +168,8 @@ requires a jump beyond natural elapsed time into the 18–23 second target.
 Back dismisses the player HUD before measuring seek and paused frames.
 Pause/resume requires unchanged intact pixels followed by decoded advancement;
 subtitles, next episode, delayed readiness and interruption recovery remain
-separate required assertions. Until implemented and verified, the lane remains `blocked` and exits nonzero.
+separate required assertions. Until implemented and verified, the lane remains
+`blocked` and exits nonzero.
 Do not present a pairing or HTTP-media-request pass as full TV support.
 
 Pairing, exact fixture installation, intact advancing pictures and D-pad source
@@ -202,8 +204,7 @@ Cleanup marks `removal-verified` only after rereading the account, confirming
 the exact URL is absent and all baseline descriptor hashes remain. An uncertain
 cleanup retains its journal and prevents later account trials. Later trials also
 stop when installation was not verified; a recorded error list alone cannot
-establish resource cleanup. Recovery must
-reread the designated account before removing only that positively attributed
+establish resource cleanup. Recovery must reread the designated account before removing only that positively attributed
 URL; a generic fixture name cannot establish ownership. Preserve the receipt
 with its verified terminal state. Installation diagnostics distinguish malformed
 descriptors, a missing owned URL, manifest/flags mismatch and changed baseline

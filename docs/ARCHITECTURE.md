@@ -26,7 +26,7 @@ non-root installations retain direct-folder scope. Membership is rechecked for
 metadata and playback, and traversal errors are not converted to partial success.
 No transfer or folder creation is needed to browse.
 
-It also adds movie/TV discovery and release search using
+The hosted adapter also adds movie/TV discovery and release search using
 existing Engine RPCs. Catalog IDs and episode metadata are translated in
 [discovery.ts](../src/discovery.ts), with validated generated responses in
 [discovery-engine.ts](../src/discovery-engine.ts). Movie/series search filters
@@ -159,7 +159,8 @@ The local and hosted fixture lanes use generated Engine responses and lawful
 H.264/AAC media with pinned Stremio Web. Keep structured decoded video/audio,
 frame/pixel, recovery and cleanup assertions; HTTP success or advancing time
 alone does not prove playback. The hosted demo is recordable because it is
-entirely fake; authenticated runs must never reuse that capture policy. Require a structured browser receipt for the in-Stremio selection flow.
+entirely fake; authenticated runs must never reuse that capture policy. Require
+a structured browser receipt for the in-Stremio selection flow.
 
 The [authenticated probe](./ADAPTER.md#authenticated-playback-probe) checks
 real Stremio login, installation, folder browsing and decoded playback through

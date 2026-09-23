@@ -105,8 +105,9 @@ the standing test budget; ordinary runs need no daily approval. The designated
 Linux devbox is the sole executor; other runners must submit live work there.
 Every checkout shares `allowance.json` in
 `~/.local/state/chill-stremio/live/runner`. The adjacent `runner.json` binds
-registration to the test account, Linux machine ID, OS username and UID. The directory and files must be private (`0700`/`0600`). There is no
-checkout-local fallback, environment path override or automatic registration.
+registration to the test account, Linux machine ID, OS username and UID. The
+directory and files must be private (`0700`/`0600`). There is no checkout-local
+fallback, environment path override or automatic registration.
 
 The [probe](../harness/live/probe.ts) reserves four creations and the prepared
 media size twice plus both generated subtitle sizes before provider mutations.
@@ -185,10 +186,11 @@ before retrying. A reported artifact path is emitted only after writing it.
 
 Under the same maintainer-only test environment, run
 `mise exec -- node harness/live/hls.ts`. It creates a generated MP4 with English
-440 Hz and Spanish 880 Hz audio, reserves the upload allowance, and resolves HLS through production Engine and the actual library translator.
-A temporary local addon presents that URL to the pinned Stremio Web client. Decoded audio must
-change frequency after selecting Spanish. This covers Engine, put.io and Stremio Web. Hosted installation and native
-playback need separate proof.
+440 Hz and Spanish 880 Hz audio, reserves the upload allowance, and resolves HLS
+through production Engine and the actual library translator. A temporary local
+addon presents that URL to the pinned Stremio Web client. Decoded audio must
+change frequency after selecting Spanish. This covers Engine, put.io and
+Stremio Web. Hosted installation and native playback need separate proof.
 
 The run stores no screenshots, recording, trace, private URLs or provider IDs.
 Its sanitized receipt lives under `artifacts/live-hls-*`; exact owned-file cleanup

@@ -2,15 +2,16 @@
 
 This lane runs the GTK4/WebKitGTK/libmpv Stremio shell directly on a
 Linux x86_64 or ARM64 host. Each trial owns a fresh XDG profile, private D-Bus
-session, Xvfb display and Pulse null sink. It uses local fixture content without account
-credentials. Results are separate from [Web](./HARNESS.md) and
+session, Xvfb display and Pulse null sink. It uses local fixture content
+without account credentials. Results are separate from [Web](./HARNESS.md) and
 [Android TV](./NATIVE-ANDROID.md).
 
 ## Setup
 
-Install `flatpak`, `bubblewrap`, `pulseaudio`, `pulseaudio-utils`, `xdotool`, `xclip`, `xvfb`, `xauth`,
-`dbus`, `ffmpeg`, `tesseract-ocr` and fixture fonts using the devbox package manager. Node and the
-Web fixture setup remain owned by [mise](../mise.toml).
+Install `flatpak`, `bubblewrap`, `pulseaudio`, `pulseaudio-utils`, `xdotool`,
+`xclip`, `xvfb`, `xauth`, `dbus`, `ffmpeg`, `tesseract-ocr` and fixture fonts
+using the devbox package manager. Node and the Web fixture setup remain owned
+by [mise](../mise.toml).
 
 On Debian/Ubuntu, install the system prerequisites once:
 
@@ -25,8 +26,8 @@ GNOME runtime commits from [desktop-versions.ts](../harness/native/desktop-versi
 The private Flatpak installation is `~/.local/share/chill-stremio/flatpak`; setup
 does not change the user's normal app installation. It is repeatable and does
 not require a desktop session. Verified pins cover Linux x86_64 and ARM64; setup
-selects the native architecture.
-Other architectures fail explicitly until they have their own verified pins.
+selects the native architecture. Other architectures fail explicitly until they
+have their own verified pins.
 
 The probe fixes the client locale to `C`, uses Cairo for GTK rendering, software
 GL for video and shared-memory WebKit composition, and keeps the client home
@@ -161,10 +162,19 @@ anchors read-only inside the app sandbox, allowing WebKit to fetch captions and
 artwork. The client, TLS verification, Flatpak isolation and host trust remain
 unchanged. Profile cleanup removes the certificate and wrapper.
 
+## Focused hosted HLS trial
+
+`mise run native:desktop:probe hosted-hls` runs the generated hosted adapter
+with HLS movie and episode sources. It retains intact decoded-frame, PCM audio,
+new-download caption, durable-claim and cleanup assertions. It does not establish
+interrupted-media recovery, terminal-state presentation or native audio switching;
+those remain explicitly unverified. The full `hosted` mode retains its original
+gates.
+
 ## Current Linux result
 
-Both fresh ARM64 fixture trials passed on 2026-09-21 with the architecture-specific
-pins: decoded advancing video, PCM audio, seeking, subtitles on/off, next episode,
+Both fresh ARM64 fixture trials passed on 2026-09-21 with the
+architecture-specific pins: decoded advancing video, PCM audio, seeking, subtitles on/off, next episode,
 restart-assisted interruption recovery and cleanup. The matching source passed
 all 223 unit tests and static checks. This extends the credential-free fixture
 lane to ARM64; hosted-adapter and live-account playback on ARM64 remain untested.
@@ -184,8 +194,7 @@ untrusted by WebKit. The scoped fixture trust described above restored rendered
 captions and poster requests without changing client code or assertions.
 
 The focused HLS lane does not test interruption recovery, terminal-state clips
-or native audio-track switching. Web audio switching has separate proof;
-macOS and Windows still require their own compatibility evidence.
+or native audio-track switching. Web audio switching has separate proof.
 
 The broader `hosted` regression remains blocked in
 `artifacts/desktop-hosted-1789913052317/results.json`. Both profiles proved
@@ -214,7 +223,7 @@ decoded, and the documented restart-assisted reselection then passed. That is
 the hosted flow's recovery evidence; the persistent-cut failure that needs a
 restart remains a fixture-lane limitation.
 The earlier trials did not render HTTPS poster artwork. Scoped fixture trust
-now permits those requests; product artwork acceptance remains unverified.
+permits those requests; product artwork acceptance remains unverified.
 
 Linux is the current desktop release target; macOS and Windows need separate
 compatibility evidence.
@@ -246,12 +255,3 @@ read-only GitHub Actions lane using the same setup and probe commands on Ubuntu.
 It retains fixture evidence even when playback is blocked. It has no account
 secrets and is not a required merge gate. A workflow pass still requires every
 playback and cleanup assertion; setup success alone is insufficient.
-
-## Focused hosted HLS trial
-
-`mise run native:desktop:probe hosted-hls` runs the generated hosted adapter
-with HLS movie and episode sources. It retains intact decoded-frame, PCM audio,
-new-download caption, durable-claim and cleanup assertions. It does not establish
-interrupted-media recovery, terminal-state presentation or native audio switching;
-those remain explicitly unverified. The full `hosted` mode retains its original
-gates.

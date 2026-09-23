@@ -35,12 +35,9 @@ share SQLite over network storage. SIGTERM cancels requests and closes storage.
 The [Dockerfile](../Dockerfile) builds a non-root Linux image with locked
 production dependencies and bakes the release version into the add-on
 manifest through `CHILL_ADAPTER_VERSION`, which Stremio clients use to detect
-updates; local runs report `0.0.0`. Every push to `main` cuts a semantic-release version and GitHub release as
-`chill-ci`. The manual publish workflow builds the latest release tag, or a
-chosen one, pushes it to GHCR as `X.Y.Z`, `X.Y`, `X`, `latest`, and
-`sha-<commit>`, records the digest on the release, then dispatches the hosting
-repository's adapter deploy and waits for the result. Bind a private persistent directory at `/data`, use a
-read-only root filesystem and drop container capabilities.
+updates; local runs report `0.0.0`. Bind a private persistent directory at
+`/data`, use a read-only root filesystem and drop container capabilities.
+[Verification and release](#verification-and-release) covers image publication.
 
 The process does not log request paths, headers, tokens or upstream bodies.
 Ingress must also suppress access logs for this service: installation paths and
@@ -56,11 +53,10 @@ It requires configuration and contains no account credential. Stremio's
 **connect your account** link to `https://chill.institute/stremio`.
 The page carries over chill-web’s `AuthPage`, `FullscreenCenter` and button
 styles and logo, using system fonts. It follows the system light/dark theme.
-Assets are served locally from `/configure-assets/`; its
-Content Security Policy permits only the hashed stylesheet and same-origin
-images.
-It returns HTTP 200 without scripts or an automatic redirect. The service root
-redirects to account setup.
+Assets are served locally from `/configure-assets/`; its Content Security
+Policy permits only the hashed stylesheet and same-origin images. It returns
+HTTP 200 without scripts or an automatic redirect. The service root redirects
+to account setup.
 After connection, **install chill** installs the account-specific manifest.
 Only those private installation URLs authorize library and download access;
 public catalog, stream and management requests do not bypass authentication.
@@ -179,10 +175,10 @@ Web direct-file download-to-playback flow passes. HLS audio switching passes a
 real put.io Web probe, and the generated hosted HLS flow passes with default
 audio bundled into its video variant. The original separate-track fixture
 retains the [client-worker regression](./HARNESS.md#hls-playback).
-Both fresh focused Linux HLS trials now pass automatic playback after waiting,
+Both fresh focused Linux HLS trials pass automatic playback after waiting,
 rendered captions, acquired-file playback, PCM audio and cleanup.
-[Android TV](./NATIVE-ANDROID.md) acceptance remains incomplete. Passing a generic native fixture
-addon does not establish hosted support; the
+[Android TV](./NATIVE-ANDROID.md) acceptance remains incomplete. Passing a
+generic native fixture addon does not establish hosted support; the
 [hosted desktop trial](./NATIVE-DESKTOP.md#hosted-adapter-trial) drives this
 adapter in the pinned Linux client. Linux proof does not establish macOS or
 Windows support.
@@ -217,27 +213,29 @@ second file, with decoded fixture identity checks. HEAD, OPTIONS, repeated media
 GET and an additional SQLite restart must preserve the five original submissions.
 Unknown-state recovery proves safe status rereading and retained duplicate
 prevention only; it cannot reconcile a lost Engine response.
-Status videos come from
-[status-media.ts](../scripts/status-media.ts) at setup/image build time, with
-[runtime loading](../src/status-media.ts) requiring the generated assets. Require a passing smoke receipt for the in-Stremio interaction. This lane is
-separate from the restricted
+Status videos come from [status-media.ts](../scripts/status-media.ts) at
+setup/image build time, with [runtime loading](../src/status-media.ts) requiring
+the generated assets. Require a passing smoke receipt for the in-Stremio
+interaction. This lane is separate from the restricted
 [authenticated account probe](./ADAPTER.md#authenticated-playback-probe), which
 must never record the authenticated browser. Read each run's structured result
 before claiming installation, decoded playback or complete cleanup.
 
-[Publish hosted adapter](../.github/workflows/publish-hosted.yml) is a manual,
-main-only workflow. It resolves the latest published release (or a chosen tag),
-verifies that exact commit, builds one image, tests it with generated private
-state, publishes it to GHCR under the version tags, records the digest on the
-release, then dispatches the hosting repository's adapter deploy and waits for
-it. The default verification and fixture workflows retain read-only permissions.
+Every push to `main` cuts a semantic-release version and GitHub release as
+`chill-ci`. [Publish hosted adapter](../.github/workflows/publish-hosted.yml) is
+a manual, main-only workflow. It resolves the latest published release (or a
+chosen tag), verifies that exact commit, builds one image, tests it with
+generated private state, pushes it to GHCR as `X.Y.Z`, `X.Y`, `X`, `latest` and
+`sha-<commit>`, records the digest on the release, then dispatches the hosting
+repository's adapter deploy and waits for it. The default verification and fixture workflows retain read-only permissions.
 
 Engine owns the adapter deployment and shared host-mutation lock; its manual
 dispatch remains the rollback path.
 Its adapter role pulls the immutable image before stopping the writer, snapshots
 stopped SQLite, checks private health before installing the route, then checks
-public and Engine health. Image rollback preserves the current database and key. Storage schema v2 adds the
-stored release title while retaining prior installations and acquisition claims.
+public and Engine health. Image rollback preserves the current database and
+key. Storage schema v2 adds the stored release title while retaining prior
+installations and acquisition claims.
 An older v1-only image cannot read it; do not use that image as a rollback target.
 The Engine deploy workflow reads the package with its own repository token, so
 the `chill-stremio` container package must grant `chill-engine` read access in
