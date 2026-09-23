@@ -105,8 +105,8 @@ The fixture probe proves the client; it does not prove the product. The hosted
 mode runs the actual hosted adapter from [hosted.ts](../src/hosted.ts) against
 the same generated Engine responses and lawful media as `hosted:smoke`
 ([hosted-fixture.ts](../harness/hosted-fixture.ts)), then drives the native
-client through discovery, selection, downloads, acquired playback, failure
-states and revocation. It needs the same setup stamp and client pins:
+client through discovery, selection, library playback, failure states and a
+rejected credential. It needs the same setup stamp and client pins:
 
 ```sh
 mise run native:desktop:probe hosted
@@ -116,17 +116,20 @@ Results are retained under `artifacts/desktop-hosted-<timestamp>/results.json`
 with `mode: "hosted"`; fixture receipts keep `mode: "fixture"`. Two fresh trials
 run without whole-run retries, nine minutes each, thirty minutes overall.
 
-Each trial creates one installation through the management API with a generated
-bearer, serves the adapter behind an observing loopback proxy as its public
-origin, and hands the guest only the manifest URL and a loopback control URL.
-The guest reports checkpoints; the harness asserts adapter and Engine state at
-each one. A trial passes only when every item holds:
+Each trial generates a fake add-on credential of issued length, serves the
+adapter behind an observing loopback proxy as its public origin, and hands the
+guest only the add-on link and a loopback control URL. The fixture Engine
+requires the credential header. The guest reports checkpoints; the harness
+asserts adapter and Engine state at each one. A trial passes only when every
+item holds:
 
-- The client confirms the configurable addon's manifest dialog and lists the
-  hosted catalogs. The dialog prints the private installation URL, so the guest
-  blacks out that band before any frame in that stage is written, never retains
-  the typed-URL frame, clears the isolated clipboard, and the harness rejects
-  retained text evidence that contains the capability.
+- The client confirms the configurable add-on's manifest dialog and lists the
+  hosted catalogs. The dialogs print the private add-on link, which wraps across
+  several lines and moves the Install button down. The guest locates Install,
+  blacks out the whole URL block before any frame in that stage is written, keeps
+  redacting after a failed installation, never retains the typed-URL frame and
+  clears the isolated clipboard. The harness rejects retained text evidence that
+  contains the credential.
 - Movie discovery shows the generated title; `Show` opens its detail page and
   the `Download to put.io` row is visible. The episode route shows the series
   title and its release row. Both checkpoints require zero transfers, zero media
@@ -134,23 +137,22 @@ each one. A trial passes only when every item holds:
 - Selecting the row consumes the media URL and submits exactly one transfer.
   The player stays loading without a status clip; completing the fixture transfer
   must decode the real movie in that same player without another selection.
-- Downloads shows the completed card. The harness then replays HEAD and GET, restarts
-  the adapter on the same port and replays again; the transfer count stays one.
-- Acquired videos lists the completed file. Its detail page plays the exact
-  file with intact advancing decoded frames, non-silent Pulse PCM and a resolved
-  Engine playback.
+- put.io library lists the completed file. The harness replays HEAD and reads the
+  transfer's status URL before and after restarting the adapter on the same
+  port; the transfer count stays one. The file's detail page plays it with intact
+  advancing decoded frames, non-silent Pulse PCM, a resolved Engine playback and
+  rendered English captions from the library subtitle resource.
 - A paced media response is cut mid-playback and the following reconnects are
   refused for six seconds. Recovery returns to the source list, restarts the
   owned client with the same profile and reselects the file; recovered decoded
   pixels are required. `playbackContinuedAfterCut` records whether the frame
   captured after the cut still showed decoded video.
-- Failed, unknown and multi-file releases each submit once, render their
-  status clip, appear in Downloads with their state, and replay without
-  resubmission. The unknown claim survives a second adapter restart. The
-  multi-file download lists both files and the chosen second file decodes as
-  the episode fixture.
-- Revocation through the management API makes the running client's next
-  requests fail with 404.
+- Failed, unknown and multi-file releases each submit once and render their
+  status clip; reading the failed and multi-file status URLs does not submit.
+  The chosen second file of the multi-file download decodes as the episode
+  fixture from the library.
+- After the fixture Engine starts rejecting the credential with `401`, the
+  client's put.io library shows the reconnect row.
 - The generated Engine saw exactly four transfers and rejected no requests.
 
 Fresh state, owned instance cleanup, closed listeners and the shared cleanup
@@ -166,7 +168,7 @@ unchanged. Profile cleanup removes the certificate and wrapper.
 
 `mise run native:desktop:probe hosted-hls` runs the generated hosted adapter
 with HLS movie and episode sources. It retains intact decoded-frame, PCM audio,
-new-download caption, durable-claim and cleanup assertions. It does not establish
+library caption, one-transfer, reconnect and cleanup assertions. It does not establish
 interrupted-media recovery, terminal-state presentation or native audio switching;
 those remain explicitly unverified. The full `hosted` mode retains its original
 gates.
@@ -177,14 +179,21 @@ Both fresh ARM64 fixture trials passed on 2026-09-21 with the
 architecture-specific pins: decoded advancing video, PCM audio, seeking, subtitles on/off, next episode,
 restart-assisted interruption recovery and cleanup. The matching source passed
 all 223 unit tests and static checks. This extends the credential-free fixture
-lane to ARM64; hosted-adapter and live-account playback on ARM64 remain untested.
+lane to ARM64; live-account playback on ARM64 remains untested.
 
-Both fresh hosted HLS trials passed on 2026-09-20 in
-`artifacts/desktop-hosted-hls-1789912720594/results.json`. They installed the
-actual adapter, browsed movie and episode releases without submitting transfers,
-waited for a selected download, automatically played it, rendered English
-captions, reopened the acquired file with intact advancing frames and PCM audio,
-verified durable deduplication and revocation, and cleaned every owned resource.
+Both fresh ARM64 hosted HLS trials of the credential-link adapter passed on
+2026-09-23 in `artifacts/desktop-hosted-hls-1790200018934/results.json`. They
+installed a wrapped add-on link with its URL block redacted, browsed movie and
+episode releases without submitting transfers, waited for a selected download
+and automatically played it with one transfer, then played the completed file
+from put.io library with intact advancing frames, English captions and PCM
+audio. Status reads and an adapter restart submitted nothing, a rejected
+credential showed the reconnect row, and every owned resource was cleaned up.
+The libmpv client requests the selected URL twice; the adapter's 60-second reuse
+window keeps that to one transfer.
+
+Earlier hosted results below predate credential links; they exercised the
+installation, Downloads and Acquired videos flow that no longer exists.
 
 The earlier loading failures occurred with the headless GL renderer. A property
 trace showed readiness events arriving 33–34 seconds into the 36-second clip;
@@ -196,7 +205,8 @@ captions and poster requests without changing client code or assertions.
 The focused HLS lane does not test interruption recovery, terminal-state clips
 or native audio-track switching. Web audio switching has separate proof.
 
-The broader `hosted` regression remains blocked in
+The broader `hosted` regression was last run before credential links and was
+blocked in
 `artifacts/desktop-hosted-1789913052317/results.json`. Both profiles proved
 automatic playback and captions. The first also proved acquired-file playback
 and restart-assisted recovery; the second did not reopen the MP4 fixture.

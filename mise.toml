@@ -61,7 +61,7 @@ description = "Sign in to designated accounts and prove Stremio playback through
 run = "pnpm exec vp run adapter:live"
 
 [tasks."hosted:serve"]
-description = "Run the durable multi-user adapter with private runtime configuration"
+description = "Run the stateless multi-user adapter with private runtime configuration"
 run = "pnpm exec vp run hosted:serve"
 
 [tasks."hosted:smoke"]
@@ -69,7 +69,7 @@ description = "Record and verify the hosted discovery/acquisition/playback flow 
 run = "pnpm exec vp run hosted:smoke"
 
 [tasks."hosted:container"]
-description = "Prove a built Linux image with private durable state and fake credentials"
+description = "Prove a built read-only Linux image with a generated credential"
 run = "pnpm exec vp run hosted:container"
 
 [tasks."hosted:live"]
@@ -77,7 +77,7 @@ description = "Prove bounded real Engine acquisition with generated discovery an
 run = "pnpm exec vp run hosted:live"
 
 [tasks."hosted:public"]
-description = "Create, read and revoke a designated-account installation on the deployed adapter"
+description = "Read the deployed adapter with the designated account's add-on credential"
 run = "pnpm exec vp run hosted:public"
 
 [tasks."native:android:account"]
