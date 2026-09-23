@@ -1,17 +1,14 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import * as proto from "@chill-institute/contracts/chill/v4/api_pb";
 import { Schema } from "effect";
 import { test } from "vite-plus/test";
+import { redactCredentials } from "../src/credential.ts";
 import { startHostedAdapter } from "../src/hosted.ts";
-import { InstallationStore } from "../src/installations.ts";
 import { statusMessages, type StatusMediaKind } from "../src/status-media.ts";
 import { discoveryTargetId } from "../src/discovery.ts";
 
@@ -22,28 +19,10 @@ const statusMedia = new Map(
   ]),
 );
 const webOrigin = "http://127.0.0.1:3000";
-const ownerToken = "fixture-owner-a";
-const otherToken = "fixture-owner-b";
+const credential = () => `v4.local.${randomBytes(300).toString("base64url")}`;
+const ownerCredential = credential();
+const otherCredential = credential();
 const target = discoveryTargetId({ kind: "movie", id: "fixture-film" });
-const View = Schema.Struct({
-  id: Schema.String,
-  folderId: Schema.String,
-  manifestUrl: Schema.String,
-});
-const Operation = Schema.Struct({
-  id: Schema.String,
-  state: Schema.String,
-  transferId: Schema.optional(Schema.String),
-});
-const Videos = Schema.Struct({
-  files: Schema.Array(
-    Schema.Struct({
-      id: Schema.String,
-      name: Schema.String,
-      stremioId: Schema.String,
-    }),
-  ),
-});
 const Catalog = Schema.Struct({
   metas: Schema.Array(
     Schema.Struct({ id: Schema.String, name: Schema.String }),
@@ -65,19 +44,17 @@ async function decode<A, I>(
   return Schema.decodeUnknownSync(schema)(value);
 }
 
-async function fixture() {
+async function fixture(options: { selectionReuseMs?: number } = {}) {
   const calls: { method: string; owner: string }[] = [];
   const searches: string[] = [];
   const state = {
-    invalidRootFolder: false,
     loseTransferResponse: false,
     stallMovies: false,
-    acquiredVisible: true,
     addCount: 0,
     transferFinished: true,
     singleFile: false,
     playbackPending: false,
-    historicalTransferError: { status: 404, code: "not_found" },
+    rejection: undefined as { status: number; code: string } | undefined,
   };
   const error = (response: ServerResponse, status: number, code: string) => {
     response.writeHead(status, { "content-type": "application/json" });
@@ -85,44 +62,32 @@ async function fixture() {
   };
   const engine = createServer((request, response) => {
     void (async () => {
-      const auth = request.headers.authorization;
+      const presented = request.headers["x-chill-stremio-credential"];
       const owner =
-        auth === `Bearer ${ownerToken}`
+        presented === ownerCredential
           ? "101"
-          : auth === `Bearer ${otherToken}`
+          : presented === otherCredential
             ? "202"
             : undefined;
-      if (!owner) {
+      if (!owner || request.headers.authorization !== undefined) {
         error(response, 401, "unauthenticated");
         return;
       }
       const method = request.url?.split("/").at(-1) ?? "";
       calls.push({ method, owner });
       assert.equal(request.method, "POST");
+      if (state.rejection) {
+        error(response, state.rejection.status, state.rejection.code);
+        return;
+      }
       const chunks: Buffer[] = [];
       for await (const chunk of request)
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       const json = Buffer.concat(chunks).toString("utf8");
       response.setHeader("content-type", "application/json");
       switch (method) {
-        case "GetUserProfile":
-          fromJsonString(proto.GetUserProfileRequestSchema, json);
-          response.end(
-            toJsonString(
-              proto.UserProfileSchema,
-              create(proto.UserProfileSchema, {
-                userId: owner,
-                email: "private@fixture.test",
-              }),
-            ),
-          );
-          return;
         case "GetFolder": {
           const { id } = fromJsonString(proto.GetFolderRequestSchema, json);
-          if (id === 0n && state.invalidRootFolder) {
-            response.end("{}");
-            return;
-          }
           const files =
             id === 0n
               ? [{ id: 42n, name: "Nested library", fileType: "FOLDER" }]
@@ -138,20 +103,18 @@ async function fixture() {
                       { id: 99n, name: "Unrelated video", fileType: "VIDEO" },
                     ]
                   : id === 20n
-                    ? state.acquiredVisible
-                      ? [
-                          { id: 21n, name: "First video", fileType: "VIDEO" },
-                          ...(state.singleFile
-                            ? []
-                            : [
-                                {
-                                  id: 22n,
-                                  name: "Second video",
-                                  fileType: "VIDEO",
-                                },
-                              ]),
-                        ]
-                      : []
+                    ? [
+                        { id: 21n, name: "First video", fileType: "VIDEO" },
+                        ...(state.singleFile
+                          ? []
+                          : [
+                              {
+                                id: 22n,
+                                name: "Second video",
+                                fileType: "VIDEO",
+                              },
+                            ]),
+                      ]
                     : undefined;
           if (!files) {
             error(response, 404, "not_found");
@@ -283,11 +246,7 @@ async function fixture() {
         case "GetTransfer": {
           const { id } = fromJsonString(proto.GetTransferRequestSchema, json);
           if (id !== 90n) {
-            error(
-              response,
-              state.historicalTransferError.status,
-              state.historicalTransferError.code,
-            );
+            error(response, 404, "not_found");
             return;
           }
           response.end(
@@ -359,364 +318,248 @@ async function fixture() {
   await new Promise<void>((resolve) => engine.listen(0, "127.0.0.1", resolve));
   const address = engine.address();
   assert.ok(address && typeof address !== "string");
-  const directory = await mkdtemp(join(tmpdir(), "hosted-fixture-"));
-  const file = join(directory, "installations.sqlite");
-  const key = Buffer.alloc(32, 7);
-  let store = await InstallationStore.open(file, key);
-  let hosted = await startHostedAdapter({
-    store,
-    statusMedia,
-    engineBaseUrl: `http://127.0.0.1:${address.port}`,
-    webOrigin,
-  });
-  const api = (path: string, init: RequestInit = {}, token = ownerToken) => {
-    const headers = new Headers({
-      authorization: `Bearer ${token}`,
-      origin: webOrigin,
-      "content-type": "application/json",
+  const start = () =>
+    startHostedAdapter({
+      statusMedia,
+      engineBaseUrl: `http://127.0.0.1:${address.port}`,
+      webOrigin,
+      selectionReuseMs: options.selectionReuseMs,
     });
-    new Headers(init.headers).forEach((value, name) =>
-      headers.set(name, value),
-    );
-    return fetch(`${hosted.origin}${path}`, { ...init, headers });
-  };
-  const install = async (token = ownerToken) => {
-    const response = await api(
-      "/api/installations",
-      { method: "POST", body: JSON.stringify({ folderId: "42" }) },
-      token,
-    );
-    assert.equal(response.status, 201);
-    return decode(response, View);
-  };
+  let hosted = await start();
   return {
     calls,
     searches,
     state,
-    api,
-    install,
-    historicalOperation(installationId: string) {
-      const claim = store.claim(installationId, target, "historical-release");
-      store.submitted(installationId, claim.operation.id, "91");
-      return claim.operation.id;
-    },
     get origin() {
       return hosted.origin;
     },
+    base(value = ownerCredential) {
+      return `${hosted.origin}/s/${value}`;
+    },
     async restart() {
       await hosted.close();
-      store.close();
-      store = await InstallationStore.open(file, key);
-      hosted = await startHostedAdapter({
-        store,
-        statusMedia,
-        engineBaseUrl: `http://127.0.0.1:${address.port}`,
-        webOrigin,
-      });
+      hosted = await start();
     },
     async close() {
       await hosted.close();
-      store.close();
       engine.closeAllConnections();
       await new Promise<void>((resolve, reject) =>
         engine.close((cause) => (cause ? reject(cause) : resolve())),
       );
-      await rm(directory, { recursive: true, force: true });
     },
   };
 }
+type Fixture = Awaited<ReturnType<typeof fixture>>;
 
-async function acquire(f: Awaited<ReturnType<typeof fixture>>, id: string) {
-  const response = await f.api(`/api/installations/${id}/acquisitions`, {
-    method: "POST",
-    body: JSON.stringify({
-      type: "movie",
-      target,
-      releaseId: "fixture-release",
-    }),
-  });
+async function releaseSelection(f: Fixture) {
+  const response = await fetch(
+    `${f.base()}/stream/movie/${encodeURIComponent(target)}.json`,
+  );
   assert.equal(response.status, 200);
-  return decode(response, Operation);
+  const entries = await decode(response, Streams);
+  const url = entries.streams[0]?.url;
+  assert.ok(url);
+  assert.equal(entries.streams[0]?.externalUrl, undefined);
+  return url;
 }
 
-test("hosted installation management authenticates owners, verifies folders and restricts API CORS", async () => {
+test("credential manifest and discovery remain read-only and keep transfer URLs private", async () => {
   const f = await fixture();
   try {
-    assert.equal((await fetch(`${f.origin}/api/installations`)).status, 401);
-    assert.equal(
-      (await f.api("/api/installations", {}, "fixture-invalid")).status,
-      401,
-    );
-    const forbidden = await f.api("/api/installations", {
-      headers: { origin: "https://other.example" },
-    });
-    assert.equal(forbidden.status, 403);
-    assert.equal(forbidden.headers.get("access-control-allow-origin"), null);
-    const preflight = await fetch(`${f.origin}/api/installations`, {
-      method: "OPTIONS",
-      headers: { origin: webOrigin },
-    });
-    assert.equal(preflight.status, 204);
-    assert.equal(
-      preflight.headers.get("access-control-allow-origin"),
-      webOrigin,
-    );
-    assert.match(
-      preflight.headers.get("access-control-allow-headers") ?? "",
-      /Authorization/,
-    );
-    const nonexistent = await f.api("/api/installations", {
-      method: "POST",
-      body: JSON.stringify({ folderId: "999" }),
-    });
-    assert.equal(nonexistent.status, 404);
-    const installed = await f.install();
-    assert.ok(
-      f.calls.some(
-        (call) => call.method === "GetFolder" && call.owner === "101",
-      ),
-    );
-    const listed = await f.api("/api/installations");
-    assert.equal(listed.status, 200);
-    assert.equal(listed.headers.get("cache-control"), "no-store");
-    assert.equal(listed.headers.get("access-control-allow-origin"), webOrigin);
-    const listing = await decode(
-      listed,
-      Schema.Struct({ installations: Schema.Array(View) }),
-    );
-    assert.equal(listing.installations.length, 1);
-    assert.equal(listing.installations[0]?.id, installed.id);
-    assert.doesNotMatch(
-      JSON.stringify(listing),
-      /fixture-owner|private@fixture/,
-    );
-    const other = await decode(
-      await f.api("/api/installations", {}, otherToken),
-      Schema.Struct({ installations: Schema.Array(View) }),
-    );
-    assert.deepEqual(other.installations, []);
-    assert.equal(
-      (
-        await f.api(
-          `/api/installations/${installed.id}`,
-          { method: "DELETE" },
-          otherToken,
-        )
-      ).status,
-      404,
-    );
-    assert.equal((await fetch(installed.manifestUrl)).status, 200);
-    assert.equal(
-      (await f.api(`/api/installations/${installed.id}`, { method: "DELETE" }))
-        .status,
-      204,
-    );
-    assert.equal((await fetch(installed.manifestUrl)).status, 404);
-  } finally {
-    await f.close();
-  }
-});
-
-test("capability manifest and discovery remain read-only and keep transfer URLs private", async () => {
-  const f = await fixture();
-  try {
-    const installed = await f.install();
-    const base = installed.manifestUrl.replace("/manifest.json", "");
-    const manifest = await fetch(installed.manifestUrl);
+    const manifest = await fetch(`${f.base()}/manifest.json`);
     assert.equal(manifest.status, 200);
     assert.equal(manifest.headers.get("cache-control"), "no-store");
     assert.equal(manifest.headers.get("access-control-allow-origin"), "*");
+    assert.deepEqual(f.calls, []);
     const catalogResponse = await fetch(
-      `${base}/catalog/movie/discover-movies.json`,
+      `${f.base()}/catalog/movie/discover-movies.json`,
     );
     assert.equal(catalogResponse.status, 200);
     assert.equal(catalogResponse.headers.get("cache-control"), "no-store");
     const catalog = await decode(catalogResponse, Catalog);
     assert.equal(catalog.metas[0]?.id, target);
     const streamResponse = await fetch(
-      `${base}/stream/movie/${encodeURIComponent(target)}.json`,
+      `${f.base()}/stream/movie/${encodeURIComponent(target)}.json`,
     );
     assert.equal(streamResponse.status, 200);
-    const stream = await decode(streamResponse, Streams);
+    const streamText = await streamResponse.text();
+    assert.doesNotMatch(streamText, /fixture-release-secret|https:\/\/engine/);
+    const stream = Schema.decodeUnknownSync(Streams)(JSON.parse(streamText));
     assert.equal(stream.streams[0]?.externalUrl, undefined);
-    assert.match(stream.streams[0]?.url ?? "", /\/play\/movie\//);
-    const releaseResponse = await f.api(
-      `/api/installations/${installed.id}/releases?type=movie&target=${encodeURIComponent(target)}`,
-    );
-    assert.equal(releaseResponse.status, 200);
-    const releaseText = await releaseResponse.text();
-    assert.match(releaseText, /fixture-release/);
-    assert.doesNotMatch(releaseText, /fixture-release-secret|https:\/\/engine/);
-    assert.equal(
-      (await f.api(`/api/installations/${installed.id}/acquisitions`)).status,
-      404,
-    );
-    assert.equal(f.state.addCount, 0);
-    assert.equal(
-      (await fetch(`${f.origin}/i/${"x".repeat(43)}/manifest.json`)).status,
-      404,
-    );
-    assert.equal(
-      (await fetch(installed.manifestUrl, { method: "POST" })).status,
-      404,
-    );
-  } finally {
-    await f.close();
-  }
-});
-
-test("explicit acquisition POST deduplicates simultaneous clicks and enables selected verified playback", async () => {
-  const f = await fixture();
-  try {
-    const installed = await f.install();
-    const [first, second] = await Promise.all([
-      acquire(f, installed.id),
-      acquire(f, installed.id),
-    ]);
-    assert.equal(first.id, second.id);
-    assert.equal(f.state.addCount, 1);
-    const state = await f.api(
-      `/api/installations/${installed.id}/acquisitions/${first.id}`,
-    );
-    assert.equal(state.status, 200);
-    const videos = await decode(state, Videos);
-    assert.deepEqual(
-      videos.files.map((file) => file.id),
-      ["21", "22"],
-    );
-    const selected = videos.files.find((file) => file.id === "22");
-    assert.ok(selected);
-    const base = installed.manifestUrl.replace("/manifest.json", "");
-    const playback = await fetch(
-      `${base}/stream/movie/${encodeURIComponent(selected.stremioId)}.json`,
-    );
-    assert.equal(playback.status, 200);
-    const stream = await decode(playback, Streams);
     assert.equal(
       stream.streams[0]?.url,
-      "https://media.fixture.test/video-22?token=fixture-playback-secret",
+      `${f.base()}/play/movie/${encodeURIComponent(target)}/fixture-release.m3u8`,
     );
-    const unrelated = await decode(
-      await fetch(
-        `${base}/stream/movie/${encodeURIComponent(`chill:acquired:${first.id}:99`)}.json`,
-      ),
-      Streams,
-    );
-    assert.deepEqual(unrelated.streams, []);
-    const other = await f.install(otherToken);
-    const otherBase = other.manifestUrl.replace("/manifest.json", "");
+    assert.equal(f.state.addCount, 0);
+    assert.ok(f.calls.every(({ owner }) => owner === "101"));
     assert.equal(
-      (
-        await f.api(
-          `/api/installations/${installed.id}/acquisitions/${first.id}`,
-          {},
-          otherToken,
-        )
-      ).status,
+      f.calls.some(({ method }) => method === "GetUserProfile"),
+      false,
+    );
+    assert.equal(
+      (await fetch(`${f.base()}/manifest.json`, { method: "POST" })).status,
       404,
     );
-    const wrongOwnerPlayback = await decode(
-      await fetch(
-        `${otherBase}/stream/movie/${encodeURIComponent(selected.stremioId)}.json`,
-      ),
-      Streams,
-    );
-    assert.deepEqual(wrongOwnerPlayback.streams, []);
-    f.state.acquiredVisible = false;
-    const removed = await decode(
-      await fetch(
-        `${base}/stream/movie/${encodeURIComponent(selected.stremioId)}.json`,
-      ),
-      Streams,
-    );
-    assert.deepEqual(removed.streams, []);
   } finally {
     await f.close();
   }
 });
 
-test("acquired catalog skips missing historical transfers but preserves upstream failures", async () => {
+test("malformed credentials and removed routes never reach Engine", async () => {
   const f = await fixture();
   try {
-    const installed = await f.install();
-    const valid = await acquire(f, installed.id);
-    const missing = f.historicalOperation(installed.id);
-    const base = installed.manifestUrl.replace("/manifest.json", "");
-    const response = await fetch(`${base}/catalog/movie/acquired.json`);
-    assert.equal(response.status, 200);
-    assert.deepEqual((await decode(response, Catalog)).metas, [
-      { id: `chill:acquired:${valid.id}:21`, name: "First video" },
-      { id: `chill:acquired:${valid.id}:22`, name: "Second video" },
-    ]);
+    for (const path of [
+      "/s/not-a-credential/manifest.json",
+      "/s/v4.local.short/manifest.json",
+      `/s/v4.public.${"a".repeat(64)}/manifest.json`,
+      `/s/v4.local.${"a".repeat(1016)}/catalog/movie/library.json`,
+      `/s/v4.local.${"a".repeat(64)}.footer/manifest.json`,
+      `/i/${"x".repeat(43)}/manifest.json`,
+      "/api/installations",
+    ])
+      assert.equal((await fetch(`${f.origin}${path}`)).status, 404, path);
     assert.equal(
-      (
-        await f.api(
-          `/api/installations/${installed.id}/acquisitions/${missing}`,
-        )
-      ).status,
-      404,
+      (await fetch(`${f.base(`v4.local.${"a".repeat(1015)}`)}/manifest.json`))
+        .status,
+      200,
     );
-    for (const failure of [
+    const denied = await fetch(
+      `${f.base(credential())}/catalog/movie/library.json`,
+    );
+    assert.equal(denied.status, 200);
+    assert.deepEqual(
+      (await decode(denied, Catalog)).metas.map(({ id }) => id),
+      ["chill:reconnect"],
+    );
+    assert.deepEqual(f.calls, []);
+  } finally {
+    await f.close();
+  }
+});
+
+test("Engine credential rejection shows reconnect rows, sources and notices", async () => {
+  const f = await fixture();
+  try {
+    const url = await releaseSelection(f);
+    for (const rejection of [
       { status: 401, code: "unauthenticated" },
       { status: 403, code: "permission_denied" },
-      { status: 429, code: "resource_exhausted" },
-      { status: 504, code: "deadline_exceeded" },
-      { status: 503, code: "unavailable" },
     ]) {
-      f.state.historicalTransferError = failure;
-      const failed = await fetch(`${base}/catalog/movie/acquired.json`);
-      assert.equal(failed.status, failure.status);
-      assert.deepEqual(await failed.json(), { error: failure.code });
+      f.state.rejection = rejection;
+      for (const [type, catalog] of [
+        ["movie", "library"],
+        ["movie", "discover-movies"],
+        ["series", "discover-series"],
+      ] as const) {
+        const response = await fetch(
+          `${f.base()}/catalog/${type}/${catalog}.json`,
+        );
+        assert.equal(response.status, 200);
+        const body = Schema.decodeUnknownSync(
+          Schema.Struct({
+            metas: Schema.Array(
+              Schema.Struct({
+                id: Schema.String,
+                type: Schema.String,
+                description: Schema.String,
+              }),
+            ),
+          }),
+        )(await response.json());
+        assert.deepEqual(
+          body.metas.map(({ id, type }) => ({ id, type })),
+          [{ id: "chill:reconnect", type }],
+        );
+        assert.match(body.metas[0]?.description ?? "", /\/stremio/);
+      }
+      const reconnectSource = {
+        streams: [{ externalUrl: `${webOrigin}/stremio` }],
+      };
+      for (const id of [
+        target,
+        "tt1234567",
+        "chill:file:50",
+        "chill:reconnect",
+      ])
+        assert.deepEqual(
+          await decode(
+            await fetch(
+              `${f.base()}/stream/movie/${encodeURIComponent(id)}.json`,
+            ),
+            Streams,
+          ),
+          reconnectSource,
+        );
+      const meta = await fetch(`${f.base()}/meta/movie/chill%3Areconnect.json`);
+      assert.equal(meta.status, 200);
+      assert.match(await meta.text(), /Reconnect chill\.institute/);
+      assert.deepEqual(
+        await (
+          await fetch(`${f.base()}/subtitles/movie/chill%3Afile%3A50.json`)
+        ).json(),
+        { subtitles: [] },
+      );
+      const hls = await fetch(url, { redirect: "manual" });
+      assert.equal(hls.status, 409);
+      assert.deepEqual(await hls.json(), { error: "reconnect" });
+      const legacy = await fetch(url.replace(/\.m3u8$/, ".mp4"), {
+        redirect: "manual",
+      });
+      assert.equal(legacy.status, 302);
+      assert.equal(
+        legacy.headers.get("location"),
+        `${f.base()}/notice/reconnect.mp4`,
+      );
+      const status = await fetch(`${f.base()}/status/90.mp4`, {
+        redirect: "manual",
+      });
+      assert.equal(
+        status.headers.get("location"),
+        `${f.base()}/notice/reconnect.mp4`,
+      );
     }
-    assert.equal(f.state.addCount, 1);
+    const clip = await fetch(`${f.base()}/notice/reconnect.mp4`);
+    assert.equal(clip.status, 200);
+    assert.equal(clip.headers.get("content-type"), "video/mp4");
+    assert.equal(f.state.addCount, 0);
   } finally {
     await f.close();
   }
 });
 
-test("lost provider response remains unknown across hosted restart and cannot submit again", async () => {
+test("hosted protocol configuration and malformed routes stay within their credential", async () => {
   const f = await fixture();
   try {
-    const installed = await f.install();
-    f.state.loseTransferResponse = true;
-    const first = await acquire(f, installed.id);
-    assert.equal(first.state, "unknown");
-    assert.equal(first.transferId, undefined);
-    assert.equal(f.state.addCount, 1);
-    await f.restart();
-    f.state.loseTransferResponse = false;
-    const retry = await acquire(f, installed.id);
-    assert.equal(retry.id, first.id);
-    assert.equal(retry.state, "unknown");
-    assert.equal(f.state.addCount, 1);
-    const status = await f.api(
-      `/api/installations/${installed.id}/acquisitions/${first.id}`,
-    );
-    assert.equal(status.status, 200);
-    assert.deepEqual((await decode(status, Videos)).files, []);
-  } finally {
-    await f.close();
-  }
-});
-
-test("hosted protocol configuration and malformed routes stay within their capability", async () => {
-  const f = await fixture();
-  try {
-    const installed = await f.install();
-    const base = installed.manifestUrl.replace("/manifest.json", "");
-    const config = await fetch(`${base}/configure`, { redirect: "manual" });
+    const config = await fetch(`${f.base()}/configure`, { redirect: "manual" });
     assert.equal(config.status, 302);
     assert.equal(config.headers.get("location"), `${webOrigin}/stremio`);
     assert.equal(config.headers.get("referrer-policy"), "no-referrer");
-    assert.equal((await fetch(`${base}/meta/movie/%ZZ.json`)).status, 400);
+    assert.equal((await fetch(`${f.base()}/meta/movie/%ZZ.json`)).status, 400);
     assert.equal(
       (
         await fetch(
-          `${base}/catalog/movie/discover-movies/search=x&search=y.json`,
+          `${f.base()}/catalog/movie/discover-movies/search=x&search=y.json`,
         )
       ).status,
       400,
     );
+    for (const id of [
+      "0",
+      "abc",
+      "-1",
+      "01",
+      "9223372036854775808",
+      "99999999999999999999",
+    ])
+      assert.equal(
+        (await fetch(`${f.base()}/status/${id}.m3u8`, { redirect: "manual" }))
+          .status,
+        404,
+        id,
+      );
+    assert.equal((await fetch(`${f.base()}/notice/other.mp4`)).status, 404);
+    assert.equal((await fetch(`${f.base()}/${"x".repeat(4096)}`)).status, 404);
+    assert.equal(f.state.addCount, 0);
   } finally {
     await f.close();
   }
@@ -725,17 +568,16 @@ test("hosted protocol configuration and malformed routes stay within their capab
 test("a stalled protocol response times out once and the server remains usable", async () => {
   const f = await fixture();
   try {
-    const installed = await f.install();
-    const base = installed.manifestUrl.replace("/manifest.json", "");
     f.state.stallMovies = true;
-    const response = await fetch(`${base}/catalog/movie/discover-movies.json`, {
-      signal: AbortSignal.timeout(12_000),
-    });
+    const response = await fetch(
+      `${f.base()}/catalog/movie/discover-movies.json`,
+      { signal: AbortSignal.timeout(12_000) },
+    );
     assert.equal(response.status, 504);
     await response.arrayBuffer();
     f.state.stallMovies = false;
     assert.equal(
-      (await fetch(`${base}/catalog/movie/discover-movies.json`)).status,
+      (await fetch(`${f.base()}/catalog/movie/discover-movies.json`)).status,
       200,
     );
   } finally {
@@ -743,30 +585,12 @@ test("a stalled protocol response times out once and the server remains usable",
   }
 }, 15_000);
 
-async function releaseSelection(
-  f: Awaited<ReturnType<typeof fixture>>,
-  manifest: string,
-) {
-  const base = manifest.replace("/manifest.json", "");
-  const response = await fetch(
-    `${base}/stream/movie/${encodeURIComponent(target)}.json`,
-  );
-  assert.equal(response.status, 200);
-  const entries = await decode(response, Streams);
-  const url = entries.streams[0]?.url;
-  assert.ok(url);
-  assert.equal(entries.streams[0]?.externalUrl, undefined);
-  return { base, url };
-}
-
 test("Stremio media selection waits for its download and plays without reselection", async () => {
   const f = await fixture();
   try {
     f.state.transferFinished = false;
     f.state.singleFile = true;
-    const installed = await f.install();
-    const { base, url } = await releaseSelection(f, installed.manifestUrl);
-    assert.equal(f.state.addCount, 0);
+    const url = await releaseSelection(f);
     const head = await fetch(url, { method: "HEAD" });
     assert.equal(head.status, 200);
     assert.equal(
@@ -776,6 +600,10 @@ test("Stremio media selection waits for its download and plays without reselecti
     assert.equal((await fetch(url, { method: "OPTIONS" })).status, 204);
     assert.equal(
       (await fetch(url, { headers: { purpose: "prefetch" } })).status,
+      204,
+    );
+    assert.equal(
+      (await fetch(url, { headers: { "sec-purpose": "prefetch" } })).status,
       204,
     );
     assert.equal(f.state.addCount, 0);
@@ -788,17 +616,14 @@ test("Stremio media selection waits for its download and plays without reselecti
     while (f.state.addCount === 0 && Date.now() < submittedDeadline)
       await sleep(10);
     assert.equal(f.state.addCount, 1);
-    const downloads = await decode(
-      await fetch(`${base}/catalog/movie/downloads.json`),
-      Catalog,
-    );
-    assert.equal(downloads.metas.length, 1);
-    assert.match(
-      downloads.metas[0]?.name ?? "",
-      /Independent\.Film\.1080p.*42%/,
+    const repeated = fetch(url, { redirect: "manual" });
+    await sleep(200);
+    assert.equal(
+      f.state.addCount,
+      1,
+      "Concurrent selections share one submission",
     );
     assert.equal(responded, false);
-    const repeated = fetch(url, { redirect: "manual" });
     f.state.playbackPending = true;
     f.state.transferFinished = true;
     await sleep(2100);
@@ -812,17 +637,25 @@ test("Stremio media selection waits for its download and plays without reselecti
       );
     }
     assert.equal(f.state.addCount, 1);
-    const operation = downloads.metas[0];
-    assert.ok(operation);
-    const streams = await decode(
-      await fetch(
-        `${base}/stream/movie/${encodeURIComponent(operation.id)}.json`,
-      ),
-      Streams,
+    const reopened = await fetch(url, { redirect: "manual" });
+    assert.equal(reopened.status, 302);
+    assert.equal(
+      f.state.addCount,
+      1,
+      "A reopened selection reuses its submission",
     );
-    assert.equal(streams.streams.length, 1);
-    assert.match(streams.streams[0]?.url ?? "", /video-21/);
     await f.restart();
+    for (const extension of ["m3u8", "mp4"]) {
+      const resumed = await fetch(`${f.base()}/status/90.${extension}?wait=3`, {
+        redirect: "manual",
+      });
+      assert.equal(resumed.status, 302);
+      assert.equal(
+        resumed.headers.get("location"),
+        "https://media.fixture.test/video-21?token=fixture-playback-secret",
+      );
+    }
+    assert.equal(f.state.addCount, 1, "Status reads never submit");
     assert.equal(
       (
         await fetch(`${f.origin}${new URL(url).pathname}`, {
@@ -831,38 +664,15 @@ test("Stremio media selection waits for its download and plays without reselecti
       ).status,
       302,
     );
-    assert.equal(f.state.addCount, 1);
-    await f.api(`/api/installations/${installed.id}`, { method: "DELETE" });
     assert.equal(
-      (
-        await fetch(`${f.origin}${new URL(url).pathname}`, {
-          redirect: "manual",
-        })
-      ).status,
-      404,
+      f.state.addCount,
+      2,
+      "Selecting again after a restart submits again",
     );
-  } finally {
-    await f.close();
-  }
-});
-
-test("revocation interrupts an open download wait without another submission", async () => {
-  const f = await fixture();
-  try {
-    f.state.transferFinished = false;
-    const installed = await f.install();
-    const { url } = await releaseSelection(f, installed.manifestUrl);
-    const selected = fetch(url, { redirect: "manual" });
-    const deadline = Date.now() + 2000;
-    while (f.state.addCount === 0 && Date.now() < deadline) await sleep(10);
-    assert.equal(f.state.addCount, 1);
-    assert.equal(
-      (await f.api(`/api/installations/${installed.id}`, { method: "DELETE" }))
-        .status,
-      204,
-    );
-    assert.equal((await selected).status, 404);
-    assert.equal(f.state.addCount, 1);
+    const foreign = await fetch(`${f.base(otherCredential)}/status/91.m3u8`, {
+      redirect: "manual",
+    });
+    assert.equal(foreign.status, 404);
   } finally {
     await f.close();
   }
@@ -871,8 +681,7 @@ test("revocation interrupts an open download wait without another submission", a
 test("invalid playback continuations never start a download", async () => {
   const f = await fixture();
   try {
-    const installed = await f.install();
-    const { url } = await releaseSelection(f, installed.manifestUrl);
+    const url = await releaseSelection(f);
     for (const query of ["wait=6", "wait=-1", "wait=0&wait=1", "other=1"]) {
       assert.equal(
         (await fetch(`${url}?${query}`, { redirect: "manual" })).status,
@@ -888,111 +697,75 @@ test("invalid playback continuations never start a download", async () => {
 test("multi-file Stremio selection requires choosing a file and never guesses the first video", async () => {
   const f = await fixture();
   try {
-    const installed = await f.install();
-    const { base, url } = await releaseSelection(f, installed.manifestUrl);
+    const url = await releaseSelection(f);
     const selected = await fetch(url, { redirect: "manual" });
     assert.equal(selected.status, 409);
     assert.deepEqual(await selected.json(), { error: "select-file" });
-    const downloads = await decode(
-      await fetch(`${base}/catalog/movie/downloads.json`),
-      Catalog,
+    const legacy = await fetch(`${f.base()}/status/90.mp4`, {
+      redirect: "manual",
+    });
+    assert.equal(legacy.status, 302);
+    assert.equal(
+      legacy.headers.get("location"),
+      `${f.base()}/notice/select-file.mp4`,
     );
-    const operation = downloads.metas[0];
-    assert.ok(operation);
-    const choices = await decode(
-      await fetch(
-        `${base}/stream/movie/${encodeURIComponent(operation.id)}.json`,
-      ),
-      Streams,
-    );
-    assert.equal(choices.streams.length, 2);
-    assert.match(choices.streams[0]?.url ?? "", /video-21/);
-    assert.match(choices.streams[1]?.url ?? "", /video-22/);
     assert.equal(f.state.addCount, 1);
+    assert.equal(
+      f.calls.some(({ method }) => method === "ResolvePlayback"),
+      false,
+    );
   } finally {
     await f.close();
   }
 });
 
-test("lost selected-media submission stays unknown after restart without resubmission", async () => {
+test("a lost submission response is reported as unknown and never retried", async () => {
   const f = await fixture();
   try {
-    const installed = await f.install();
-    const { url } = await releaseSelection(f, installed.manifestUrl);
+    const url = await releaseSelection(f);
     f.state.loseTransferResponse = true;
     const first = await fetch(url, { redirect: "manual" });
     assert.equal(first.status, 409);
     assert.deepEqual(await first.json(), { error: "unknown" });
-    await f.restart();
-    f.state.loseTransferResponse = false;
-    const repeated = await fetch(`${f.origin}${new URL(url).pathname}`, {
+    assert.equal(f.state.addCount, 1);
+    const legacy = await fetch(url.replace(/\.m3u8$/, ".mp4"), {
       redirect: "manual",
     });
-    assert.equal(repeated.status, 409);
-    assert.deepEqual(await repeated.json(), { error: "unknown" });
-    assert.equal(f.state.addCount, 1);
+    assert.equal(
+      legacy.headers.get("location"),
+      `${f.base()}/notice/unknown.mp4`,
+    );
+    assert.equal(f.state.addCount, 1, "A reopened selection is not retried");
+    assert.equal(
+      f.calls.filter(({ method }) => method === "GetTransfer").length,
+      0,
+    );
   } finally {
     await f.close();
   }
 });
 
-test("folder-free setup browses nested library videos across restart and revocation", async () => {
+test("the library lists nested videos from the account root without downloads", async () => {
   const f = await fixture();
   try {
-    const created = await f.api("/api/installations", {
-      method: "POST",
-      body: "{}",
-    });
-    assert.equal(created.status, 201);
-    const installed = await decode(created, View);
-    assert.equal(installed.folderId, "0");
-    const path = new URL(installed.manifestUrl).pathname.replace(
-      "/manifest.json",
-      "/catalog/movie/library.json",
-    );
-    const catalog = await decode(await fetch(`${f.origin}${path}`), Catalog);
+    const library = () => fetch(`${f.base()}/catalog/movie/library.json`);
+    const catalog = await decode(await library(), Catalog);
     assert.deepEqual(
       catalog.metas.map((file) => file.name),
       ["Existing video"],
     );
     await f.restart();
-    assert.deepEqual(
-      await decode(await fetch(`${f.origin}${path}`), Catalog),
-      catalog,
+    assert.deepEqual(await decode(await library(), Catalog), catalog);
+    const streams = await decode(
+      await fetch(`${f.base()}/stream/movie/chill%3Afile%3A50.json`),
+      Streams,
     );
-    assert.equal(f.state.addCount, 0);
-    assert.equal(
-      (await f.api(`/api/installations/${installed.id}`, { method: "DELETE" }))
-        .status,
-      204,
-    );
-    assert.equal((await fetch(`${f.origin}${path}`)).status, 404);
-  } finally {
-    await f.close();
-  }
-});
-
-test("whole-library connection does not depend on parsing the root folder", async () => {
-  const f = await fixture();
-  try {
-    f.state.invalidRootFolder = true;
-    for (const body of ["{}", '{"folderId":"0"}']) {
-      const created = await f.api("/api/installations", {
-        method: "POST",
-        body,
-      });
-      assert.equal(created.status, 201);
-      const installed = await decode(created, View);
-      assert.equal(installed.folderId, "0");
-      assert.equal((await fetch(installed.manifestUrl)).status, 200);
-    }
-    assert.ok(f.calls.every((call) => call.method === "GetUserProfile"));
-    const denied = await f.api(
-      "/api/installations",
-      { method: "POST", body: "{}" },
-      "fixture-invalid",
-    );
-    assert.equal(denied.status, 401);
+    assert.match(streams.streams[0]?.url ?? "", /video-50/);
+    for (const removed of ["downloads", "acquired"])
+      assert.notEqual(
+        (await fetch(`${f.base()}/catalog/movie/${removed}.json`)).status,
+        200,
+      );
     assert.equal(f.state.addCount, 0);
   } finally {
     await f.close();
@@ -1005,30 +778,29 @@ test("public catalog entry requires configuration and never accesses an account"
     const response = await fetch(`${f.origin}/manifest.json`);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("access-control-allow-origin"), "*");
-    const publicManifest = await decode(
-      response,
-      Schema.Struct({
-        id: Schema.String,
-        name: Schema.String,
-        behaviorHints: Schema.Struct({
-          configurable: Schema.Boolean,
-          configurationRequired: Schema.Boolean,
-        }),
+    const Manifest = Schema.Struct({
+      id: Schema.String,
+      name: Schema.String,
+      catalogs: Schema.Array(Schema.Struct({ id: Schema.String })),
+      behaviorHints: Schema.Struct({
+        configurable: Schema.Boolean,
+        configurationRequired: Schema.Boolean,
       }),
-    );
+    });
+    const publicManifest = await decode(response, Manifest);
     assert.equal(publicManifest.name, "chill.institute");
     assert.deepEqual(publicManifest.behaviorHints, {
       configurable: true,
       configurationRequired: true,
     });
-    for (const path of ["/"]) {
-      const redirected = await fetch(`${f.origin}${path}`, {
-        redirect: "manual",
-      });
-      assert.equal(redirected.status, 302);
-      assert.equal(redirected.headers.get("location"), `${webOrigin}/stremio`);
-      assert.equal(redirected.headers.get("referrer-policy"), "no-referrer");
-    }
+    assert.deepEqual(
+      publicManifest.catalogs.map(({ id }) => id),
+      ["discover-releases", "library", "discover-movies", "discover-series"],
+    );
+    const redirected = await fetch(`${f.origin}/`, { redirect: "manual" });
+    assert.equal(redirected.status, 302);
+    assert.equal(redirected.headers.get("location"), `${webOrigin}/stremio`);
+    assert.equal(redirected.headers.get("referrer-policy"), "no-referrer");
     for (const method of ["GET", "HEAD", "OPTIONS"]) {
       const setup = await fetch(`${f.origin}/configure`, {
         method,
@@ -1080,24 +852,17 @@ test("public catalog entry requires configuration and never accesses an account"
     for (const path of [
       "/catalog/movie/library.json",
       "/stream/movie/chill:file:50.json",
-      "/api/installations",
     ]) {
       assert.notEqual((await fetch(`${f.origin}${path}`)).status, 200);
     }
     assert.deepEqual(f.calls, []);
-    const installed = await f.install();
     const personal = await decode(
-      await fetch(installed.manifestUrl),
-      Schema.Struct({
-        id: Schema.String,
-        behaviorHints: Schema.Struct({
-          configurable: Schema.Boolean,
-          configurationRequired: Schema.Boolean,
-        }),
-      }),
+      await fetch(`${f.base()}/manifest.json`),
+      Manifest,
     );
     assert.equal(personal.id, publicManifest.id);
     assert.equal(personal.behaviorHints.configurationRequired, false);
+    assert.deepEqual(personal.catalogs, publicManifest.catalogs);
   } finally {
     await f.close();
   }
@@ -1106,9 +871,9 @@ test("public catalog entry requires configuration and never accesses an account"
 test("ordinary Stremio movie and episode cards offer read-only chill release search", async () => {
   const f = await fixture();
   try {
-    const installed = await f.install();
-    const base = installed.manifestUrl.replace("/manifest.json", "");
-    const manifest: unknown = await (await fetch(installed.manifestUrl)).json();
+    const manifest: unknown = await (
+      await fetch(`${f.base()}/manifest.json`)
+    ).json();
     const isSupported: (
       manifest: unknown,
       resource: string,
@@ -1124,6 +889,14 @@ test("ordinary Stremio movie and episode cards offer read-only chill release sea
     );
     assert.equal(isSupported(manifest, "meta", "movie", "tt1234567"), false);
     assert.equal(isSupported(manifest, "meta", "series", "tt7654321"), false);
+    assert.equal(
+      isSupported(manifest, "subtitles", "movie", "chill:file:50"),
+      true,
+    );
+    assert.equal(
+      isSupported(manifest, "subtitles", "movie", "tt1234567"),
+      false,
+    );
     for (const input of [
       { type: "movie", id: "tt1234567", canonical: target },
       {
@@ -1133,109 +906,34 @@ test("ordinary Stremio movie and episode cards offer read-only chill release sea
       },
     ]) {
       const response = await fetch(
-        `${base}/stream/${input.type}/${encodeURIComponent(input.id)}.json`,
+        `${f.base()}/stream/${input.type}/${encodeURIComponent(input.id)}.json`,
       );
       assert.equal(response.status, 200);
       const stream = await decode(response, Streams);
       assert.equal(stream.streams.length, 1);
       assert.equal(
         stream.streams[0]?.url,
-        `${base}/play/${input.type}/${encodeURIComponent(input.canonical)}/fixture-release.m3u8`,
+        `${f.base()}/play/${input.type}/${encodeURIComponent(input.canonical)}/fixture-release.m3u8`,
       );
     }
     assert.deepEqual(f.searches, [
       "Independent film 2024",
       "Independent series S01E02",
     ]);
-    const releases = await f.api(
-      `/api/installations/${installed.id}/releases?type=movie&target=tt1234567`,
-    );
-    assert.equal(releases.status, 200);
-    assert.match(await releases.text(), /fixture-release/);
     assert.equal(f.state.addCount, 0);
-    assert.equal(
-      f.calls.some(({ method }) => method === "AddTransfer"),
-      false,
-    );
   } finally {
     await f.close();
   }
 });
 
-test("subtitle resources use the exact selected acquisition without starting downloads", async () => {
+test("library subtitle resources return the file's tracks without starting downloads", async () => {
   const f = await fixture();
   try {
-    const installed = await f.install();
-    const base = installed.manifestUrl.replace("/manifest.json", "");
-    const subtitles = async (id: string, filename?: string) => {
-      const extra =
-        filename === undefined ? "" : `/${new URLSearchParams({ filename })}`;
-      const response = await fetch(
-        `${base}/subtitles/movie/${encodeURIComponent(id)}${extra}.json`,
-      );
-      assert.equal(response.status, 200);
-      return decode(
-        response,
-        Schema.Struct({
-          subtitles: Schema.Array(
-            Schema.Struct({
-              id: Schema.String,
-              lang: Schema.String,
-              url: Schema.String,
-            }),
-          ),
-        }),
-      );
-    };
-    assert.deepEqual(await subtitles("tt1234567", "fixture-release.mp4"), {
-      subtitles: [],
-    });
-    assert.equal(f.state.addCount, 0);
-    const operation = await acquire(f, installed.id);
-    assert.equal(f.state.addCount, 1);
-    assert.deepEqual(await subtitles("tt1234567", "fixture-release.mp4"), {
-      subtitles: [],
-    });
-    f.state.singleFile = true;
-    assert.deepEqual(await subtitles("tt1234567"), { subtitles: [] });
-    assert.deepEqual(await subtitles("tt1234567", "another-release.mp4"), {
-      subtitles: [],
-    });
-    const expected = {
-      subtitles: [
-        {
-          id: "english-21",
-          lang: "eng",
-          url: "https://media.fixture.test/subtitles-21.vtt",
-        },
-      ],
-    };
-    assert.deepEqual(
-      await subtitles("tt1234567", "fixture-release.mp4"),
-      expected,
+    const response = await fetch(
+      `${f.base()}/subtitles/movie/chill%3Afile%3A50.json`,
     );
-    assert.deepEqual(
-      await subtitles("tt1234567", "fixture-release.m3u8"),
-      expected,
-    );
-    assert.deepEqual(
-      await subtitles("tt1234567", `${operation.id}.mp4`),
-      expected,
-    );
-    const invalid = await fetch(
-      `${base}/subtitles/movie/tt1234567/${new URLSearchParams({ filename: "x".repeat(517) })}.json`,
-    );
-    assert.equal(invalid.status, 400);
-    assert.deepEqual(await invalid.json(), { error: "invalid_request" });
-    assert.deepEqual(
-      await subtitles(`chill:download:${operation.id}`),
-      expected,
-    );
-    assert.deepEqual(
-      await subtitles(`chill:acquired:${operation.id}:21`),
-      expected,
-    );
-    assert.deepEqual(await subtitles("chill:file:50"), {
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
       subtitles: [
         {
           id: "english-50",
@@ -1244,11 +942,42 @@ test("subtitle resources use the exact selected acquisition without starting dow
         },
       ],
     });
-    f.state.transferFinished = false;
-    assert.deepEqual(await subtitles("tt1234567", "fixture-release.mp4"), {
-      subtitles: [],
-    });
+    assert.deepEqual(
+      await (
+        await fetch(
+          `${f.base()}/subtitles/movie/tt1234567/${new URLSearchParams({ filename: "fixture-release.m3u8" })}.json`,
+        )
+      ).json(),
+      { subtitles: [] },
+    );
+    assert.equal(f.state.addCount, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("credential redaction removes every issued credential from text", () => {
+  const text = `GET /s/${ownerCredential}/manifest.json and ${otherCredential}`;
+  const redacted = redactCredentials(text);
+  assert.equal(redacted, "GET /s/[credential]/manifest.json and [credential]");
+  assert.doesNotMatch(redacted, /v4\.local\./);
+});
+
+test("a finished selection is reused only within its window", async () => {
+  const f = await fixture({ selectionReuseMs: 200 });
+  try {
+    const url = await releaseSelection(f);
+    f.state.loseTransferResponse = true;
+    const select = async () => {
+      const response = await fetch(url, { redirect: "manual" });
+      assert.deepEqual(await response.json(), { error: "unknown" });
+    };
+    await select();
+    await select();
     assert.equal(f.state.addCount, 1);
+    await sleep(400);
+    await select();
+    assert.equal(f.state.addCount, 2);
   } finally {
     await f.close();
   }

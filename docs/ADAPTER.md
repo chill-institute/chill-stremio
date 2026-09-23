@@ -1,6 +1,6 @@
 # Local Engine-backed adapter
 
-For the durable multi-user service and discovery, use [HOSTED.md](./HOSTED.md).
+For the stateless multi-user service and discovery, use [HOSTED.md](./HOSTED.md).
 
 The adapter serves one selected folder using the existing chill bearer token.
 `GetFolder` supplies catalog and metadata; `ResolvePlayback` requests HLS streams

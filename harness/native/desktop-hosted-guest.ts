@@ -19,11 +19,11 @@ const hls = delivery === "hls";
 const web = requireLoopback(webText);
 const manifest = requireLoopback(manifestText);
 const control = requireLoopback(controlText);
-const capability = /^\/i\/([A-Za-z0-9_-]{43})\/manifest\.json$/.exec(
+const credential = /^\/s\/(v4\.local\.[A-Za-z0-9_-]+)\/manifest\.json$/.exec(
   manifest.pathname,
 )?.[1];
-if (!capability) throw new Error("Expected a hosted manifest URL");
-const guest = await createGuest({ web, directory, secrets: [capability] });
+if (!credential) throw new Error("Expected a hosted manifest URL");
+const guest = await createGuest({ web, directory, secrets: [credential] });
 const {
   run,
   wait,
@@ -88,8 +88,7 @@ const waitForNotice = async (name: string, word: string) => {
 const previewBounds = { left: 880, top: 90, right: 1270, bottom: 700 };
 const routes = {
   movies: catalogRoute("discover-movies"),
-  downloads: catalogRoute("downloads"),
-  acquired: catalogRoute("acquired"),
+  library: catalogRoute("library"),
 };
 try {
   await guest.trustFixtureCertificate();
@@ -159,8 +158,35 @@ try {
     },
     ["release-detail"],
   );
+  await stopApp(app);
+  app = startApp(routes.library);
+  let libraryId = "";
   await step(
-    "download-subtitles",
+    "library-listing",
+    async () => {
+      await textVisible("library", "Hosted", undefined, 30_000);
+      const reply = await stage("library");
+      libraryId = requireString(reply, "libraryId");
+    },
+    ["selected-download"],
+  );
+  await stopApp(app);
+  await step(
+    "library-playback",
+    async () => {
+      app = startApp(detailRoute("movie", libraryId));
+      await selectStream("library-sources", "Fixture");
+      await waitForKind("movie", "movie");
+      const sampledAt = performance.now();
+      await wait(2000);
+      screenshot("movie-advancing");
+      result.movieSampleIntervalMs = performance.now() - sampledAt;
+      await stage("library-playing");
+    },
+    ["library-listing"],
+  );
+  await step(
+    "library-subtitles",
     async () => {
       run("xdotool", ["mousemove", "640", "300"]);
       await wait(300);
@@ -168,7 +194,7 @@ try {
       run("xdotool", ["key", "space"]);
       await wait(500);
       await click(1040, 680);
-      const english = await textTarget("download-subtitle-menu", "English", {
+      const english = await textTarget("library-subtitle-menu", "English", {
         left: 535,
         top: 265,
         right: 750,
@@ -179,44 +205,12 @@ try {
       run("xdotool", ["key", "space"]);
       run("xdotool", ["mousemove", "640", "300"]);
       await wait(3500);
-      screenshot("download-subtitles");
-      await stage("download-subtitles");
+      screenshot("library-subtitles");
+      await stage("library-subtitles");
     },
-    ["selected-download"],
+    ["library-playback"],
   );
-  await stopApp(app);
-  app = startApp(routes.downloads);
-  let acquiredId = "";
-  await step(
-    "downloads-progress",
-    async () => {
-      await textVisible("downloads", "Ready", undefined, 30_000);
-      const reply = await stage("downloads");
-      acquiredId = requireString(reply, "acquiredId");
-    },
-    ["selected-download"],
-  );
-  await stopApp(app);
-  app = startApp(routes.acquired);
-  await step(
-    "acquired-playback",
-    async () => {
-      await textVisible("acquired", "Hosted", undefined, 30_000);
-      await stopApp(app);
-      app = startApp(detailRoute("movie", acquiredId));
-      await selectStream("acquired-sources", "Fixture");
-      await waitForKind("movie", "movie");
-      const sampledAt = performance.now();
-      await wait(2000);
-      screenshot("movie-advancing");
-      result.movieSampleIntervalMs = performance.now() - sampledAt;
-      await stage("acquired-playing");
-    },
-    ["downloads-progress"],
-  );
-  await step("audio-pcm", async () => guest.capturePcm(), [
-    "acquired-playback",
-  ]);
+  await step("audio-pcm", async () => guest.capturePcm(), ["library-playback"]);
   if (hls) {
     await stopApp(app);
   } else {
@@ -239,17 +233,17 @@ try {
           streamListBounds,
         );
         await stopApp(app);
-        app = startApp(detailRoute("movie", acquiredId));
+        app = startApp(detailRoute("movie", libraryId));
         await selectStream("recovery-sources", "Fixture");
         await waitForKind("interrupted-recovered", "movie");
         await stage("recovered");
       },
-      ["acquired-playback"],
+      ["library-playback"],
     );
     await stopApp(app);
     for (const kind of ["failed", "unknown", "select-file"] as const) {
       const word = kind === "select-file" ? "ready" : kind;
-      let operationId = "";
+      let fileId = "";
       await step(
         `recovery-${kind}`,
         async () => {
@@ -259,20 +253,11 @@ try {
           );
           app = startApp(detailRoute("movie", target));
           await selectStream(`${kind}-sources`, "Download");
-          operationId = requireString(
+          fileId = requireString(
             await stage("recovery-selected", { kind }),
-            "operationId",
+            "fileId",
           );
           await waitForNotice(`${kind}-notice`, word);
-          await stopApp(app);
-          app = startApp(routes.downloads);
-          await textVisible(
-            `${kind}-downloads`,
-            kind === "select-file" ? "Ready" : kind,
-            undefined,
-            30_000,
-          );
-          if (kind === "unknown") await stage("unknown-restart");
           await stopApp(app);
         },
         ["selected-download"],
@@ -281,9 +266,7 @@ try {
         await step(
           "exact-file-playback",
           async () => {
-            app = startApp(
-              detailRoute("movie", `chill:download:${operationId}`),
-            );
+            app = startApp(detailRoute("movie", fileId));
             await selectStream("select-file-sources", "Second");
             await waitForKind("multiple-file-decoded", "episode1");
             await stage("select-file-playing");
@@ -294,13 +277,12 @@ try {
     }
   }
   await step(
-    "revocation-denied",
+    "reconnect-notice",
     async () => {
-      await stage("revoke");
-      app = startApp(routes.movies);
-      await wait(6000);
-      screenshot("revoked");
-      await stage("revoked-client");
+      await stage("reject-credential");
+      app = startApp(routes.library);
+      await textVisible("reconnect", "Reconnect", undefined, 30_000);
+      await stage("reconnect-client");
     },
     ["ui-installation"],
   );

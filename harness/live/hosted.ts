@@ -1,8 +1,6 @@
 import { createServer } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, open, rename, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdir, open, rename, writeFile } from "node:fs/promises";
 import {
   create,
   fromJsonString,
@@ -15,7 +13,6 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Cause, Effect, Option, Schema } from "effect";
 import { createEngineRpc, EngineError } from "../../src/engine.ts";
 import { startHostedAdapter } from "../../src/hosted.ts";
-import { InstallationStore } from "../../src/installations.ts";
 import { discoveryTargetId } from "../../src/discovery.ts";
 import { authorizeChill } from "./auth.ts";
 import {
@@ -49,17 +46,6 @@ class HostedProbeFailure extends Schema.TaggedError<HostedProbeFailure>()(
   { stage: Schema.String, code: Schema.Literal("hosted_probe_failed") },
 ) {}
 
-const View = Schema.Struct({ id: Schema.String, manifestUrl: Schema.String });
-const Operation = Schema.Struct({
-  id: Schema.String,
-  state: Schema.Literal("submitted"),
-  transferId: Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,15}$/)),
-});
-const OperationFiles = Schema.Struct({
-  files: Schema.Array(
-    Schema.Struct({ id: Schema.String, stremioId: Schema.String }),
-  ),
-});
 const StreamResponse = Schema.Struct({
   streams: Schema.Array(Schema.Struct({ url: Schema.String })),
 });
@@ -75,7 +61,9 @@ export async function requestSelectedMedia(
     url.origin !== origin ||
     url.search ||
     url.hash ||
-    !/^\/i\/[^/]+\/play\/(movie|series)\/[^/]+\/[^/]+\.mp4$/.test(url.pathname)
+    !/^\/s\/v4\.local\.[A-Za-z0-9_-]+\/play\/(movie|series)\/[^/]+\/[^/]+\.(mp4|m3u8)$/.test(
+      url.pathname,
+    )
   )
     throw new HostedProbeFailure({
       stage: "selection-url",
@@ -85,8 +73,8 @@ export async function requestSelectedMedia(
     method,
     redirect: "manual",
     signal: signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
-      : AbortSignal.timeout(15_000),
+      ? AbortSignal.any([signal, AbortSignal.timeout(45_000)])
+      : AbortSignal.timeout(45_000),
   });
   try {
     const location = response.headers.get("location");
@@ -94,7 +82,10 @@ export async function requestSelectedMedia(
       if (
         response.status !== 200 ||
         location ||
-        response.headers.get("content-type") !== "video/mp4"
+        response.headers.get("content-type") !==
+          (url.pathname.endsWith(".m3u8")
+            ? "application/vnd.apple.mpegurl"
+            : "video/mp4")
       )
         throw new HostedProbeFailure({
           stage: "selection-head",
@@ -111,9 +102,12 @@ export async function requestSelectedMedia(
         destination.protocol !== "https:" &&
         !(
           destination.origin === origin &&
-          /^\/i\/[^/]+\/notice\/(pending|unknown|failed|select-file|unavailable)\.mp4$/.test(
+          (/^\/s\/v4\.local\.[A-Za-z0-9_-]+\/notice\/(pending|unknown|failed|select-file|unavailable|reconnect)\.mp4$/.test(
             destination.pathname,
-          )
+          ) ||
+            /^\/s\/v4\.local\.[A-Za-z0-9_-]+\/status\/[1-9][0-9]{0,18}\.(mp4|m3u8)$/.test(
+              destination.pathname,
+            ))
         )
       )
         throw new HostedProbeFailure({
@@ -159,8 +153,14 @@ export async function extendForOneAttempt(
   });
 }
 
+/**
+ * Stands in for Engine behind the local adapter: accepts only the generated
+ * add-on credential, serves generated discovery and forwards acquisition and
+ * playback RPCs to production Engine with the designated account's bearer.
+ */
 export async function startFixtureDiscoveryProxy(
   token: string,
+  credential: string,
   sourceUrl: string,
   bytes: number,
   destination: bigint,
@@ -176,6 +176,7 @@ export async function startFixtureDiscoveryProxy(
     getFolder: 0,
     resolvePlayback: 0,
   };
+  const transferIds: bigint[] = [];
   const controllers = new Set<AbortController>();
   let acquisitionClaimed = false;
   let origin = "";
@@ -201,7 +202,8 @@ export async function startFixtureDiscoveryProxy(
       if (
         request.headers.host !== new URL(origin).host ||
         request.method !== "POST" ||
-        request.headers.authorization !== `Bearer ${token}`
+        request.headers.authorization !== undefined ||
+        request.headers["x-chill-stremio-credential"] !== credential
       )
         throw new Error("rejected");
       const chunks: Buffer[] = [];
@@ -253,19 +255,6 @@ export async function startFixtureDiscoveryProxy(
           );
           return;
         }
-        case "/chill.v4.UserService/GetUserProfile":
-          send(
-            proto.UserProfileSchema,
-            await run(
-              rpc.call((options) =>
-                rpc.client.getUserProfile(
-                  fromJsonString(proto.GetUserProfileRequestSchema, body),
-                  options,
-                ),
-              ),
-            ),
-          );
-          return;
         case "/chill.v4.UserService/GetFolder":
           calls.getFolder++;
           send(
@@ -294,7 +283,10 @@ export async function startFixtureDiscoveryProxy(
           const added = await run(
             rpc.call((options) => rpc.client.addTransfer(input, options)),
           );
-          if (added.transfer) await observeTransfer(added.transfer);
+          if (added.transfer) {
+            transferIds.push(added.transfer.id);
+            await observeTransfer(added.transfer);
+          }
           send(proto.AddTransferResponseSchema, added);
           return;
         }
@@ -351,6 +343,7 @@ export async function startFixtureDiscoveryProxy(
   return {
     origin,
     calls,
+    transferIds,
     close: async () => {
       for (const controller of controllers) controller.abort();
       server.closeAllConnections();
@@ -379,9 +372,9 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
       streamListingReadOnly: false,
       headReadOnly: false,
       selection: "stremio-media-get",
-      repeatedRequestDeduplicated: false,
-      reopenedStoreDeduplicated: false,
-      acquiredMembership: false,
+      statusReadOnly: false,
+      restartedStatusReadOnly: false,
+      completedFileResolved: false,
       playbackResolved: false,
       decodedPlayback: false,
       localCleanup: false,
@@ -577,11 +570,9 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
       const sourceUrl = yield* downloadUrl(uploaded.id);
       stage = "hosted-services";
       let hosted: Awaited<ReturnType<typeof startHostedAdapter>> | undefined;
-      let store: InstallationStore | undefined;
       let proxy:
         | Awaited<ReturnType<typeof startFixtureDiscoveryProxy>>
         | undefined;
-      let directory: string | undefined;
       yield* Effect.acquireRelease(Effect.void, () =>
         Effect.tryPromise(async () => {
           let failed = false;
@@ -591,66 +582,43 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
             failed = true;
           }
           try {
-            store?.close();
-          } catch {
-            failed = true;
-          }
-          try {
             await proxy?.close();
-          } catch {
-            failed = true;
-          }
-          try {
-            if (directory)
-              await rm(directory, { recursive: true, force: true });
           } catch {
             failed = true;
           }
           proof.localCleanup = !failed;
         }),
       );
+      // Production Engine verifies issued credentials; this local pair only
+      // proves the adapter's credential-bearing acquisition and playback flow.
+      const credential = `v4.local.${randomBytes(300).toString("base64url")}`;
       proxy = yield* Effect.tryPromise(() =>
         startFixtureDiscoveryProxy(
           chillToken,
+          credential,
           sourceUrl,
           source.bytes,
           destination,
           observeTransfer,
         ),
       );
-      directory = yield* Effect.tryPromise(() =>
-        mkdtemp(join(tmpdir(), "live-hosted-")),
-      );
-      const database = join(directory, "installations.sqlite");
-      const key = randomBytes(32);
       const engineBaseUrl = proxy.origin;
       const reopen = async () => {
+        const port = hosted ? Number(new URL(hosted.origin).port) : undefined;
         await hosted?.close();
-        store?.close();
-        store = await InstallationStore.open(database, key);
         hosted = await startHostedAdapter({
-          store,
           engineBaseUrl,
           webOrigin: "http://127.0.0.1:3000",
+          port,
         });
         return hosted.origin;
       };
       let origin = yield* Effect.tryPromise(reopen);
       const request = Effect.fn("HostedProof.request")(function* (
         path: string,
-        init: RequestInit = {},
       ) {
         const response = yield* Effect.tryPromise((signal) =>
-          fetch(`${origin}${path}`, {
-            ...init,
-            headers: {
-              authorization: `Bearer ${chillToken}`,
-              origin: "http://127.0.0.1:3000",
-              "content-type": "application/json",
-            },
-            signal,
-            redirect: "error",
-          }),
+          fetch(`${origin}${path}`, { signal, redirect: "error" }),
         );
         if (!response.ok)
           return yield* new HostedProbeFailure({
@@ -659,21 +627,11 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
           });
         return yield* Effect.tryPromise(() => response.json());
       });
-      const installation = yield* Schema.decodeUnknownEffect(View)(
-        yield* request("/api/installations", {
-          method: "POST",
-          body: JSON.stringify({ folderId: String(destination) }),
-        }),
-      );
       const target = discoveryTargetId({
         kind: "movie",
         id: "owned-live-fixture",
       });
-      const acquisitionPath = `/api/installations/${installation.id}/acquisitions`;
-      const base = new URL(installation.manifestUrl).pathname.replace(
-        "/manifest.json",
-        "",
-      );
+      const base = `/s/${credential}`;
       stage = "discovery-stream-listing";
       const selectionStreams = yield* Schema.decodeUnknownEffect(
         StreamResponse,
@@ -714,73 +672,63 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
           code: "hosted_probe_failed",
         });
       proof.headReadOnly = true;
-      const operationForSelection = Effect.fn(
-        "HostedProof.operationForSelection",
-      )(function* () {
-        const matches = yield* Effect.try(() =>
-          store
-            ?.operations(installation.id)
-            .filter(
-              (entry) =>
-                entry.target === target &&
-                entry.releaseId === "owned-live-fixture-release",
-            ),
-        );
-        if (!matches || matches.length !== 1)
-          return yield* new HostedProbeFailure({
-            stage,
-            code: "hosted_probe_failed",
-          });
-        return yield* Schema.decodeUnknownEffect(Operation)(matches[0]);
-      });
-      const select = Effect.fn("HostedProof.select")(function* () {
-        yield* Effect.tryPromise((signal) =>
-          requestSelectedMedia(origin, selectionPath, "GET", signal),
-        );
-        return yield* operationForSelection();
-      });
       stage = "media-selection";
+      const selectionProxy = proxy;
       const acquired = yield* trackAcquisition(
         attempt,
         "transfer",
         Effect.gen(function* () {
-          const operation = yield* select();
-          const id = Number(operation.transferId);
-          if (!Number.isSafeInteger(id) || id <= 0)
+          yield* Effect.tryPromise((signal) =>
+            requestSelectedMedia(origin, selectionPath, "GET", signal),
+          );
+          const transferId = selectionProxy.transferIds[0];
+          if (
+            selectionProxy.transferIds.length !== 1 ||
+            transferId === undefined ||
+            transferId > BigInt(Number.MAX_SAFE_INTEGER)
+          )
             return yield* new HostedProbeFailure({
               stage,
               code: "hosted_probe_failed",
             });
-          return { id, operation };
+          return { id: Number(transferId) };
         }),
         checkpoint,
       );
       proof.submitted = true;
-      stage = "repeat-media-selection";
-      const repeated = yield* select();
-      if (
-        repeated.id !== acquired.operation.id ||
-        Number(proxy.calls.addTransfer) !== 1
-      )
+      const statusPath = `${base}/status/${acquired.id}.m3u8`;
+      const readStatus = Effect.fn("HostedProof.readStatus")(function* () {
+        const response = yield* Effect.tryPromise((signal) =>
+          fetch(`${origin}${statusPath}`, {
+            redirect: "manual",
+            signal: AbortSignal.any([signal, AbortSignal.timeout(45_000)]),
+          }),
+        );
+        yield* Effect.promise(async () => response.body?.cancel());
+        return {
+          status: response.status,
+          location: response.headers.get("location"),
+        };
+      });
+      stage = "status-read";
+      yield* readStatus();
+      if (Number(proxy.calls.addTransfer) !== 1)
         return yield* new HostedProbeFailure({
           stage,
           code: "hosted_probe_failed",
         });
-      proof.repeatedRequestDeduplicated = true;
+      proof.statusReadOnly = true;
       origin = yield* Effect.tryPromise(reopen);
-      stage = "reopened-media-selection";
-      const restarted = yield* select();
-      if (
-        restarted.id !== acquired.operation.id ||
-        Number(proxy.calls.addTransfer) !== 1
-      )
+      stage = "restarted-status-read";
+      yield* readStatus();
+      if (Number(proxy.calls.addTransfer) !== 1)
         return yield* new HostedProbeFailure({
           stage,
           code: "hosted_probe_failed",
         });
-      proof.reopenedStoreDeduplicated = true;
-      stage = "acquired-membership";
-      const playable = yield* Effect.gen(function* () {
+      proof.restartedStatusReadOnly = true;
+      stage = "completed-file";
+      const fileId = yield* Effect.gen(function* () {
         for (let round = 0; round < 120; round++) {
           const current = yield* rpc.call((options) =>
             rpc.client.getTransfer({ id: BigInt(acquired.id) }, options),
@@ -793,45 +741,33 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
               code: "hosted_probe_failed",
             });
           if (transfer?.isFinished) {
-            if (!copyOutcomeKnown)
+            if (!copyOutcomeKnown || !transfer.fileId)
               return yield* new HostedProbeFailure({
                 stage: "cleanup-identity",
                 code: "hosted_probe_failed",
               });
-            return yield* Schema.decodeUnknownEffect(OperationFiles)(
-              yield* request(`${acquisitionPath}/${acquired.operation.id}`),
-            );
+            return transfer.fileId;
           }
           yield* Effect.sleep("5 seconds");
         }
         return undefined;
       }).pipe(Effect.timeout("10 minutes"));
-      if (!playable || playable.files.length !== 1)
+      if (fileId === undefined)
         return yield* new HostedProbeFailure({
           stage,
           code: "hosted_probe_failed",
         });
-      const selected = playable.files[0];
-      if (!selected)
+      const completed = yield* readStatus();
+      if (completed.status !== 302 || Number(proxy.calls.addTransfer) !== 1)
         return yield* new HostedProbeFailure({
           stage,
           code: "hosted_probe_failed",
         });
-      proof.acquiredMembership = true;
-      const listing = yield* request("/api/installations");
-      const installations = yield* Schema.decodeUnknownEffect(
-        Schema.Struct({ installations: Schema.Array(View) }),
-      )(listing);
-      const current = installations.installations.find(
-        (entry) => entry.id === installation.id,
-      );
-      if (!current)
-        return yield* new HostedProbeFailure({
-          stage,
-          code: "hosted_probe_failed",
-        });
+      proof.completedFileResolved = true;
       stage = "playback-resolution";
-      const streamPath = `${new URL(current.manifestUrl).pathname.replace("/manifest.json", "")}/stream/movie/${encodeURIComponent(selected.stremioId)}.json`;
+      const stremioId = `chill:file:${fileId}`;
+      const manifestUrl = `${origin}${base}/manifest.json`;
+      const streamPath = `${base}/stream/movie/${encodeURIComponent(stremioId)}.json`;
       const playback = yield* Schema.decodeUnknownEffect(StreamResponse)(
         yield* request(streamPath),
       );
@@ -853,8 +789,8 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
       };
       proof.browserCleanup = browserCleanup;
       proof.playback = yield* proveHostedBrowserPlayback({
-        manifestUrl: current.manifestUrl,
-        stremioId: selected.stremioId,
+        manifestUrl,
+        stremioId,
         streamPath,
         mediaUrls: playback.streams.map((stream) => stream.url),
         token: chillToken,

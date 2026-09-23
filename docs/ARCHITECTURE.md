@@ -3,14 +3,15 @@
 The hosted add-on translates Stremio requests into the existing chill.institute
 product model. Engine owns source discovery, provider authorization, transfers,
 library access and playback resolution. Shared schemas and generated clients
-belong in chill-contracts. The adapter owns installation state, Stremio
-translation and the selected-media download boundary; chill-web owns one-time
-account setup, installation and revocation.
+belong in chill-contracts. The adapter owns Stremio translation and the
+selected-media download boundary and keeps no state. chill-web issues add-on
+links; Engine issues and verifies their credentials.
 
-All Engine calls use the ordinary chill bearer with generic `UserService`
-functions. The Stremio account owns add-on installation/sync only. Neither shared
-contracts nor Engine internals introduce a client-specific credential or service.
-The adapter never receives the user's put.io OAuth token.
+The local adapter calls generic `UserService` functions with the ordinary chill
+bearer. The hosted adapter calls the same functions with the add-on credential
+from its URL in `X-Chill-Stremio-Credential` and no `Authorization` header.
+The Stremio account owns add-on installation/sync only. The adapter never
+receives the user's put.io OAuth token.
 
 ## Read and write boundaries
 
@@ -19,12 +20,11 @@ folder using `GetFolder` and `ResolvePlayback`. Membership is rechecked on each
 metadata/stream request. Decimal int64 IDs preserve provider precision; filenames
 remain filenames rather than inferred movie identities.
 
-The [hosted adapter](./HOSTED.md) connects new installations to the account root.
-Its library includes nested videos through bounded breadth-first `GetFolder`
-reads; catalog pagination and exact-file lookup stop once satisfied. Existing
-non-root installations retain direct-folder scope. Membership is rechecked for
-metadata and playback, and traversal errors are not converted to partial success.
-No transfer or folder creation is needed to browse.
+The [hosted adapter](./HOSTED.md) library starts at the account root and
+includes nested videos through bounded breadth-first `GetFolder` reads; catalog
+pagination and exact-file lookup stop once satisfied. Membership is rechecked
+for metadata and playback, and traversal errors are not converted to partial
+success. No transfer or folder creation is needed to browse.
 
 The hosted adapter also adds movie/TV discovery and release search using
 existing Engine RPCs. Catalog IDs and episode metadata are translated in
@@ -38,7 +38,7 @@ are sent to Cinemeta. IMDb episode IDs resolve through Engine TV detail and
 season APIs and share the adapter's existing episode identity. Stream and subtitle
 resources advertise IMDb IDs; Cinemeta remains responsible for their metadata.
 Provider release URLs remain backend-only. A release row instead carries an
-adapter media URL that starts or resumes its durable acquisition when consumed.
+adapter media URL that submits the release when consumed.
 Engine search IDs must identify the same source release across repeated searches;
 temporary download credentials and changing seed counts must not change that ID.
 The adapter rechecks that exact ID before opening or acquiring a result, using
@@ -49,23 +49,16 @@ must remain separate from this acquisition identity.
 
 Catalog, metadata and stream listings, HEAD and OPTIONS are read-only.
 [selection.ts](../src/selection.ts) returns release rows inside Stremio. GET
-consumption of the selected media URL freshly resolves the release through Engine,
-commits a durable claim, then calls `AddTransfer` once. The installation capability
-authorizes that download. Explicit prefetch hints are rejected, and release rows
-omit `bingeGroup`; these measures do not prove a human click universally across
-clients. Repeated consumption, including resume, reuses the durable claim.
-The owner-authenticated acquisition POST remains a low-level compatibility/test
-API; there is no acquisition UI on chill-web.
+consumption of the selected media URL freshly resolves the release through Engine
+and calls `AddTransfer` once with the returned link. Explicit prefetch hints are
+rejected, and release rows omit `bingeGroup`; these measures do not prove a human
+click universally across clients. Identical requests share one submission in
+process memory while any is open and for 60 seconds afterwards; later requests
+and requests after a restart submit again. A failed or lost submission
+response reports `unknown` and is never retried.
 Engine's configured download destination controls where the transfer lands;
-read-only folder setup must use `GetFolder`, never `GetDownloadFolder`, which can
-create or recover a folder and persist settings.
-
-[installations.ts](../src/installations.ts) retains acquisition claims across
-restarts and installation revocation. Missing or interrupted submission responses
-stay unknown, because a repeated provider request could duplicate a transfer.
-This local claim does not provide Engine-wide idempotency or reconcile downloads
-created by other clients. A future shared recovery API belongs in Engine and
-contracts with generic names. See [recovery](./HOSTED.md#interrupted-acquisitions).
+the adapter never calls `GetDownloadFolder`, which can create or recover a folder
+and persist settings.
 
 [acquisition-engine.ts](../src/acquisition-engine.ts) validates transfer status
 and enumerates only the exact transfer result. Result folders are bounded by
@@ -73,28 +66,22 @@ depth, total folders, total entries and time. Playback verifies that the selecte
 video remains inside that result and its parent folder. No first-video guess or
 unbounded account crawl is allowed.
 
-## Authorization and storage
+## Credentials
 
-[hosted.ts](../src/hosted.ts) verifies the current ordinary bearer through
-`GetUserProfile` before management and first selected-release submission. Folder
-creation is absent from installation setup. Installation URLs carry random
-delegated capabilities; SQLite
-indexes their hashes and stores the capability and chill bearer encrypted with a
-dedicated AES-GCM key. Management responses reveal an installation only to its
-verified owner. State, backups and the encryption key remain private.
+[hosted.ts](../src/hosted.ts) serves personal routes under `/s/<credential>/`.
+[credential.ts](../src/credential.ts) checks only the `v4.local.` shape and
+length; Engine decides whether the credential is valid and which account it
+belongs to. The adapter keeps no database, key or per-account memory beyond
+open requests. A `401` or `403` from Engine becomes a reconnect row, source,
+status clip or `409 reconnect`, pointing to `https://chill.institute/stremio`.
 
-The capability grants library/discovery access, playback and chosen-release
-downloads to put.io. It is sensitive even though the chill bearer is absent.
-Revocation denies later adapter requests but cannot cancel transfers already
-started or invalidate playback URLs already issued by a provider. Keep synced
-Stremio URLs private. Storage v2 retains previous claims and adds release titles;
-an older v1-only image is not a supported rollback target. Preserve current state.
-
-Personalized responses use `Cache-Control: no-store` and
-`Referrer-Policy: no-referrer`. API browser origins are allowlisted; protocol
-reads permit Stremio clients. Host validation rejects unexpected public origins.
-Requests, upstream bodies, headers, capabilities and playback URLs must be absent
+The credential grants library/discovery access, playback and chosen-release
+downloads to put.io. Keep add-on links private. Personalized responses use
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`; protocol reads
+permit Stremio clients. Host validation rejects unexpected public origins.
+Requests, upstream bodies, headers, credentials and playback URLs must be absent
 from logs, analytics, traces, authenticated screenshots and proxy access logs.
+Harness receipts replace credentials with `[credential]`.
 
 ## Playback and failure behavior
 
@@ -114,24 +101,21 @@ source. Authentication, malformed responses, timeouts and provider rate limits
 remain errors instead of empty successful catalogs. Requests have finite total
 deadlines and cancel on disconnect. Transfer submission is never retried.
 
-Ready file streams include Engine's validated subtitle tracks. For newly completed
-downloads, the subtitle resource matches the original title and the selected
-media URL's filename to one exact release or operation. It returns tracks only
-for a single verified result video. Missing filename, ambiguous claims or multiple
-videos return no tracks. This supports native clients that request subtitles after
-media loading; plain Web clients without filename parameters need to reopen the
-completed file to receive its inline tracks. No subtitle lookup starts a download.
+Ready library streams include Engine's validated subtitle tracks, and the
+subtitles resource returns the same tracks for library files. Selected-release
+playback has no subtitle lookup; reopening the completed file from the library
+provides its tracks. No subtitle lookup starts a download.
 
 A selected download waits for one verified video, then redirects to its media
-URL. [Playback waiting](../src/playback-wait.ts) bounds polling; the
-[hosted routes](../src/hosted.ts) set HLS and legacy request windows. Client
-manifest timeouts may end a wait sooner. At the server limit,
-`503 download_pending` lets reselection resume the same operation without
-resubmitting it. Disconnects cancel polling; each poll rechecks revocation.
+URL. While it is pending, the adapter redirects to a read-only status URL that
+carries the decimal transfer ID. [Playback waiting](../src/playback-wait.ts)
+bounds polling; the [hosted routes](../src/hosted.ts) set HLS and legacy request
+windows. Client manifest timeouts may end a wait sooner. At the server limit it
+returns `503 download_pending`. Disconnects cancel polling.
 
 HLS terminal states return `409` with the acquisition state. Legacy `.mp4` URLs
-retain generated status clips. **Downloads** shows recent states;
-**Acquired videos** offers exact completed-file selection. Clips are
+retain generated status clips. Completed files, including each file of a
+multi-file download, are chosen from the put.io library. Clips are
 [generated during setup or build](../scripts/status-media.ts) and
 [loaded at runtime](../src/status-media.ts).
 

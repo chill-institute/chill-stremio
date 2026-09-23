@@ -34,7 +34,6 @@ function fixture(folders: Map<bigint, AcquisitionFolder>) {
   const layer = Layer.succeed(
     AcquisitionEngine,
     AcquisitionEngine.of({
-      getProfile: () => Effect.succeed({ userId: "123" }),
       getFolder: (id) =>
         Effect.suspend(() => {
           calls.push(id);
@@ -67,7 +66,7 @@ async function withServer(
   }
 }
 
-test("acquisition RPCs validate ownership and preserve ids without retaining profile or provider URLs", async () => {
+test("acquisition RPCs preserve ids without retaining provider URLs", async () => {
   const calls: string[] = [];
   await withServer(
     (request, response) => {
@@ -75,15 +74,7 @@ test("acquisition RPCs validate ownership and preserve ids without retaining pro
       assert.equal(request.method, "POST");
       calls.push(request.url ?? "");
       response.setHeader("content-type", "application/json");
-      if (request.url?.endsWith("GetUserProfile"))
-        response.end(
-          JSON.stringify({
-            userId: "123",
-            email: "private@example.test",
-            username: "private",
-          }),
-        );
-      else if (request.url?.endsWith("GetFolder"))
+      if (request.url?.endsWith("GetFolder"))
         response.end(
           JSON.stringify({
             parent: { id: "10", name: "Folder", fileType: "FOLDER" },
@@ -109,8 +100,6 @@ test("acquisition RPCs validate ownership and preserve ids without retaining pro
       await Effect.runPromise(
         Effect.gen(function* () {
           const engine = yield* AcquisitionEngine;
-          const profile = yield* engine.getProfile();
-          assert.deepEqual(profile, { userId: "123" });
           const folder = yield* engine.getFolder(10n);
           assert.equal(folder.files[0]?.id, 20n);
           const created = yield* engine.addTransfer(
@@ -130,7 +119,7 @@ test("acquisition RPCs validate ownership and preserve ids without retaining pro
   );
   assert.deepEqual(
     calls.map((call) => call.split("/").at(-1)),
-    ["GetUserProfile", "GetFolder", "AddTransfer", "GetTransfer"],
+    ["GetFolder", "AddTransfer", "GetTransfer"],
   );
 });
 
@@ -329,8 +318,6 @@ test("inspection propagates expired authorization instead of presenting missing 
   const layer = Layer.succeed(
     AcquisitionEngine,
     AcquisitionEngine.of({
-      getProfile: () =>
-        Effect.fail(new EngineError({ code: "unauthenticated" })),
       getFolder: () =>
         Effect.fail(new EngineError({ code: "unauthenticated" })),
       addTransfer: () => Effect.fail(new EngineError({ code: "unknown" })),

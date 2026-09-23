@@ -193,11 +193,10 @@ used by the [hls.js public sample](https://test-streams.mux.dev/), while retaini
 our generated frames, tones and captions for exact assertions. CI needs no
 external media host.
 
-The focused audio/seek/caption run and full hosted flow passed on 2026-09-20:
-`artifacts/hls-1789908737717/results.json` and
-`artifacts/hosted-2026-09-20T12-53-04.077Z/results.json`. Both cleaned up fully.
-The hosted pass includes browsing, automatic download-to-playback, recovery,
-deduplication and revocation. Native clients need separate proof.
+The focused audio/seek/caption run passed on 2026-09-20 in
+`artifacts/hls-1789908737717/results.json` and cleaned up fully. The hosted
+smoke's current flow is described in [HOSTED.md](./HOSTED.md#verification-and-release).
+Native clients need separate proof.
 
 The original separate-track fMP4 fixture remains available:
 

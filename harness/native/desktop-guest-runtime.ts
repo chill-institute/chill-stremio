@@ -4,7 +4,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { setTimeout as wait } from "node:timers/promises";
 import { stripVTControlCharacters } from "node:util";
 import {
+  desktopConfigurableInstall,
   desktopInstallStage,
+  desktopSecretBox,
   desktopTextMatches,
   desktopTextTarget,
   type DesktopInstallStage,
@@ -130,15 +132,13 @@ export async function createGuest(options: {
     run("xdotool", ["mouseup", "1"]);
     await wait(900);
   };
-  // While set, every retained frame gets this box blacked out before it is
-  // written: the installation dialog prints the private manifest URL.
-  let secretBox:
-    | { left: number; top: number; width: number; height: number }
-    | undefined;
+  // While set, every retained frame has the add-on URL blacked out before it is
+  // written: the installation dialogs print the private manifest URL.
+  let redactUrl = false;
   const screenshot = (name: string) => {
     const display = process.env.DISPLAY;
     if (!display) throw new Error("Missing isolated display");
-    run("ffmpeg", [
+    const grab = [
       "-y",
       "-hide_banner",
       "-loglevel",
@@ -153,14 +153,40 @@ export async function createGuest(options: {
       display,
       "-frames:v",
       "1",
-      ...(secretBox
-        ? [
-            "-vf",
-            `drawbox=x=${secretBox.left}:y=${secretBox.top}:w=${secretBox.width}:h=${secretBox.height}:color=black:t=fill`,
-          ]
-        : []),
-      `${directory}/${name}.png`,
-    ]);
+    ];
+    if (!redactUrl) {
+      run("ffmpeg", [...grab, `${directory}/${name}.png`]);
+      return;
+    }
+    const raw = execFileSync(
+      "ffmpeg",
+      [...grab, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"],
+      { timeout: 15_000, maxBuffer: 1280 * 720 * 3 },
+    );
+    const box = desktopSecretBox(raw, 1280, 720);
+    execFileSync(
+      "ffmpeg",
+      [
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-video_size",
+        "1280x720",
+        "-i",
+        "pipe:0",
+        "-vf",
+        `drawbox=x=${box.left}:y=${box.top}:w=${box.width}:h=${box.height}:color=black:t=fill`,
+        "-frames:v",
+        "1",
+        `${directory}/${name}.png`,
+      ],
+      { input: raw, timeout: 15_000, stdio: ["pipe", "ignore", "pipe"] },
+    );
   };
   const waitForInstallStage = async (
     name: string,
@@ -187,7 +213,7 @@ export async function createGuest(options: {
         ],
         { timeout: 10_000, maxBuffer: 1280 * 720 * 3 },
       );
-      if (desktopInstallStage(rgb, 1280, 720) === expected) return;
+      if (desktopInstallStage(rgb, 1280, 720) === expected) return rgb;
       await wait(250);
     }
     throw new Error(`Native installation did not reach ${expected}`);
@@ -633,13 +659,10 @@ exec /usr/bin/bwrap "$@"
     manifestUrl: string,
     options: { retainUrlFrame: boolean },
   ) => {
-    if (!options.retainUrlFrame)
-      secretBox = { left: 340, top: 340, width: 600, height: 56 };
-    try {
-      await installThroughDialog(manifestUrl, options);
-    } finally {
-      secretBox = undefined;
-    }
+    if (!options.retainUrlFrame) redactUrl = true;
+    await installThroughDialog(manifestUrl, options);
+    // A failed installation can leave the dialog open for the failure frame.
+    redactUrl = false;
   };
   const installThroughDialog = async (
     manifestUrl: string,
@@ -649,7 +672,11 @@ exec /usr/bin/bwrap "$@"
     await click(908, 124);
     await waitForInstallStage("add-url", "add-url");
     await click(550, 369);
-    run("xdotool", ["type", "--clearmodifiers", "--delay", "150", manifestUrl]);
+    run(
+      "xdotool",
+      ["type", "--clearmodifiers", "--delay", "150", manifestUrl],
+      15_000 + manifestUrl.length * 200,
+    );
     run("xdotool", ["key", "--clearmodifiers", "ctrl+a", "ctrl+c"]);
     if (options.retainUrlFrame) screenshot("installation-url");
     const clipboardDeadline = performance.now() + 5000;
@@ -668,8 +695,12 @@ exec /usr/bin/bwrap "$@"
     if (!copied)
       throw new Error("Typed installation URL differs from expected URL");
     await click(747, 472);
-    await waitForInstallStage("manifest", "manifest");
-    await click(782, 532);
+    const install = desktopConfigurableInstall(
+      await waitForInstallStage("manifest", "manifest"),
+      1280,
+      720,
+    );
+    await click(install?.x ?? 782, (install?.y ?? 524) + 8);
     await waitForInstallStage("installed", "addons");
     if (!options.retainUrlFrame)
       execFileSync("xclip", ["-selection", "clipboard", "-in"], {

@@ -6,28 +6,33 @@ import { resolve } from "node:path";
 export const statusMessages = {
   pending: [
     "Downloading to put.io",
-    "Go back to Downloads in Stremio",
-    "to check progress.",
+    "Select the release again",
+    "to keep waiting.",
   ],
   unknown: [
     "Download status unknown",
-    "Do not submit again.",
-    "Check Downloads in Stremio.",
+    "Check put.io library in Stremio",
+    "before selecting again.",
   ],
   failed: [
     "Download failed",
-    "Go back to Downloads in Stremio",
-    "to check the download.",
+    "Check the transfer on put.io",
+    "or choose another release.",
   ],
   "select-file": [
     "Download ready",
-    "Go back to Acquired videos in Stremio",
+    "Open put.io library in Stremio",
     "to choose a file.",
   ],
   unavailable: [
     "Playback unavailable",
-    "Go back to Downloads in Stremio",
-    "to check the download.",
+    "Open put.io library in Stremio",
+    "to try the video again.",
+  ],
+  reconnect: [
+    "Reconnect chill.institute",
+    "Open chill.institute/stremio",
+    "and install the add-on again.",
   ],
 } as const;
 export type StatusMediaKind = keyof typeof statusMessages;

@@ -12,7 +12,9 @@ inside Stremio.
 2. Connect your put.io account through chill.institute.
 3. Select **install chill** to add it to Stremio.
 
-Your installation URL gives access to your library and downloads. Keep it private.
+Your add-on link gives access to your library and downloads. Keep it private.
+If the add-on shows **Reconnect chill.institute**, open
+[chill.institute/stremio](https://chill.institute/stremio) and install it again.
 For a public listing, use the [public manifest](https://stremio.chill.institute/manifest.json).
 
 ## Use
@@ -22,8 +24,9 @@ For a public listing, use the [public manifest](https://stremio.chill.institute/
 - Browse movies and shows, search **Releases**, or open a movie or episode to
   see chill release results.
 - Select **Download to put.io** on a release. Playback waits for the download
-  and starts when a single video is ready. Use **Downloads** for progress and
-  **Acquired videos** to choose files from completed downloads.
+  and starts when a single video is ready. Completed downloads appear in
+  **put.io library**, where you can choose files from multi-file downloads.
+  Selecting the same release again later starts another download.
 
 The add-on is in early access. Web HLS playback, subtitles and audio switching
 have been tested. Focused Linux HLS playback passes, but the broader desktop

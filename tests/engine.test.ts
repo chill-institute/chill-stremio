@@ -69,6 +69,53 @@ test("Engine sends regular bearer RPCs and preserves int64 IDs", async () => {
   );
 });
 
+test("Engine sends the Stremio credential header without a bearer", async () => {
+  const credential = `v4.local.${"A".repeat(300)}`;
+  const seen: { authorization?: string; credential?: string | string[] }[] = [];
+  await withEngineServer(
+    (request, response) => {
+      seen.push({
+        authorization: request.headers.authorization,
+        credential: request.headers["x-chill-stremio-credential"],
+      });
+      request.resume();
+      request.on("end", () => {
+        response.setHeader("content-type", "application/json");
+        response.end('{"files":[]}');
+      });
+    },
+    async (baseUrl) => {
+      await Effect.runPromise(
+        Effect.flatMap(Engine, (engine) => engine.getFolder(0n)).pipe(
+          Effect.provide(engineLayer({ baseUrl, credential })),
+        ),
+      );
+    },
+  );
+  assert.deepEqual(seen, [{ authorization: undefined, credential }]);
+  for (const invalid of [
+    "",
+    "v4.local.short",
+    `v4.public.${"A".repeat(64)}`,
+    `v4.local.${"A".repeat(64)}\r\nx: y`,
+    `v4.local.${"A".repeat(1016)}`,
+  ]) {
+    const error = await Effect.runPromise(
+      Engine.pipe(
+        Effect.provide(
+          engineLayer({
+            baseUrl: "https://engine.example",
+            credential: invalid,
+          }),
+        ),
+        Effect.flip,
+      ),
+    );
+    assert.equal(error.code, "invalid_config");
+    assert.doesNotMatch(JSON.stringify(error), /v4\./);
+  }
+});
+
 test("Engine rejects unsafe configuration without retaining credentials", async () => {
   for (const config of [
     { baseUrl: "http://engine.example", token },

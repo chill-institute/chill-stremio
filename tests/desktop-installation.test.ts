@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import sharp from "sharp";
 import {
+  desktopConfigurableInstall,
   desktopInstallationPassed,
   desktopInstallStage,
+  desktopSecretBox,
 } from "../harness/native/desktop-ui.ts";
 
 test("native mouse success and an empty add dialog do not prove installation", () => {
@@ -63,6 +65,7 @@ test("recorded native screens distinguish empty URL, manifest and addon states",
     ["add-url", "add-url"],
     ["manifest", "manifest"],
     ["hosted-manifest", "manifest"],
+    ["hosted-long-url-manifest", "manifest"],
     ["not-installed", undefined],
   ] as const) {
     const file = new URL(
@@ -79,4 +82,29 @@ test("recorded native screens distinguish empty URL, manifest and addon states",
       name,
     );
   }
+});
+
+test("a wrapped add-on URL moves the Install target and stays inside the redaction box", async () => {
+  const { data } = await sharp(
+    await readFile(
+      new URL(
+        "./fixtures/desktop-installation/hosted-long-url-manifest.png",
+        import.meta.url,
+      ),
+    ),
+  )
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const install = desktopConfigurableInstall(data, 1280, 720);
+  assert.ok(install && install.y >= 576 && install.y <= 600, "Install target");
+  const box = desktopSecretBox(data, 1280, 720);
+  assert.equal(box.left, 340);
+  assert.ok(box.top <= 300, "URL block starts below the box top");
+  assert.ok(box.top + box.height >= 445, "URL block ends inside the box");
+  assert.ok(box.top + box.height < install.y, "Install stays visible");
+  assert.deepEqual(
+    desktopSecretBox(new Uint8Array(1280 * 720 * 3), 1280, 720),
+    { left: 340, top: 340, width: 600, height: 56 },
+  );
 });
