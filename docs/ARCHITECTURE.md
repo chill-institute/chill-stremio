@@ -8,9 +8,11 @@ translation and the selected-media download boundary; chill-web owns one-time
 account setup, installation and revocation.
 
 All Engine calls use the ordinary chill bearer with generic `UserService`
-functions. The Stremio account owns add-on installation/sync only. Neither shared
-contracts nor Engine internals introduce a client-specific credential or service.
-The adapter never receives the user's put.io OAuth token.
+functions. The Stremio account owns add-on installation/sync only. The adapter
+never receives the user's put.io OAuth token.
+[Decision 0001](./decisions/0001-stateless-stremio-credential.md) replaces the
+stored bearer with an Engine-issued Stremio credential; until it ships, this
+section describes the running adapter.
 
 ## Read and write boundaries
 
