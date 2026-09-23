@@ -82,7 +82,7 @@ test("status assets must all exist, be bounded regular MP4 files and not symlink
     for (const status of Object.keys(statusMessages)) {
       await writeFile(join(directory, `${status}.mp4`), sample);
     }
-    assert.equal((await loadStatusMedia(directory)).size, 5);
+    assert.equal((await loadStatusMedia(directory)).size, 6);
     const pending = join(directory, "pending.mp4");
     await writeFile(pending, "not an mp4 file");
     await assert.rejects(loadStatusMedia(directory), /Invalid status media/);

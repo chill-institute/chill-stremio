@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createConnection } from "node:net";
-import { resolve, extname, sep } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { chromium, expect } from "@playwright/test";
-import { Effect, Schema } from "effect";
+import { chromium, expect, type Page } from "@playwright/test";
+import { Effect } from "effect";
+import { redactCredentials } from "../src/credential.ts";
 import { startHostedAdapter } from "../src/hosted.ts";
-import { InstallationStore } from "../src/installations.ts";
 import {
   decoded,
   redact,
@@ -18,6 +16,7 @@ import {
 import { startFixture } from "./fixture.ts";
 import {
   close,
+  fakeCredential,
   generateCertificates,
   hostedFixture,
   type HostedEngineCalls,
@@ -30,7 +29,7 @@ import { versions } from "./versions.ts";
 import { startWeb } from "./web.ts";
 
 const directory = `artifacts/hosted-${new Date().toISOString().replaceAll(":", "-")}`;
-const token = randomBytes(32).toString("hex");
+const credential = fakeCredential();
 const {
   movieName,
   discoveryName,
@@ -41,10 +40,7 @@ const {
   multipleEpisodeName,
 } = hostedFixture;
 const publicAdapterOrigin = "https://stremio.chill.institute";
-const productRoot = process.env.HOSTED_SMOKE_WEB_DIST
-  ? resolve(process.env.HOSTED_SMOKE_WEB_DIST)
-  : undefined;
-let storeClosed = false;
+const manifestUrl = `${publicAdapterOrigin}/s/${credential}/manifest.json`;
 let videos: string[] = [];
 const endpoints: string[] = [];
 const cleanupErrors: string[] = [];
@@ -57,8 +53,7 @@ const runs: {
 let failure: string | undefined;
 let browserClosed = false;
 let calls: HostedEngineCalls | undefined;
-const safeError = (error: unknown) =>
-  redact(String(error)).replaceAll(token, "[fake-token]");
+const safeError = (error: unknown) => redactCredentials(redact(String(error)));
 
 const listenerClosed = (origin: string) =>
   new Promise<boolean>((resolve) => {
@@ -78,6 +73,33 @@ const listenerClosed = (origin: string) =>
     socket.setTimeout(1000, () => finish(false));
   });
 
+/** Keeps the generated add-on link out of screenshots and the recording. */
+const maskAddonUrl = (page: Page) =>
+  page.addStyleTag({
+    content:
+      'input[placeholder="Paste addon URL"] { -webkit-text-security: disc; }',
+  });
+
+/** Opens a put.io library video from the current discover view and plays it. */
+async function openLibraryFile(page: Page, name: string, fileId: bigint) {
+  await page.getByText(name, { exact: true }).first().click();
+  const show = page
+    .getByRole("link")
+    .and(page.locator(`a[href^="#/detail/"][href*="${fileId}"]`))
+    .filter({ visible: true })
+    .last();
+  const stream = page
+    .getByText("chill.institute", { exact: true })
+    .filter({ visible: true })
+    .last();
+  // The card can navigate while its outgoing preview is still visible.
+  if (await show.isVisible())
+    await show.click({ timeout: 1000 }).catch(async () => {
+      await expect(stream).toBeVisible();
+    });
+  await stream.click();
+}
+
 const program = Effect.gen(function* () {
   yield* Effect.promise(() => mkdir(directory, { recursive: true }));
   yield* validateProvenance();
@@ -92,48 +114,19 @@ const program = Effect.gen(function* () {
   endpoints.push(media.origin);
   const engine = yield* startHostedEngine({
     mediaOrigin: media.origin,
-    token,
+    credential,
     hls: true,
   });
   endpoints.push(engine.origin);
   calls = engine.calls;
   const setupServer = yield* Effect.acquireRelease(
     Effect.tryPromise(async () => {
-      if (productRoot) await readFile(`${productRoot}/index.html`);
-      const server = createServer(async (req, res) => {
-        if (!productRoot) {
-          res
-            .writeHead(req.url === "/stremio" ? 200 : 404, {
-              "content-type": "text/plain",
-            })
-            .end("Generated account setup fixture");
-          return;
-        }
-        try {
-          const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
-          const path = resolve(productRoot, `.${pathname}`);
-          assert.ok(path === productRoot || path.startsWith(productRoot + sep));
-          const file = extname(path) ? path : `${productRoot}/index.html`;
-          const content = await readFile(file);
-          const types: Record<string, string> = {
-            ".html": "text/html",
-            ".js": "text/javascript",
-            ".css": "text/css",
-            ".json": "application/json",
-            ".svg": "image/svg+xml",
-            ".png": "image/png",
-            ".woff2": "font/woff2",
-          };
-          res
-            .writeHead(200, {
-              "content-type":
-                types[extname(file)] ?? "application/octet-stream",
-              "cache-control": "no-store",
-            })
-            .end(content);
-        } catch {
-          res.writeHead(404).end();
-        }
+      const server = createServer((req, res) => {
+        res
+          .writeHead(req.url === "/stremio" ? 200 : 404, {
+            "content-type": "text/plain",
+          })
+          .end("Generated account setup fixture");
       });
       const origin = await listen(server);
       endpoints.push(origin);
@@ -141,25 +134,9 @@ const program = Effect.gen(function* () {
     }),
     ({ server }) => Effect.promise(() => close(server)),
   );
-  const product = productRoot ? setupServer : undefined;
-  const storeKey = randomBytes(32);
-  const store = yield* Effect.acquireRelease(
-    Effect.tryPromise(async () => ({
-      current: await InstallationStore.open(
-        `${certificates.directory}/installations.sqlite`,
-        storeKey,
-      ),
-    })),
-    (database) =>
-      Effect.sync(() => {
-        database.current.close();
-        storeClosed = true;
-      }),
-  );
   const adapter = yield* Effect.acquireRelease(
     Effect.tryPromise(async () => ({
       current: await startHostedAdapter({
-        store: store.current,
         engineBaseUrl: engine.origin,
         webOrigin: setupServer.origin,
       }),
@@ -208,7 +185,6 @@ const program = Effect.gen(function* () {
           );
       });
       let credentialLeak = false;
-      let acquisitionNavigation = false;
       let pendingMediaRequested = false;
       let episodeMediaRequested = false;
       const noticeRequests = new Set<string>();
@@ -230,28 +206,51 @@ const program = Effect.gen(function* () {
         )
           pendingMediaRequested = true;
       });
-      await context.addInitScript(
-        ({ origin, token }) => {
-          if (location.origin === origin)
-            localStorage.setItem("chill.auth_token", token);
-        },
-        { origin: product?.origin ?? "", token },
-      );
+      // Stremio prints the add-on URL in its install dialog; hide any element
+      // showing a credential so screenshots and the recording never contain it.
+      await context.addInitScript(() => {
+        const hide = (node: Node) => {
+          const element =
+            node instanceof Element ? node : (node.parentElement ?? undefined);
+          if (element && element.textContent?.includes("v4.local."))
+            for (const child of [element, ...element.querySelectorAll("*")])
+              if (
+                child instanceof HTMLElement &&
+                child.childNodes.length > 0 &&
+                [...child.childNodes].some(
+                  (text) =>
+                    text.nodeType === Node.TEXT_NODE &&
+                    text.textContent?.includes("v4.local."),
+                )
+              )
+                child.style.visibility = "hidden";
+        };
+        new MutationObserver((records) => {
+          for (const record of records) {
+            hide(record.target);
+            record.addedNodes.forEach(hide);
+          }
+        }).observe(document, {
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+      });
       await context.route("**/*", async (route) => {
         const req = route.request();
         const url = new URL(req.url());
         const headers = await req.allHeaders();
         if (
-          req.isNavigationRequest() &&
-          url.pathname.startsWith("/stremio/acquire")
+          url.origin !== publicAdapterOrigin &&
+          (url.href.includes(credential) ||
+            JSON.stringify(headers).includes(credential))
         )
-          acquisitionNavigation = true;
+          credentialLeak = true;
         if (
           url.pathname.endsWith("/notice/pending.mp4") &&
           req.method() === "GET"
         )
           pendingMediaRequested = true;
-        if (url.href.includes(token)) credentialLeak = true;
         if (
           url.origin === "https://v3-cinemeta.strem.io" &&
           url.pathname === `/meta/movie/${hostedFixture.fixtureImdbId}.json`
@@ -281,37 +280,13 @@ const program = Effect.gen(function* () {
             body: `<a href="${publicAdapterOrigin}/configure">Continue to add-on setup</a>`,
           });
         }
-        if (
-          url.origin === publicAdapterOrigin ||
-          (product && url.origin === "https://api.chill.institute")
-        ) {
-          if (
-            headers.authorization &&
-            headers.authorization !== `Bearer ${token}`
-          )
-            credentialLeak = true;
-          const local =
-            url.origin === publicAdapterOrigin
-              ? adapter.current.origin
-              : engine.origin;
+        if (url.origin === publicAdapterOrigin) {
+          if (headers.authorization) credentialLeak = true;
           const forwarded: Record<string, string> = {};
-          for (const name of [
-            "authorization",
-            "content-type",
-            "connect-protocol-version",
-            "range",
-          ])
+          for (const name of ["range"])
             if (headers[name]) forwarded[name] = headers[name];
-          if (url.pathname.startsWith("/api/"))
-            forwarded.origin = setupServer.origin;
-          if (url.pathname === "/healthz")
-            return route.fulfill({
-              status: 200,
-              contentType: "application/json",
-              body: '{"status":"ok"}',
-            });
           const response = await fetch(
-            `${local}${url.origin === "https://api.chill.institute" ? url.pathname.replace(/^\/v4(?=\/)/, "") : url.pathname}${url.search}`,
+            `${adapter.current.origin}${url.pathname}${url.search}`,
             {
               method: req.method(),
               headers: forwarded,
@@ -346,7 +321,6 @@ const program = Effect.gen(function* () {
               : body,
           });
         }
-        if (JSON.stringify(headers).includes(token)) credentialLeak = true;
         return [
           web.origin,
           adapter.current.origin,
@@ -439,43 +413,25 @@ const program = Effect.gen(function* () {
         await setupPage.keyboard.press("Enter");
         await expect(setupPage).toHaveURL(`${setupServer.origin}/stremio`);
         assert.equal(engine.calls.transfer, 0);
-        let manifestUrl: string;
-        if (product) {
-          await setupPage
-            .getByRole("button", { name: "connect account", exact: true })
-            .click();
-          manifestUrl = await setupPage
-            .getByRole("textbox", { name: "Private installation link" })
-            .inputValue();
-          await setupPage.screenshot({ path: `${directory}/setup.png` });
-        } else {
-          const response = await fetch(
-            `${adapter.current.origin}/api/installations`,
-            {
-              method: "POST",
-              headers: {
-                authorization: `Bearer ${token}`,
-                "content-type": "application/json",
-              },
-              body: "{}",
-              signal: AbortSignal.timeout(10000),
-            },
-          );
-          assert.equal(response.status, 201);
-          manifestUrl = Schema.decodeUnknownSync(
-            Schema.Struct({ manifestUrl: Schema.String }),
-          )(await response.json()).manifestUrl;
-        }
-        await setupPage.close();
         await page.goto(web.origin);
         await page.getByText("Addons", { exact: true }).click();
         await page.getByTitle("Add addon", { exact: true }).click();
+        await maskAddonUrl(page);
         await page.getByPlaceholder("Paste addon URL").fill(manifestUrl);
         await page.getByText("Add", { exact: true }).click();
-        await page
+        const install = page
           .getByText("Install", { exact: true })
-          .filter({ visible: true })
-          .click();
+          .filter({ visible: true });
+        await expect(install).toBeVisible();
+        assert.equal(
+          await page
+            .getByText("v4.local.", { exact: false })
+            .filter({ visible: true })
+            .count(),
+          0,
+          "The installation dialog must not show the credential",
+        );
+        await install.click();
         await page.getByRole("link", { name: "Discover", exact: true }).click();
         const filters = page.locator('[aria-haspopup="listbox"]');
         await filters.nth(1).click();
@@ -484,29 +440,11 @@ const program = Effect.gen(function* () {
           .getByText("put.io library", { exact: true })
           .click();
         await expect(page).toHaveURL(/\/movie\/library(?:$|\?)/);
-        await page
-          .getByText(hostedFixture.libraryName, { exact: true })
-          .first()
-          .click();
-        const libraryShow = page
-          .getByRole("link")
-          .and(
-            page.locator(
-              `a[href^="#/detail/"][href*="${hostedFixture.libraryFileId}"]`,
-            ),
-          )
-          .filter({ visible: true })
-          .last();
-        const libraryStream = page
-          .getByText("chill.institute", { exact: true })
-          .filter({ visible: true })
-          .last();
-        // The card can navigate while its outgoing preview is still visible.
-        if (await libraryShow.isVisible())
-          await libraryShow.click({ timeout: 1000 }).catch(async () => {
-            await expect(libraryStream).toBeVisible();
-          });
-        await libraryStream.click();
+        await openLibraryFile(
+          page,
+          hostedFixture.libraryName,
+          hostedFixture.libraryFileId,
+        );
         const libraryEvidence = await decoded(
           page,
           { ...fixture, origin: web.origin },
@@ -672,10 +610,9 @@ const program = Effect.gen(function* () {
           path: `${directory}/discovery.png`,
           animations: "disabled",
         });
-        const installation = store.current.list("1")[0];
-        assert.ok(installation);
         const target = `chill:movie:${Buffer.from("fixture-movie").toString("base64url")}`;
-        const playPath = `/i/${installation.capability}/play/movie/${encodeURIComponent(target)}/fixture-release.m3u8`;
+        const base = `/s/${credential}`;
+        const playPath = `${base}/play/movie/${encodeURIComponent(target)}/fixture-release.m3u8`;
         const head = await fetch(`${adapter.current.origin}${playPath}`, {
           method: "HEAD",
           redirect: "manual",
@@ -715,27 +652,6 @@ const program = Effect.gen(function* () {
           "Download selection must stay in Stremio",
         );
         const loadingUrl = page.url();
-        const downloadsPage = await context.newPage();
-        try {
-          await downloadsPage.goto(
-            `${web.origin}/#/discover/${encodeURIComponent(manifestUrl)}/movie/downloads`,
-          );
-          const downloadCard = downloadsPage
-            .locator(
-              'a[href*="chill%3Adownload%3A"], a[href*="chill:download:"]',
-            )
-            .filter({ hasText: "37%" })
-            .first();
-          await expect(downloadCard).toBeVisible();
-          await downloadCard.scrollIntoViewIfNeeded();
-          await expect(downloadCard).toBeInViewport();
-          await downloadsPage.screenshot({
-            path: `${directory}/downloads.png`,
-            animations: "disabled",
-          });
-        } finally {
-          await downloadsPage.close();
-        }
         engine.state.completed = true;
         const automaticPlayback = await decoded(
           page,
@@ -759,39 +675,27 @@ const program = Effect.gen(function* () {
           1,
           "Waiting must not duplicate the transfer",
         );
-        const replay = await fetch(`${adapter.current.origin}${playPath}`, {
-          redirect: "manual",
-          signal: AbortSignal.timeout(10000),
-        });
+        const statusReplay = async (transferId: bigint) =>
+          fetch(`${adapter.current.origin}${base}/status/${transferId}.m3u8`, {
+            redirect: "manual",
+            signal: AbortSignal.timeout(10000),
+          });
+        const replay = await statusReplay(1n);
         assert.equal(replay.status, 302);
         assert.equal(
           replay.headers.get("location"),
           `${media.origin}/hls/movie/master.m3u8`,
         );
-        assert.equal(
-          engine.calls.transfer,
-          1,
-          "Repeated media GET must reuse the durable claim",
-        );
         await page.goto(`${web.origin}/#/`);
         await adapter.current.close();
-        store.current.close();
-        store.current = await InstallationStore.open(
-          `${certificates.directory}/installations.sqlite`,
-          storeKey,
-        );
         const originalOrigin = adapter.current.origin;
         adapter.current = await startHostedAdapter({
-          store: store.current,
           engineBaseUrl: engine.origin,
           webOrigin: setupServer.origin,
           port: Number(new URL(originalOrigin).port),
         });
         assert.equal(adapter.current.origin, originalOrigin);
-        const resumed = await fetch(`${adapter.current.origin}${playPath}`, {
-          redirect: "manual",
-          signal: AbortSignal.timeout(10000),
-        });
+        const resumed = await statusReplay(1n);
         assert.equal(resumed.status, 302);
         assert.equal(
           resumed.headers.get("location"),
@@ -800,26 +704,12 @@ const program = Effect.gen(function* () {
         assert.equal(
           engine.calls.transfer,
           1,
-          "Restarted adapter must retain its submission claim",
+          "Status reads before and after restart must not submit",
         );
         await page.goto(
-          `${web.origin}/#/discover/${encodeURIComponent(manifestUrl)}/movie/acquired`,
+          `${web.origin}/#/discover/${encodeURIComponent(manifestUrl)}/movie/library`,
         );
-        await page
-          .locator('a[href*="chill%3Aacquired%3A"], a[href*="chill:acquired:"]')
-          .filter({ hasText: movieName })
-          .first()
-          .click();
-        assert.ok(
-          page.url().includes("chill%3Aacquired%3A") ||
-            decodeURIComponent(page.url()).includes("chill:acquired:"),
-          "Acquired catalog item must retain transfer membership identity",
-        );
-        await page
-          .getByText("chill.institute", { exact: true })
-          .filter({ visible: true })
-          .last()
-          .click();
+        await openLibraryFile(page, movieName, hostedFixture.fileId);
         const evidence = await decoded(
           page,
           { ...fixture, origin: web.origin },
@@ -849,7 +739,7 @@ const program = Effect.gen(function* () {
           "episode1",
           `${directory}/episode-decoded.png`,
         );
-        const episodePath = `/i/${installation.capability}/play/series/${encodeURIComponent(`chill:episode:${seriesImdbId}:1:1`)}/fixture-episode-release.m3u8`;
+        const episodePath = `${base}/play/series/${encodeURIComponent(`chill:episode:${seriesImdbId}:1:1`)}/fixture-episode-release.m3u8`;
         assert.ok(
           playlistRequests.has(episodePath),
           "Episode must consume the selected adapter playlist URL",
@@ -859,30 +749,17 @@ const program = Effect.gen(function* () {
           true,
           "Selected episode must load the resolved fixture media",
         );
-        const repeatedEpisode = await fetch(
-          `${adapter.current.origin}${episodePath}`,
-          { redirect: "manual", signal: AbortSignal.timeout(10000) },
-        );
-        assert.equal(repeatedEpisode.status, 302);
+        const episodeStatus = await statusReplay(2n);
+        assert.equal(episodeStatus.status, 302);
         assert.equal(
-          repeatedEpisode.headers.get("location"),
+          episodeStatus.headers.get("location"),
           `${media.origin}/hls/episode1/master.m3u8`,
-        );
-        assert.equal(
-          engine.calls.transfer,
-          2,
-          "Episode replay must reuse its own claim",
-        );
-        assert.equal(
-          acquisitionNavigation,
-          false,
-          "Playback must not navigate to chill acquisition",
         );
         assert.equal(engine.calls.transfer, 2);
         assert.equal(
           credentialLeak,
           false,
-          "Bearer left the designated fake management APIs",
+          "Credential left the adapter origin",
         );
         assert.equal(
           engine.calls.rejected,
@@ -919,7 +796,7 @@ const program = Effect.gen(function* () {
               await expect(recoveryRelease).toBeVisible();
             });
           await expect(recoveryRelease).toBeVisible();
-          const recoveryPath: string = `/i/${installation.capability}/play/movie/${encodeURIComponent(recoveryTarget)}/fixture-${recovery.kind}-release.m3u8`;
+          const recoveryPath: string = `${base}/play/movie/${encodeURIComponent(recoveryTarget)}/fixture-${recovery.kind}-release.m3u8`;
           for (const method of ["HEAD", "OPTIONS"]) {
             const probe: Response = await fetch(
               `${adapter.current.origin}${recoveryPath}`,
@@ -954,71 +831,35 @@ const program = Effect.gen(function* () {
           await page.screenshot({
             path: `${directory}/${recovery.kind}-error.png`,
           });
-          const replay = await fetch(
-            `${adapter.current.origin}${recoveryPath}`,
-            { redirect: "manual", signal: AbortSignal.timeout(10000) },
-          );
-          assert.equal(replay.status, 409);
-          assert.deepEqual(await replay.json(), { error: recovery.kind });
-          assert.equal(
-            engine.calls.transfer,
-            before + 1,
-            "Status replay must not duplicate a transfer",
-          );
-          await page.goto(
-            `${web.origin}/#/discover/${encodeURIComponent(manifestUrl)}/movie/downloads`,
-          );
-          await page.reload();
-          const download = page
-            .locator(
-              'a[href*="chill%3Adownload%3A"], a[href*="chill:download:"]',
-            )
-            .filter({ hasText: recovery.name })
-            .filter({ visible: true })
-            .first();
-          await expect(download).toContainText(
-            recovery.kind === "select-file" ? "Ready" : recovery.kind,
-          );
-          await download.click();
-          if (recovery.kind === "select-file") {
-            await expect(
-              page.getByText(multipleMovieName, { exact: true }),
-            ).toBeVisible();
-            await expect(
-              page.getByText(multipleEpisodeName, { exact: true }),
-            ).toBeVisible();
-          } else {
-            await expect(
-              page
-                .getByText(
-                  recovery.kind === "unknown"
-                    ? "Download status unknown · do not submit again"
-                    : "Download unavailable",
-                  { exact: false },
-                )
-                .first(),
-            ).toBeVisible();
+          if (recovery.kind !== "unknown") {
+            const replay = await statusReplay(recovery.transferId);
+            assert.equal(replay.status, 409);
+            assert.deepEqual(await replay.json(), { error: recovery.kind });
           }
-          await page.screenshot({
-            path: `${directory}/${recovery.kind}-recovery.png`,
-            animations: "disabled",
-          });
           assert.equal(
             engine.calls.transfer,
             before + 1,
-            "Reading Downloads and its sources must remain read-only",
+            "Status reads must not duplicate a transfer",
           );
           recoveryEvidence.push({
             state: recovery.kind,
             playerErrorRendered: true,
             statusVideoRequested: false,
-            downloadsStatusVisible: true,
-            recoverySourcesVisible: true,
-            replayDeduplicated: true,
+            statusReadOnly: true,
             readOnlyProbes: ["HEAD", "OPTIONS"],
           });
         }
-        await page.getByText(multipleEpisodeName, { exact: true }).click();
+        await page.goto(
+          `${web.origin}/#/discover/${encodeURIComponent(manifestUrl)}/movie/library`,
+        );
+        await expect(
+          page.getByText(multipleMovieName, { exact: true }).first(),
+        ).toBeVisible();
+        await openLibraryFile(
+          page,
+          multipleEpisodeName,
+          hostedFixture.multipleEpisodeId,
+        );
         const selectedFileEvidence = await decoded(
           page,
           { ...fixture, origin: web.origin },
@@ -1026,70 +867,48 @@ const program = Effect.gen(function* () {
           `${directory}/multiple-file-decoded.png`,
         );
         assert.ok(playlistRequests.has("/hls/episode1/master.m3u8"));
-        await page.goto(
-          `${web.origin}/#/discover/${encodeURIComponent(manifestUrl)}/movie/acquired`,
-        );
-        await page
-          .locator('a[href*="chill%3Aacquired%3A"], a[href*="chill:acquired:"]')
-          .filter({ hasText: multipleEpisodeName })
-          .first()
-          .click();
-        const acquiredStream = page
-          .getByText("chill.institute", { exact: true })
-          .filter({ visible: true })
-          .last();
-        const acquiredPreview = page
-          .getByRole("link")
-          .and(
-            page.locator(
-              `a[href^="#/detail/"][href*="${hostedFixture.multipleEpisodeId}"]`,
-            ),
-          )
-          .filter({ visible: true })
-          .last();
-        await expect(acquiredPreview.or(acquiredStream).first()).toBeVisible();
-        if (await acquiredPreview.isVisible())
-          await acquiredPreview.click({ timeout: 1000 }).catch(async () => {
-            await expect(acquiredStream).toBeVisible();
-          });
-        await acquiredStream.click();
-        const acquiredFileEvidence = await decoded(
-          page,
-          { ...fixture, origin: web.origin },
-          "episode1",
-          `${directory}/multiple-file-acquired-decoded.png`,
-        );
         assert.equal(
           engine.calls.transfer,
           5,
-          "Exact-file selection and acquired playback must not resubmit",
+          "Choosing a file from the library must not submit",
         );
         await page.goto(`${web.origin}/#/`);
-        await adapter.current.close();
-        store.current.close();
-        store.current = await InstallationStore.open(
-          `${certificates.directory}/installations.sqlite`,
-          storeKey,
+        engine.state.credentialRejected = true;
+        await page.goto(
+          `${web.origin}/#/discover/${encodeURIComponent(manifestUrl)}/movie/library`,
         );
-        const recoveryOrigin = adapter.current.origin;
-        adapter.current = await startHostedAdapter({
-          store: store.current,
-          engineBaseUrl: engine.origin,
-          webOrigin: setupServer.origin,
-          port: Number(new URL(recoveryOrigin).port),
+        await expect(
+          page.getByText("Reconnect chill.institute", { exact: true }).first(),
+        ).toBeVisible();
+        await page.screenshot({
+          path: `${directory}/reconnect-catalog.png`,
+          animations: "disabled",
         });
-        const unknownTarget = `chill:movie:${Buffer.from("fixture-unknown").toString("base64url")}`;
-        const unknownReplay = await fetch(
-          `${adapter.current.origin}/i/${installation.capability}/play/movie/${encodeURIComponent(unknownTarget)}/fixture-unknown-release.m3u8`,
-          { redirect: "manual", signal: AbortSignal.timeout(10000) },
+        await page.goto(
+          `${web.origin}/#/detail/movie/${hostedFixture.fixtureImdbId}/${hostedFixture.fixtureImdbId}`,
         );
-        assert.equal(unknownReplay.status, 409);
-        assert.deepEqual(await unknownReplay.json(), { error: "unknown" });
-        assert.equal(
-          engine.calls.transfer,
-          5,
-          "Unknown outcome must survive restart without resubmission",
+        await expect(
+          page
+            .getByText(`Reconnect at ${setupServer.origin}/stremio`, {
+              exact: false,
+            })
+            .first(),
+        ).toBeVisible();
+        await page.screenshot({
+          path: `${directory}/reconnect-source.png`,
+          animations: "disabled",
+        });
+        const rejectedPlay = await fetch(
+          `${adapter.current.origin}${playPath}`,
+          {
+            redirect: "manual",
+            signal: AbortSignal.timeout(10000),
+          },
         );
+        assert.equal(rejectedPlay.status, 409);
+        assert.deepEqual(await rejectedPlay.json(), { error: "reconnect" });
+        assert.ok(engine.calls.unauthenticated > 0);
+        assert.equal(engine.calls.transfer, 5);
         assert.equal(
           engine.calls.rejected,
           0,
@@ -1098,45 +917,7 @@ const program = Effect.gen(function* () {
         assert.equal(
           credentialLeak,
           false,
-          "Recovery leaked the generated bearer",
-        );
-        if (product) {
-          await page.goto(`${product.origin}/stremio`);
-          await expect(
-            page.getByRole("textbox", { name: "Private installation link" }),
-          ).toHaveValue(manifestUrl);
-          await page
-            .getByRole("button", { name: "revoke", exact: true })
-            .click();
-          await page
-            .getByRole("button", { name: "revoke connection", exact: true })
-            .click();
-          await expect(page.getByRole("status")).toContainText(
-            "Connection revoked.",
-          );
-          await expect(
-            page.getByRole("textbox", { name: "Private installation link" }),
-          ).toHaveCount(0);
-          await page.screenshot({ path: `${directory}/revoked.png` });
-        } else {
-          const response = await fetch(
-            `${adapter.current.origin}/api/installations/${installation.id}`,
-            {
-              method: "DELETE",
-              headers: { authorization: `Bearer ${token}` },
-              signal: AbortSignal.timeout(10000),
-            },
-          );
-          assert.equal(response.status, 204);
-        }
-        const revoked = await fetch(
-          `${adapter.current.origin}/i/${installation.capability}/manifest.json`,
-          { signal: AbortSignal.timeout(10000) },
-        );
-        assert.equal(
-          revoked.status,
-          404,
-          "Revoked installation must deny further addon requests",
+          "Recovery leaked the generated credential",
         );
         runs.push({
           run,
@@ -1151,9 +932,6 @@ const program = Effect.gen(function* () {
             episodeDecoded: episodeEvidence,
             recovery: recoveryEvidence,
             multipleFileDecoded: selectedFileEvidence,
-            acquiredFileDecoded: acquiredFileEvidence,
-            unknownRestartDeduplicated: true,
-            unknownReconciliation: "unavailable-in-current-Engine-contract",
             seek: seekEvidence,
             subtitles: subtitleEvidence,
             standardMovieStreamsVisible: true,
@@ -1169,13 +947,12 @@ const program = Effect.gen(function* () {
             pendingPlayerLoading: true,
             pendingNoticeRequested: false,
             automaticPlayback,
-            downloadsProgressVisible: true,
-            restartDeduplicated: true,
+            statusReadAcrossRestart: true,
             stayedInStremio: true,
-            exactlyOneTransferPerRelease: true,
-            acquiredMembership: true,
-            revokedCapabilityDenied: true,
-            actualProductUI: Boolean(product),
+            exactlyOneTransferPerSelection: true,
+            completedDownloadInLibrary: true,
+            rejectedCredentialReconnect: true,
+            credentialConfinedToAdapter: true,
             hlsPlaylistsRequested: [...playlistRequests].filter((path) =>
               path.startsWith("/hls/"),
             ),
@@ -1188,7 +965,7 @@ const program = Effect.gen(function* () {
           status: "failed",
           evidence: {
             playerErrors,
-            playlistRequests: [...playlistRequests],
+            playlistRequests: [...playlistRequests].map(redactCredentials),
             videoErrors: await page
               .locator("video")
               .evaluateAll((videos) =>
@@ -1197,7 +974,8 @@ const program = Effect.gen(function* () {
                     ? { code: video.error?.code, message: video.error?.message }
                     : {},
                 ),
-              ),
+              )
+              .catch(() => []),
           },
           error: safeError(
             `${String(error)}; navigation failures: ${navigationFailures.join(", ")}`,
@@ -1242,13 +1020,11 @@ const program = Effect.gen(function* () {
         cleanupErrors.length === 0 &&
         servicesClosed &&
         browserClosed &&
-        storeClosed &&
         runs.length === 1 &&
         runs.every((run) => run.status === "passed");
       if (!passed) process.exitCode = 1;
       await mkdir(directory, { recursive: true });
-      await writeFile(
-        `${directory}/results.json`,
+      const receipt = redactCredentials(
         JSON.stringify(
           {
             status: passed ? "passed" : "failed",
@@ -1259,7 +1035,6 @@ const program = Effect.gen(function* () {
             engine: "local-generated-RPC-fixture",
             servicesClosed,
             browserClosed,
-            storeClosed,
             videos,
             cleanupErrors,
             calls,
@@ -1269,6 +1044,8 @@ const program = Effect.gen(function* () {
           2,
         ),
       );
+      assert.ok(!receipt.includes(credential));
+      await writeFile(`${directory}/results.json`, receipt);
       console.log(
         JSON.stringify({
           status: passed ? "passed" : "failed",

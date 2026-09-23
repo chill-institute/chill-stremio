@@ -8,23 +8,27 @@ export const hostedRequired = [
   "release-detail",
   "episode-context",
   "selected-download",
-  "download-subtitles",
-  "downloads-progress",
-  "acquired-playback",
+  "library-listing",
+  "library-playback",
+  "library-subtitles",
   "audio-pcm",
   "interrupted-playback-recovery",
   "recovery-failed",
   "recovery-unknown",
   "recovery-select-file",
   "exact-file-playback",
-  "revocation-denied",
-  "durable-claims",
+  "reconnect-notice",
+  "one-transfer-per-selection",
 ] as const;
 
 export interface HostedRunProof extends DesktopRunProof {
   hosted?: {
-    engineCalls: { transfer: number; rejected: number };
-    proxy: { manifest: number; stream: number; deniedAfterRevocation: number };
+    engineCalls: {
+      transfer: number;
+      rejected: number;
+      unauthenticated: number;
+    };
+    proxy: { manifest: number; stream: number };
     media: { cuts: number };
     adapterRestarts: number;
   };
@@ -38,9 +42,9 @@ export function hostedRunPassed(run: HostedRunProof) {
     run.hosted.engineCalls.rejected === 0 &&
     run.hosted.proxy.manifest >= 1 &&
     run.hosted.proxy.stream >= 1 &&
-    run.hosted.proxy.deniedAfterRevocation >= 1 &&
+    run.hosted.engineCalls.unauthenticated >= 1 &&
     run.hosted.media.cuts >= 1 &&
-    run.hosted.adapterRestarts === 2
+    run.hosted.adapterRestarts === 1
   );
 }
 
@@ -64,7 +68,7 @@ export function hostedHlsRunPassed(run: HostedRunProof) {
     run.hosted.engineCalls.rejected === 0 &&
     run.hosted.proxy.manifest >= 1 &&
     run.hosted.proxy.stream >= 1 &&
-    run.hosted.proxy.deniedAfterRevocation >= 1 &&
+    run.hosted.engineCalls.unauthenticated >= 1 &&
     run.hosted.adapterRestarts === 1
   );
 }

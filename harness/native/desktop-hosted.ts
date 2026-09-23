@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { setTimeout as wait } from "node:timers/promises";
 import { Effect, Schema } from "effect";
+import { redactCredentials } from "../../src/credential.ts";
 import { startHostedAdapter } from "../../src/hosted.ts";
-import { InstallationStore } from "../../src/installations.ts";
 import { playbackWait } from "../../src/playback-wait.ts";
 import {
   close,
   episodeTarget,
+  fakeCredential,
   generateCertificates,
   hostedFixture,
   listen,
@@ -24,7 +24,7 @@ import {
 // Serves the actual hosted adapter to the native desktop guest behind an
 // observing loopback proxy, and answers the guest's stage checkpoints with
 // harness-side assertions. Only request classes and statuses are recorded;
-// the installation capability never enters retained evidence.
+// the add-on credential never enters retained evidence.
 export interface ProxyMetrics {
   manifest: number;
   catalog: number;
@@ -37,9 +37,7 @@ export interface ProxyMetrics {
   prefetchHinted: number;
   notice: Record<string, number>;
   status: number;
-  api: number;
   other: number;
-  deniedAfterRevocation: number;
 }
 export interface HostedSnapshot {
   engineCalls: HostedEngineCalls;
@@ -60,8 +58,7 @@ const StageInput = Schema.Struct({
   kind: Schema.optional(Schema.Literals(["failed", "unknown", "select-file"])),
 });
 const classify = (pathname: string) => {
-  if (pathname.startsWith("/api/")) return "api" as const;
-  const rest = /^\/i\/[A-Za-z0-9_-]{43}(\/.*)$/.exec(pathname)?.[1];
+  const rest = /^\/s\/v4\.local\.[A-Za-z0-9_-]+(\/.*)$/.exec(pathname)?.[1];
   if (!rest) return "other" as const;
   if (rest === "/manifest.json") return "manifest" as const;
   if (rest.startsWith("/catalog/")) return "catalog" as const;
@@ -96,19 +93,13 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
     paceMovie: !hls,
     hls,
   });
-  const engine = yield* startHostedEngine({ mediaOrigin: media.origin, hls });
-  const privateDirectory = yield* Effect.acquireRelease(
-    Effect.tryPromise(() => mkdtemp("/tmp/chill-desktop-hosted-")),
-    (path) => Effect.promise(() => rm(path, { recursive: true, force: true })),
-  );
-  const storeKey = randomBytes(32);
-  const storePath = `${privateDirectory}/installations.sqlite`;
-  const store = yield* Effect.acquireRelease(
-    Effect.tryPromise(async () => ({
-      current: await InstallationStore.open(storePath, storeKey),
-    })),
-    (database) => Effect.sync(() => database.current.close()),
-  );
+  // The guest types the link; this keeps it within the issued-credential length range.
+  const credential = fakeCredential(240);
+  const engine = yield* startHostedEngine({
+    mediaOrigin: media.origin,
+    credential,
+    hls,
+  });
   const metrics: ProxyMetrics = {
     manifest: 0,
     catalog: 0,
@@ -121,11 +112,8 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
     prefetchHinted: 0,
     notice: {},
     status: 0,
-    api: 0,
     other: 0,
-    deniedAfterRevocation: 0,
   };
-  let revoked = false;
   let adapterOrigin = "";
   const proxy = yield* Effect.acquireRelease(
     Effect.tryPromise(async () => {
@@ -152,8 +140,6 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
             timeout: playbackWait.windowMs + 15_000,
           },
           (response) => {
-            if (revoked && response.statusCode === 404)
-              metrics.deniedAfterRevocation++;
             res.writeHead(response.statusCode ?? 502, response.headers);
             response.pipe(res);
           },
@@ -172,7 +158,6 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
   );
   const startAdapter = (port?: number) =>
     startHostedAdapter({
-      store: store.current,
       engineBaseUrl: engine.origin,
       webOrigin,
       publicOrigin: proxy.origin,
@@ -187,38 +172,15 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
   let restarts = 0;
   const restartAdapter = async () => {
     await adapter.current.close();
-    store.current.close();
-    store.current = await InstallationStore.open(storePath, storeKey);
     adapter.current = await startAdapter(adapterPort);
     assert.equal(adapter.current.listenOrigin, adapterOrigin);
     restarts++;
   };
-  const created = yield* Effect.tryPromise(async () => {
-    const response = await fetch(`${proxy.origin}/api/installations`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${engine.token}`,
-        "content-type": "application/json",
-        origin: webOrigin,
-      },
-      body: '{"folderId":"0"}',
-      signal: AbortSignal.timeout(10_000),
-    });
-    assert.equal(response.status, 201, "Installation was not created");
-    return Schema.decodeUnknownSync(
-      Schema.Struct({ id: Schema.String, manifestUrl: Schema.String }),
-    )(await response.json());
-  });
-  const installation = store.current
-    .list("1")
-    .find((entry) => entry.id === created.id);
-  assert.ok(installation, "Created installation is not listed");
-  assert.ok(
-    created.manifestUrl.startsWith(`${proxy.origin}/i/`),
-    "Manifest must use the observed public origin",
-  );
+  const manifestUrl = `${proxy.origin}/s/${credential}/manifest.json`;
+  const base = `${proxy.origin}/s/${credential}`;
+  const extension = hls ? "m3u8" : "mp4";
   const playPath = (type: string, target: string, releaseId: string) =>
-    `${proxy.origin}/i/${installation.capability}/play/${type}/${encodeURIComponent(target)}/${encodeURIComponent(releaseId)}.${hls ? "m3u8" : "mp4"}`;
+    `${base}/play/${type}/${encodeURIComponent(target)}/${encodeURIComponent(releaseId)}.${extension}`;
   const replay = async (
     type: string,
     target: string,
@@ -230,13 +192,11 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
       redirect: "manual",
       signal: AbortSignal.timeout(10_000),
     });
-  const operationFor = (releaseId: string) => {
-    const operation = store.current
-      .operations(installation.id)
-      .find((entry) => entry.releaseId === releaseId);
-    assert.ok(operation, `No durable claim for ${releaseId}`);
-    return operation;
-  };
+  const status = async (transferId: bigint) =>
+    fetch(`${base}/status/${transferId}.${extension}`, {
+      redirect: "manual",
+      signal: AbortSignal.timeout(10_000),
+    });
   const stages: StageRecord[] = [];
   const transferBefore = new Map<RecoveryKind, number>();
   const movieId = movieTarget(hostedFixture.movieId);
@@ -286,32 +246,28 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
         assert.equal(metrics.notice.pending ?? 0, 0);
         assert.equal(calls.transfer, 1);
         return {};
-      case "download-subtitles":
+      case "library": {
+        assert.equal(calls.transfer, 1);
+        const head = await replay("movie", movieId, "fixture-release", "HEAD");
+        assert.equal(head.status, 200);
+        const again = await status(1n);
+        assert.equal(again.status, 302);
+        assert.ok(again.headers.get("location")?.startsWith(media.origin));
+        await restartAdapter();
+        const resumed = await status(1n);
+        assert.equal(resumed.status, 302);
+        assert.equal(calls.transfer, 1, "Status reads submitted a transfer");
+        return { libraryId: `chill:file:${hostedFixture.fileId}` };
+      }
+      case "library-playing":
+        assert.ok(calls.playback >= 1, "Engine playback was not resolved");
+        assert.equal(calls.transfer, 1, "Library playback submitted");
+        return {};
+      case "library-subtitles":
         assert.ok(
           metrics.subtitles > 0,
           "Native client did not request subtitles",
         );
-        return {};
-      case "downloads": {
-        assert.equal(calls.transfer, 1);
-        const head = await replay("movie", movieId, "fixture-release", "HEAD");
-        assert.equal(head.status, 200);
-        const again = await replay("movie", movieId, "fixture-release");
-        assert.equal(again.status, 302);
-        assert.ok(again.headers.get("location")?.startsWith(media.origin));
-        assert.equal(calls.transfer, 1, "Repeated media GET resubmitted");
-        await restartAdapter();
-        const resumed = await replay("movie", movieId, "fixture-release");
-        assert.equal(resumed.status, 302);
-        assert.equal(calls.transfer, 1, "Restarted adapter resubmitted");
-        const operation = operationFor("fixture-release");
-        return {
-          acquiredId: `chill:acquired:${operation.id}:${hostedFixture.fileId}`,
-        };
-      }
-      case "acquired-playing":
-        assert.ok(calls.playback >= 1, "Engine playback was not resolved");
-        assert.equal(calls.transfer, 1, "Acquired playback resubmitted");
         return {};
       case "interrupt":
         media.interrupt();
@@ -337,29 +293,19 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
           `Selection did not submit ${kind} and load its status clip`,
         );
         assert.equal(calls.transfer, before + 1);
-        const target = movieTarget(`fixture-${kind}`);
-        const again = await replay("movie", target, `fixture-${kind}-release`);
-        assert.equal(again.status, 302);
-        assert.ok(
-          again.headers.get("location")?.endsWith(`/notice/${kind}.mp4`),
+        const recovery = hostedFixture.recoveryCases.find(
+          (entry) => entry.kind === kind,
         );
-        assert.equal(calls.transfer, before + 1, "Status replay resubmitted");
-        return { operationId: operationFor(`fixture-${kind}-release`).id };
-      }
-      case "unknown-restart": {
-        const before = calls.transfer;
-        await restartAdapter();
-        const again = await replay(
-          "movie",
-          movieTarget("fixture-unknown"),
-          "fixture-unknown-release",
-        );
-        assert.equal(again.status, 302);
-        assert.ok(
-          again.headers.get("location")?.endsWith("/notice/unknown.mp4"),
-        );
-        assert.equal(calls.transfer, before, "Unknown outcome was resubmitted");
-        return {};
+        assert.ok(recovery);
+        if (kind !== "unknown") {
+          const again = await status(recovery.transferId);
+          assert.equal(again.status, 302);
+          assert.ok(
+            again.headers.get("location")?.endsWith(`/notice/${kind}.mp4`),
+          );
+        }
+        assert.equal(calls.transfer, before + 1, "Status read submitted");
+        return { fileId: `chill:file:${hostedFixture.multipleEpisodeId}` };
       }
       case "select-file-playing":
         assert.equal(
@@ -368,31 +314,14 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
           "Chosen second file was not the resolved playback",
         );
         return {};
-      case "revoke": {
-        const response = await fetch(
-          `${proxy.origin}/api/installations/${installation.id}`,
-          {
-            method: "DELETE",
-            headers: {
-              authorization: `Bearer ${engine.token}`,
-              origin: webOrigin,
-            },
-            signal: AbortSignal.timeout(10_000),
-          },
-        );
-        assert.equal(response.status, 204);
-        revoked = true;
-        const manifest = await fetch(created.manifestUrl, {
-          signal: AbortSignal.timeout(10_000),
-        });
-        assert.equal(manifest.status, 404, "Revoked manifest still served");
+      case "reject-credential":
+        engine.state.credentialRejected = true;
         return {};
-      }
-      case "revoked-client":
+      case "reconnect-client":
         await pollUntil(
-          () => metrics.deniedAfterRevocation >= 1,
+          () => calls.unauthenticated >= 1,
           20_000,
-          "Client requests were not denied after revocation",
+          "Client requests did not reach the rejecting Engine",
         );
         return {};
       default:
@@ -435,9 +364,9 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
           record.ok = true;
           reply(200, { ok: true, ...data });
         } catch (error) {
-          record.error = String(error instanceof Error ? error.message : error)
-            .replaceAll(installation.capability, "[capability]")
-            .replaceAll(engine.token, "[token]");
+          record.error = redactCredentials(
+            String(error instanceof Error ? error.message : error),
+          );
           reply(409, { ok: false, error: record.error });
         }
       });
@@ -447,9 +376,9 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
   );
   return {
     certificate: certificates.cert,
-    manifestUrl: created.manifestUrl,
+    manifestUrl,
     controlUrl: `${control.origin}/${secret}`,
-    secrets: [installation.capability, engine.token],
+    secrets: [credential],
     endpoints: [media.origin, engine.origin, proxy.origin, control.origin],
     snapshot: (): HostedSnapshot => ({
       engineCalls: { ...calls, playbackFiles: [...calls.playbackFiles] },

@@ -16,6 +16,8 @@ import {
 } from "../harness/live/hosted.ts";
 import { readLedger, utcDay } from "../harness/live/allowance.ts";
 
+const credential = `v4.local.${"F".repeat(300)}`;
+
 test("explicit hosted allowance extension preserves usage and adds only bounded required headroom", async () => {
   const directory = await mkdtemp(join(tmpdir(), "hosted-allowance-fixture-"));
   try {
@@ -114,6 +116,7 @@ test("live proxy admits one exact owned source and checkpoints result before res
   const observations: bigint[] = [];
   const proxy = await startFixtureDiscoveryProxy(
     "fixture-owner",
+    credential,
     source,
     587992,
     0n,
@@ -123,13 +126,16 @@ test("live proxy admits one exact owned source and checkpoints result before res
     },
     engine.origin,
   );
-  const post = (method: string, body: unknown, token = "fixture-owner") =>
+  const post = (
+    method: string,
+    body: unknown,
+    headers: Record<string, string> = {
+      "x-chill-stremio-credential": credential,
+    },
+  ) =>
     fetch(`${proxy.origin}/chill.v4.UserService/${method}`, {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
+      headers: { ...headers, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
   try {
@@ -142,10 +148,20 @@ test("live proxy admits one exact owned source and checkpoints result before res
       503,
     );
     assert.equal((await post("GetDownloadFolder", {})).status, 503);
-    assert.equal(
-      (await post("AddTransfer", { url: source }, "wrong-token")).status,
-      503,
-    );
+    const rejectedHeaders: Record<string, string>[] = [
+      { "x-chill-stremio-credential": `v4.local.${"G".repeat(300)}` },
+      { authorization: "Bearer fixture-owner" },
+      {
+        "x-chill-stremio-credential": credential,
+        authorization: "Bearer fixture-owner",
+      },
+    ];
+    for (const headers of rejectedHeaders)
+      assert.equal(
+        (await post("AddTransfer", { url: source }, headers)).status,
+        503,
+      );
+    assert.equal((await post("GetUserProfile", {})).status, 503);
     assert.equal(engine.submitted, 0);
     const generated = await post("GetMovies", {});
     assert.equal(generated.status, 200);
@@ -174,6 +190,7 @@ test("failed result checkpoint cannot cause the proxy to submit the source twice
   const source = "https://fixture.example/owned-source";
   const proxy = await startFixtureDiscoveryProxy(
     "fixture-owner",
+    credential,
     source,
     587992,
     0n,
@@ -187,7 +204,7 @@ test("failed result checkpoint cannot cause the proxy to submit the source twice
       fetch(`${proxy.origin}/chill.v4.UserService/AddTransfer`, {
         method: "POST",
         headers: {
-          authorization: "Bearer fixture-owner",
+          "x-chill-stremio-credential": credential,
           "content-type": "application/json",
         },
         body: JSON.stringify({ url: source }),
@@ -219,17 +236,24 @@ test("media-selection proof issues read-only HEAD then GET without following cre
     const address = server.address();
     assert.ok(address && typeof address !== "string");
     origin = `http://127.0.0.1:${address.port}`;
-    const path =
-      "/i/fixture-capability/play/movie/fixture-target/fixture-release.mp4";
-    destination = `${origin}/i/fixture-capability/notice/pending.mp4`;
+    const path = `/s/${credential}/play/movie/fixture-target/fixture-release.mp4`;
+    destination = `${origin}/s/${credential}/notice/pending.mp4`;
     await requestSelectedMedia(origin, path, "HEAD");
+    await requestSelectedMedia(origin, path, "GET");
+    destination = `${origin}/s/${credential}/status/7.mp4?wait=1`;
     await requestSelectedMedia(origin, path, "GET");
     destination = "https://fixture.invalid/media?download-token=fake-only";
     await requestSelectedMedia(origin, path, "GET");
-    assert.deepEqual(calls, [`HEAD ${path}`, `GET ${path}`, `GET ${path}`]);
+    assert.deepEqual(calls, [
+      `HEAD ${path}`,
+      `GET ${path}`,
+      `GET ${path}`,
+      `GET ${path}`,
+    ]);
     for (const invalid of [
       "https://fixture.invalid/play.mp4",
       "/api/installations",
+      "/i/fixture-capability/play/movie/fixture-target/fixture-release.mp4",
       `${path}?token=fake`,
       `${path}#fragment`,
     ]) {
@@ -237,12 +261,12 @@ test("media-selection proof issues read-only HEAD then GET without following cre
         code: "hosted_probe_failed",
       });
     }
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 4);
     destination = `${origin}/unexpected-page`;
     await assert.rejects(requestSelectedMedia(origin, path, "GET"), {
       code: "hosted_probe_failed",
     });
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 5);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) =>

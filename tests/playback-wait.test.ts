@@ -2,14 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "vite-plus/test";
 import { waitForPlayback, type PlaybackResult } from "../src/playback-wait.ts";
 
-const pending: PlaybackResult = {
-  operationId: "fixture-operation",
-  status: "pending",
-};
-const ready: PlaybackResult = {
-  operationId: "fixture-operation",
-  url: "https://media.fixture.test/video.mp4",
-};
+const pending: PlaybackResult = { status: "pending" };
+const ready: PlaybackResult = { url: "https://media.fixture.test/video.mp4" };
 const timing = { windowMs: 1000, pollMs: 1, continuations: 0 };
 
 test("a pending selection resolves to real playback without another selection", async () => {

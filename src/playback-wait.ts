@@ -1,10 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { StatusMediaKind } from "./status-media.ts";
 
-export type PlaybackResult = { operationId: string } & (
-  | { url: string }
-  | { status: StatusMediaKind }
-);
+export type PlaybackResult = { url: string } | { status: StatusMediaKind };
 
 // Stay below mpv's 60s network timeout and FFmpeg's eight-redirect limit.
 export const playbackWait = {

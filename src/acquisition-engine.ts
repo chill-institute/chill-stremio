@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Schema } from "effect";
-import { createEngineRpc, EngineError } from "./engine.ts";
+import { createEngineRpc, EngineError, type EngineAuth } from "./engine.ts";
 
 const PositiveId = Schema.BigInt.check(
   Schema.isBetweenBigInt({ minimum: 1n, maximum: 9223372036854775807n }),
@@ -36,9 +36,6 @@ const Transfer = Schema.Struct({
   saveParentId: Schema.optional(FolderId),
   errorMessage: Schema.String.check(Schema.isMaxLength(4096)),
 });
-const Profile = Schema.Struct({
-  userId: Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,19}$/)),
-});
 const TransferUrl = Schema.String.check(
   Schema.isMaxLength(16384),
   Schema.makeFilter((value) => {
@@ -70,7 +67,6 @@ const TransferUrl = Schema.String.check(
 export type AcquisitionFile = typeof File.Type;
 export type AcquiredVideo = AcquisitionFile & { parentId: bigint };
 export type AcquisitionFolder = typeof Folder.Type;
-export type AcquisitionProfile = typeof Profile.Type;
 export type AcquisitionTransfer = Omit<typeof Transfer.Type, "errorMessage"> & {
   failed: boolean;
 };
@@ -78,7 +74,6 @@ export type AcquisitionTransfer = Omit<typeof Transfer.Type, "errorMessage"> & {
 export class AcquisitionEngine extends Context.Service<
   AcquisitionEngine,
   {
-    getProfile(): Effect.Effect<AcquisitionProfile, EngineError>;
     getFolder(id: bigint): Effect.Effect<AcquisitionFolder, EngineError>;
     addTransfer(url: string): Effect.Effect<AcquisitionTransfer, EngineError>;
     getTransfer(id: bigint): Effect.Effect<AcquisitionTransfer, EngineError>;
@@ -97,22 +92,12 @@ const decodeTransfer = Effect.fn("Acquisition.decodeTransfer")(function* (
   return { ...fields, failed: errorMessage.trim() !== "" };
 });
 
-export function acquisitionEngineLayer(configuration: {
-  baseUrl: string;
-  token: string;
-}) {
+export function acquisitionEngineLayer(configuration: EngineAuth) {
   return Layer.effect(
     AcquisitionEngine,
     Effect.gen(function* () {
       const rpc = yield* createEngineRpc(configuration);
       return AcquisitionEngine.of({
-        getProfile: Effect.fn("Acquisition.getProfile")(function* () {
-          return yield* Schema.decodeUnknownEffect(Profile)(
-            yield* rpc.call((options) =>
-              rpc.client.getUserProfile({}, options),
-            ),
-          ).pipe(Effect.mapError(invalidResponse));
-        }),
         getFolder: Effect.fn("Acquisition.getFolder")(function* (id: bigint) {
           yield* Schema.decodeUnknownEffect(FolderId)(id).pipe(
             Effect.mapError(invalidConfig),

@@ -9,7 +9,6 @@ import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import {
   AudioCodec,
   SubtitleFormat,
-  UserProfileSchema,
   GetMoviesResponseSchema,
   GetTVShowsResponseSchema,
   GetTVShowDetailResponseSchema,
@@ -63,12 +62,17 @@ export const movieTarget = (id: string) =>
   `chill:movie:${Buffer.from(id).toString("base64url")}`;
 export const episodeTarget = `chill:episode:${hostedFixture.seriesImdbId}:1:1`;
 export const seriesMetaId = `chill:series:${hostedFixture.seriesImdbId}`;
+/** A generated value with the shape of an Engine-issued Stremio credential. */
+export const fakeCredential = (bytes = 300) =>
+  `v4.local.${randomBytes(bytes).toString("base64url")}`;
 
 export interface HostedEngineState {
   submitted: boolean;
   episodeSubmitted: boolean;
   completed: boolean;
   recoverySubmitted: Set<RecoveryKind>;
+  /** Answer every RPC as Engine does for a revoked or expired credential. */
+  credentialRejected: boolean;
 }
 export interface HostedEngineCalls {
   folder: number;
@@ -77,6 +81,8 @@ export interface HostedEngineCalls {
   search: number;
   transfer: number;
   rejected: number;
+  /** RPCs answered with 401 while the credential was rejected. */
+  unauthenticated: number;
   /** Resolved playback file IDs in request order. */
   playbackFiles: string[];
 }
@@ -303,8 +309,12 @@ export const startHostedMedia = Effect.fn("startHostedMedia")(function* (
 });
 
 export const startHostedEngine = Effect.fn("startHostedEngine")(
-  function* (options: { mediaOrigin: string; token?: string; hls?: boolean }) {
-    const token = options.token ?? randomBytes(32).toString("hex");
+  function* (options: {
+    mediaOrigin: string;
+    credential?: string;
+    hls?: boolean;
+  }) {
+    const credential = options.credential ?? fakeCredential();
     const {
       libraryFolderId,
       libraryFileId,
@@ -330,6 +340,7 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
       episodeSubmitted: false,
       completed: false,
       recoverySubmitted: new Set(),
+      credentialRejected: false,
     };
     const calls: HostedEngineCalls = {
       folder: 0,
@@ -338,6 +349,7 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
       search: 0,
       transfer: 0,
       rejected: 0,
+      unauthenticated: 0,
       playbackFiles: [],
     };
     return yield* Effect.acquireRelease(
@@ -345,7 +357,30 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
         const server = createServer(async (req, res) => {
           try {
             assert.equal(req.method, "POST");
-            assert.equal(req.headers.authorization, `Bearer ${token}`);
+            assert.equal(req.headers.authorization, undefined);
+            assert.equal(req.headers["x-chill-stremio-credential"], credential);
+            assert.ok(
+              [
+                "GetFolder",
+                "GetMovies",
+                "GetTVShows",
+                "GetTVShowDetail",
+                "GetTVShowSeason",
+                "Search",
+                "AddTransfer",
+                "GetTransfer",
+                "ResolvePlayback",
+              ].includes(req.url?.split("/").at(-1) ?? ""),
+            );
+            if (state.credentialRejected) {
+              calls.unauthenticated++;
+              res
+                .writeHead(401, { "content-type": "application/json" })
+                .end(
+                  '{"code":"unauthenticated","message":"Generated credential rejection"}',
+                );
+              return;
+            }
             let body = "";
             for await (const chunk of req) {
               body += String(chunk);
@@ -421,14 +456,6 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                                 ]
                               : []),
                           ],
-                }),
-              );
-            } else if (req.url === "/chill.v4.UserService/GetUserProfile") {
-              response = toJsonString(
-                UserProfileSchema,
-                create(UserProfileSchema, {
-                  userId: "1",
-                  username: "fixture",
                 }),
               );
             } else if (req.url === "/chill.v4.UserService/GetMovies") {
@@ -758,7 +785,13 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
               );
           }
         });
-        return { server, origin: await listen(server), token, state, calls };
+        return {
+          server,
+          origin: await listen(server),
+          credential,
+          state,
+          calls,
+        };
       }),
       ({ server }) => Effect.promise(() => close(server)),
     );

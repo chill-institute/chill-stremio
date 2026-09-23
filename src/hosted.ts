@@ -1,32 +1,23 @@
-import {
-  createServer,
-  type IncomingMessage,
-  type ServerResponse,
-} from "node:http";
-import { Effect, Layer, Schema } from "effect";
-import sdk, { type Manifest } from "stremio-addon-sdk";
-import {
-  AcquisitionEngine,
-  acquisitionEngineLayer,
-  inspectTransferFiles,
-} from "./acquisition-engine.ts";
+import { createHash } from "node:crypto";
+import { createServer, type ServerResponse } from "node:http";
+import { Effect, Layer } from "effect";
+import sdk, { type ContentType, type Manifest } from "stremio-addon-sdk";
+import { acquisitionEngineLayer } from "./acquisition-engine.ts";
+import { credentialPattern } from "./credential.ts";
 import {
   createDiscovery,
   discoveryCatalogs,
   discoveryIdPrefixes,
-  discoveryTargetId,
 } from "./discovery.ts";
 import { discoveryEngineLayer } from "./discovery-engine.ts";
 import { engineLayer } from "./engine.ts";
 import { createLibrary } from "./library.ts";
+import { createSelection, type Submission } from "./selection.ts";
 import {
-  InstallationFailure,
-  type Installation,
-  type InstallationStore,
-  type Acquisition,
-} from "./installations.ts";
-import { createSelection } from "./selection.ts";
-import { playbackWait, waitForPlayback } from "./playback-wait.ts";
+  playbackWait,
+  waitForPlayback,
+  type PlaybackResult,
+} from "./playback-wait.ts";
 import {
   loadStatusMedia,
   sendStatusMedia,
@@ -36,22 +27,6 @@ import {
 import { adapterManifest } from "./server.ts";
 import { configureAssets, configurePage } from "./configure-page.ts";
 
-const FolderId = Schema.String.check(
-  Schema.isPattern(/^(0|[1-9][0-9]{0,18})$/),
-  Schema.makeFilter((value) => BigInt(value) <= 9223372036854775807n),
-);
-const Selection = Schema.Struct({
-  type: Schema.Literals(["movie", "series"]),
-  target: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1600)),
-});
-const Acquire = Schema.Struct({
-  ...Selection.fields,
-  releaseId: Schema.NonEmptyString.check(Schema.isMaxLength(512)),
-});
-const Bearer = Schema.String.check(
-  Schema.isPattern(/^Bearer [A-Za-z0-9._~+/-]+=*$/),
-  Schema.isMaxLength(8200),
-);
 class HttpFailure extends Error {
   readonly code: string;
   constructor(code: string) {
@@ -71,32 +46,7 @@ const status = (code: string) =>
     resource_exhausted: 429,
     deadline_exceeded: 504,
     unavailable: 503,
-    storage_unavailable: 503,
   })[code] ?? 502;
-function parse<A, I>(schema: Schema.Codec<A, I>, value: unknown): A {
-  try {
-    return Schema.decodeUnknownSync(schema)(value);
-  } catch {
-    return fail("invalid_request");
-  }
-}
-async function body(request: IncomingMessage) {
-  if (request.headers["content-type"]?.split(";")[0] !== "application/json")
-    return fail("invalid_request");
-  const chunks: Buffer[] = [];
-  let length = 0;
-  for await (const chunk of request) {
-    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    length += bytes.length;
-    if (length > 8192) return fail("invalid_request");
-    chunks.push(bytes);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-  } catch {
-    return fail("invalid_request");
-  }
-}
 function json(response: ServerResponse, code: number, value?: unknown) {
   if (response.destroyed || response.writableEnded) return;
   response.writeHead(code, {
@@ -104,15 +54,10 @@ function json(response: ServerResponse, code: number, value?: unknown) {
   });
   response.end(value === undefined ? undefined : JSON.stringify(value));
 }
-const publicOperation = (operation: Acquisition) => ({
-  id: operation.id,
-  state: operation.state,
-  transferId: operation.transferId,
-});
-
 export async function startHostedAdapter(options: {
-  store: InstallationStore;
   statusMedia?: StatusMedia;
+  /** How long a finished selection's submission is reused by identical requests. */
+  selectionReuseMs?: number;
   engineBaseUrl: string;
   webOrigin: string;
   publicOrigin?: string;
@@ -136,13 +81,30 @@ export async function startHostedAdapter(options: {
     throw new Error("Invalid hosted origin");
   const statusMedia = options.statusMedia ?? (await loadStatusMedia());
   const controllers = new Set<AbortController>();
+  // Identical selections share one submission while any of their requests is
+  // open and briefly afterwards: native players reopen the selected URL once
+  // the first request resolves. Nothing survives a restart.
+  const reuseMs = options.selectionReuseMs ?? 60_000;
+  const submissions = new Map<
+    string,
+    {
+      submission: Promise<Submission>;
+      users: number;
+      failed: boolean;
+      expiry?: ReturnType<typeof setTimeout>;
+    }
+  >();
+  const forget = (key: string) => {
+    clearTimeout(submissions.get(key)?.expiry);
+    submissions.delete(key);
+  };
   let origin = options.publicOrigin ?? "";
   let listenOrigin = "";
+  const reconnectUrl = `${options.webOrigin}/stremio`;
   const idPrefixes = [
     ...(adapterManifest.idPrefixes ?? []),
     ...discoveryIdPrefixes,
-    "chill:acquired:",
-    "chill:download:",
+    "chill:reconnect",
   ];
   const manifest: Manifest = {
     ...adapterManifest,
@@ -160,25 +122,32 @@ export async function startHostedAdapter(options: {
       },
       {
         name: "subtitles",
-        types: ["movie", "series"],
-        idPrefixes: [...idPrefixes, "tt"],
+        types: ["movie"],
+        idPrefixes: adapterManifest.idPrefixes ?? [],
       },
     ],
     catalogs: [
       ...discoveryCatalogs.filter(({ id }) => id === "discover-releases"),
       ...adapterManifest.catalogs,
       ...discoveryCatalogs.filter(({ id }) => id !== "discover-releases"),
-      { type: "movie", id: "downloads", name: "Downloads" },
-      { type: "movie", id: "acquired", name: "Acquired videos" },
     ],
     behaviorHints: { configurable: true, configurationRequired: false },
   };
-  const installationView = (installation: Installation) => ({
-    id: installation.id,
-    folderId: installation.folderId,
-    createdAt: installation.createdAt,
-    manifestUrl: `${origin}/i/${installation.capability}/manifest.json`,
+  const reconnectMeta = (type: ContentType) => ({
+    id: "chill:reconnect",
+    type,
+    name: "Reconnect chill.institute",
+    description: `This add-on link is no longer accepted. Open ${reconnectUrl} and install the add-on again.`,
+    behaviorHints: { defaultVideoId: "chill:reconnect" },
   });
+  const reconnectStream = {
+    name: "chill.institute",
+    title: `Reconnect at ${reconnectUrl}`,
+    externalUrl: reconnectUrl,
+  };
+  const rejected = (error: unknown) =>
+    error instanceof HttpFailure &&
+    (error.code === "unauthenticated" || error.code === "permission_denied");
   const server = createServer((request, response) => {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Referrer-Policy", "no-referrer");
@@ -265,232 +234,16 @@ export async function startHostedAdapter(options: {
           });
           response.end(page.html);
         } else {
-          response
-            .writeHead(302, { Location: `${options.webOrigin}/stremio` })
-            .end();
+          response.writeHead(302, { Location: reconnectUrl }).end();
         }
         return;
       }
-      if (url.pathname.startsWith("/api/")) {
-        const allowed = request.headers.origin === options.webOrigin;
-        if (request.headers.origin && !allowed)
-          return fail("permission_denied");
-        if (allowed) {
-          response.setHeader("Access-Control-Allow-Origin", options.webOrigin);
-          response.setHeader("Vary", "Origin");
-        }
-        if (request.method === "OPTIONS") {
-          response.setHeader(
-            "Access-Control-Allow-Methods",
-            "GET, POST, DELETE, OPTIONS",
-          );
-          response.setHeader(
-            "Access-Control-Allow-Headers",
-            "Authorization, Content-Type",
-          );
-          json(response, 204);
-          return;
-        }
-        if (!Schema.is(Bearer)(request.headers.authorization))
-          return fail("unauthenticated");
-        const token = request.headers.authorization.slice(7);
-        const layer = acquisitionEngineLayer({
-          baseUrl: options.engineBaseUrl,
-          token,
-        });
-        const profile = await run(
-          Effect.flatMap(AcquisitionEngine, (engine) =>
-            engine.getProfile(),
-          ).pipe(Effect.provide(layer)),
-        );
-        const installations = options.store.list(profile.userId);
-        if (url.pathname === "/api/installations") {
-          if (request.method === "GET") {
-            json(response, 200, {
-              installations: installations.map(installationView),
-            });
-            return;
-          }
-          if (request.method === "POST") {
-            const input = parse(
-              Schema.Struct({ folderId: Schema.optional(FolderId) }),
-              await body(request),
-            );
-            const folderId = input.folderId ?? "0";
-            if (folderId !== "0") {
-              await run(
-                Effect.flatMap(AcquisitionEngine, (engine) =>
-                  engine.getFolder(BigInt(folderId)),
-                ).pipe(Effect.provide(layer)),
-              );
-            }
-            json(
-              response,
-              201,
-              installationView(
-                options.store.create({
-                  owner: profile.userId,
-                  token,
-                  folderId,
-                }),
-              ),
-            );
-            return;
-          }
-          return fail("not_found");
-        }
-        const parts = url.pathname.split("/");
-        const installation = installations.find(
-          (entry) => entry.id === parts[3],
-        );
-        if (parts[2] !== "installations" || !installation)
-          return fail("not_found");
-        if (parts.length === 4 && request.method === "DELETE") {
-          options.store.revoke(profile.userId, installation.id);
-          json(response, 204);
-          return;
-        }
-        const discovery = createDiscovery();
-        const discoveryLayer = discoveryEngineLayer({
-          baseUrl: options.engineBaseUrl,
-          token,
-        });
-        if (
-          parts.length === 5 &&
-          parts[4] === "releases" &&
-          request.method === "GET"
-        ) {
-          const input = parse(Selection, {
-            type: url.searchParams.get("type"),
-            target: url.searchParams.get("target"),
-          });
-          const target = await run(
-            discovery
-              .resolveTarget({ type: input.type, id: input.target })
-              .pipe(Effect.provide(discoveryLayer)),
-          );
-          const releases = await run(
-            discovery.releases(target).pipe(Effect.provide(discoveryLayer)),
-          );
-          const operation = options.store
-            .operations(installation.id)
-            .find((entry) => entry.target === discoveryTargetId(target));
-          json(response, 200, {
-            releases: releases.map(({ id, title, indexer, size, seeders }) => ({
-              id,
-              title,
-              indexer,
-              size: String(size),
-              seeders: String(seeders),
-            })),
-            operation: operation && publicOperation(operation),
-          });
-          return;
-        }
-        if (
-          parts.length === 5 &&
-          parts[4] === "acquisitions" &&
-          request.method === "POST"
-        ) {
-          const input = parse(Acquire, await body(request));
-          const target = await run(
-            discovery
-              .resolveTarget({ type: input.type, id: input.target })
-              .pipe(Effect.provide(discoveryLayer)),
-          );
-          const canonical = discoveryTargetId(target);
-          const prior = options.store
-            .operations(installation.id)
-            .find(
-              (entry) =>
-                entry.target === canonical &&
-                entry.releaseId === input.releaseId,
-            );
-          if (prior) {
-            json(response, 200, publicOperation(prior));
-            return;
-          }
-          const releases = await run(
-            discovery.releases(target).pipe(Effect.provide(discoveryLayer)),
-          );
-          const release = releases.find(
-            (entry) => entry.id === input.releaseId,
-          );
-          if (!release) return fail("not_found");
-          if (controller.signal.aborted) return fail("deadline_exceeded");
-          const claim = options.store.claim(
-            installation.id,
-            canonical,
-            release.id,
-            release.title,
-          );
-          if (claim.fresh) {
-            // A lost provider response cannot safely be retried. The durable claim remains unknown.
-            try {
-              const transfer = await run(
-                Effect.flatMap(AcquisitionEngine, (engine) =>
-                  engine.addTransfer(release.url),
-                ).pipe(Effect.provide(layer)),
-              );
-              options.store.submitted(
-                installation.id,
-                claim.operation.id,
-                String(transfer.id),
-              );
-            } catch {
-              /* Preserve the durable unknown outcome, including cancellation. */
-            }
-          }
-          const operation = options.store
-            .operations(installation.id)
-            .find((entry) => entry.id === claim.operation.id);
-          if (!operation) return fail("storage_unavailable");
-          json(response, 200, publicOperation(operation));
-          return;
-        }
-        if (
-          parts.length === 6 &&
-          parts[4] === "acquisitions" &&
-          request.method === "GET"
-        ) {
-          const operation = options.store
-            .operations(installation.id)
-            .find((entry) => entry.id === parts[5]);
-          if (!operation) return fail("not_found");
-          if (!operation.transferId) {
-            json(response, 200, { ...publicOperation(operation), files: [] });
-            return;
-          }
-          const result = await run(
-            Effect.gen(function* () {
-              const engine = yield* AcquisitionEngine;
-              const transfer = yield* engine.getTransfer(
-                BigInt(operation.transferId ?? "0"),
-              );
-              const files = yield* inspectTransferFiles(transfer);
-              return { transfer, files };
-            }).pipe(Effect.provide(layer)),
-          );
-          json(response, 200, {
-            ...publicOperation(operation),
-            transfer: {
-              status: result.transfer.status,
-              percentDone: result.transfer.percentDone,
-            },
-            files: result.files.map((file) => ({
-              id: String(file.id),
-              name: file.name,
-              stremioId: `chill:acquired:${operation.id}:${file.id}`,
-            })),
-          });
-          return;
-        }
+      const match = /^\/s\/([^/]+)(\/.*)$/.exec(url.pathname);
+      const credential = match?.[1];
+      const path = match?.[2];
+      if (!credential || !path || !credentialPattern.test(credential))
         return fail("not_found");
-      }
-      const match = /^\/i\/([A-Za-z0-9_-]{43})(\/.*)$/.exec(url.pathname);
-      if (!match?.[1] || !match[2]) return fail("not_found");
-      const installation = options.store.resolve(match[1]);
-      if (!installation) return fail("not_found");
+      const base = `${origin}/s/${credential}`;
       response.setHeader("Access-Control-Allow-Origin", "*");
       if (request.method === "OPTIONS") {
         response.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -499,40 +252,23 @@ export async function startHostedAdapter(options: {
       }
       if (request.method !== "GET" && request.method !== "HEAD")
         return fail("not_found");
+      const auth = { baseUrl: options.engineBaseUrl, credential };
       const layer = Layer.mergeAll(
-        engineLayer({
-          baseUrl: options.engineBaseUrl,
-          token: installation.token,
-        }),
-        discoveryEngineLayer({
-          baseUrl: options.engineBaseUrl,
-          token: installation.token,
-        }),
-        acquisitionEngineLayer({
-          baseUrl: options.engineBaseUrl,
-          token: installation.token,
-        }),
+        engineLayer(auth),
+        discoveryEngineLayer(auth),
+        acquisitionEngineLayer(auth),
       );
-      const library = createLibrary(
-        BigInt(installation.folderId),
-        installation.folderId === "0",
-      );
+      const library = createLibrary(0n, true);
       const discovery = createDiscovery();
-      const selection = createSelection({
-        store: options.store,
-        installation,
-        origin,
-      });
+      const selection = createSelection({ base });
       const playRoute =
-        /^\/play\/(movie|series)\/([^/]+)\/([^/]+)\.(?:mp4|m3u8)$/.exec(
-          match[2],
-        );
-      const statusRoute = /^\/status\/([0-9a-f-]{36})\.(?:mp4|m3u8)$/.exec(
-        match[2],
+        /^\/play\/(movie|series)\/([^/]+)\/([^/]+)\.(?:mp4|m3u8)$/.exec(path);
+      const statusRoute = /^\/status\/([1-9][0-9]{0,18})\.(?:mp4|m3u8)$/.exec(
+        path,
       );
       const noticeRoute =
-        /^\/notice\/(pending|unknown|failed|select-file|unavailable)\.mp4$/.exec(
-          match[2],
+        /^\/notice\/(pending|unknown|failed|select-file|unavailable|reconnect)\.mp4$/.exec(
+          path,
         );
       if (noticeRoute?.[1]) {
         sendStatusMedia(
@@ -543,8 +279,10 @@ export async function startHostedAdapter(options: {
         );
         return;
       }
+      if (statusRoute?.[1] && BigInt(statusRoute[1]) > 9223372036854775807n)
+        return fail("not_found");
       if (playRoute || statusRoute) {
-        const hls = match[2].endsWith(".m3u8");
+        const hls = path.endsWith(".m3u8");
         const timing = hls
           ? { ...playbackWait, windowMs: 25_000 }
           : playbackWait;
@@ -577,39 +315,79 @@ export async function startHostedAdapter(options: {
           controller.abort();
           json(response, 504, { error: "deadline_exceeded" });
         }, timing.windowMs + 10_000);
-        let result;
-        if (playRoute?.[1] && playRoute[2] && playRoute[3]) {
-          let id: string;
-          let releaseId: string;
-          try {
-            id = decodeURIComponent(playRoute[2]);
-            releaseId = decodeURIComponent(playRoute[3]);
-          } catch {
-            return fail("invalid_request");
+        let transferId: bigint | undefined;
+        let result: PlaybackResult;
+        let release = () => {};
+        const inspect = (id: bigint) =>
+          run(selection.status(id).pipe(Effect.provide(layer)));
+        try {
+          if (playRoute?.[1] && playRoute[2] && playRoute[3]) {
+            const type = playRoute[1];
+            let id: string;
+            let releaseId: string;
+            try {
+              id = decodeURIComponent(playRoute[2]);
+              releaseId = decodeURIComponent(playRoute[3]);
+            } catch {
+              return fail("invalid_request");
+            }
+            const key = createHash("sha256")
+              .update(`${credential}\n${type}\n${id}\n${releaseId}`)
+              .digest("hex");
+            let shared = submissions.get(key);
+            if (!shared) {
+              for (const [stale, candidate] of submissions)
+                if (submissions.size >= 256 && candidate.users === 0)
+                  forget(stale);
+              const created = {
+                submission: run(
+                  selection
+                    .submit({ type, id, releaseId })
+                    .pipe(Effect.provide(layer)),
+                ),
+                users: 0,
+                failed: false,
+              };
+              created.submission.catch(() => {
+                created.failed = true;
+              });
+              shared = created;
+              submissions.set(key, shared);
+            }
+            const entry = shared;
+            clearTimeout(entry.expiry);
+            entry.users++;
+            release = () => {
+              if (--entry.users > 0 || submissions.get(key) !== entry) return;
+              if (entry.failed) forget(key);
+              else {
+                entry.expiry = setTimeout(() => forget(key), reuseMs);
+                entry.expiry.unref();
+              }
+            };
+            const submitted = await entry.submission;
+            if ("transferId" in submitted) {
+              transferId = submitted.transferId;
+              result = await inspect(transferId);
+            } else result = submitted;
+          } else {
+            transferId = BigInt(statusRoute?.[1] ?? "0");
+            result = await inspect(transferId);
           }
-          result = await run(
-            selection
-              .play({ type: playRoute[1], id, releaseId })
-              .pipe(Effect.provide(layer)),
-          );
-        } else if (statusRoute?.[1]) {
-          result = await run(
-            selection.status(statusRoute[1]).pipe(Effect.provide(layer)),
-          );
-        } else return fail("not_found");
-        const operationId = result.operationId;
-        result = await waitForPlayback(
-          result,
-          async () => {
-            if (!options.store.resolve(installation.capability))
-              return fail("not_found");
-            return run(
-              selection.status(operationId).pipe(Effect.provide(layer)),
+          const polled = transferId;
+          if (polled !== undefined)
+            result = await waitForPlayback(
+              result,
+              () => inspect(polled),
+              controller.signal,
+              timing,
             );
-          },
-          controller.signal,
-          timing,
-        );
+        } catch (error) {
+          if (!rejected(error)) throw error;
+          result = { status: "reconnect" };
+        } finally {
+          release();
+        }
         if (response.destroyed || response.writableEnded) return;
         if ("status" in result && result.status === "pending") {
           if (Number(continuation) >= playbackWait.continuations) {
@@ -618,7 +396,7 @@ export async function startHostedAdapter(options: {
           } else {
             response
               .writeHead(302, {
-                Location: `${origin}/i/${installation.capability}/status/${result.operationId}.${hls ? "m3u8" : "mp4"}?wait=${Number(continuation) + 1}`,
+                Location: `${base}/status/${transferId}.${hls ? "m3u8" : "mp4"}?wait=${Number(continuation) + 1}`,
               })
               .end();
           }
@@ -629,33 +407,11 @@ export async function startHostedAdapter(options: {
           return;
         }
         const location =
-          "url" in result
-            ? result.url
-            : `${origin}/i/${installation.capability}/notice/${result.status}.mp4`;
+          "url" in result ? result.url : `${base}/notice/${result.status}.mp4`;
         response.writeHead(302, { Location: location }).end();
         return;
       }
       if (request.method !== "GET") return fail("not_found");
-      const acquiredFiles = Effect.fn("Hosted.acquiredFiles")(function* (
-        operation: Acquisition,
-      ) {
-        if (!operation.transferId) return [];
-        const engine = yield* AcquisitionEngine;
-        return yield* inspectTransferFiles(
-          yield* engine.getTransfer(BigInt(operation.transferId)),
-        );
-      });
-      const acquired = Effect.fn("Hosted.acquired")(function* (id: string) {
-        const parsed =
-          /^chill:acquired:([0-9a-f-]{36}):([1-9][0-9]{0,18})$/.exec(id);
-        const operation = options.store
-          .operations(installation.id)
-          .find((entry) => entry.id === parsed?.[1]);
-        if (!operation) return undefined;
-        return (yield* acquiredFiles(operation)).find(
-          (file) => String(file.id) === parsed?.[2],
-        );
-      });
       const builder = new sdk.addonBuilder({
         ...manifest,
         behaviorHints: {
@@ -665,38 +421,6 @@ export async function startHostedAdapter(options: {
         logo: undefined,
       });
       builder.defineCatalogHandler(async ({ type, id, extra }) => {
-        if (id === "downloads" && type === "movie")
-          return run(selection.downloads().pipe(Effect.provide(layer)));
-        if (id === "acquired" && type === "movie") {
-          const operations = options.store
-            .operations(installation.id)
-            .filter((operation) => operation.transferId)
-            .slice(0, 10);
-          return run(
-            Effect.gen(function* () {
-              const groups = yield* Effect.forEach(
-                operations,
-                (operation) =>
-                  acquiredFiles(operation).pipe(
-                    Effect.catch((error) =>
-                      error.code === "not_found"
-                        ? Effect.succeed([])
-                        : Effect.fail(error),
-                    ),
-                    Effect.map((files) =>
-                      files.map((file) => ({
-                        id: `chill:acquired:${operation.id}:${file.id}`,
-                        type: "movie" as const,
-                        name: file.name,
-                      })),
-                    ),
-                  ),
-                { concurrency: 2 },
-              );
-              return { metas: groups.flat().slice(0, 100) };
-            }).pipe(Effect.provide(layer)),
-          );
-        }
         const input = {
           type,
           id,
@@ -705,70 +429,39 @@ export async function startHostedAdapter(options: {
             skip: extra.skip === undefined ? undefined : String(extra.skip),
           },
         };
-        return id === "library"
-          ? run(library.catalog(input).pipe(Effect.provide(layer)))
-          : run(discovery.catalog(input).pipe(Effect.provide(layer)));
+        try {
+          return id === "library"
+            ? await run(library.catalog(input).pipe(Effect.provide(layer)))
+            : await run(discovery.catalog(input).pipe(Effect.provide(layer)));
+        } catch (error) {
+          if (rejected(error)) return { metas: [reconnectMeta(type)] };
+          throw error;
+        }
       });
       builder.defineMetaHandler(async (input) => {
-        if (
-          input.type === "movie" &&
-          /^chill:download:[0-9a-f-]{36}$/.test(input.id)
-        )
-          return run(
-            selection
-              .meta(input.id.slice("chill:download:".length))
-              .pipe(Effect.provide(layer)),
-          );
-        let result;
-        if (input.id.startsWith("chill:acquired:") && input.type === "movie") {
-          const file = await run(
-            acquired(input.id).pipe(Effect.provide(layer)),
-          );
-          result = {
-            meta: file
-              ? {
-                  id: input.id,
-                  type: "movie" as const,
-                  name: file.name,
-                  behaviorHints: { defaultVideoId: input.id },
-                }
-              : null,
-          };
-        } else
-          result = input.id.startsWith("chill:file:")
-            ? await run(library.meta(input).pipe(Effect.provide(layer)))
-            : await run(discovery.meta(input).pipe(Effect.provide(layer)));
+        if (input.id === "chill:reconnect")
+          return { meta: reconnectMeta(input.type) };
+        const result = input.id.startsWith("chill:file:")
+          ? await run(library.meta(input).pipe(Effect.provide(layer)))
+          : await run(discovery.meta(input).pipe(Effect.provide(layer)));
         if (!result.meta) return fail("not_found");
         return { meta: result.meta };
       });
       builder.defineStreamHandler(async (input) => {
-        if (
-          input.type === "movie" &&
-          /^chill:download:[0-9a-f-]{36}$/.test(input.id)
-        )
-          return run(
-            selection
-              .operationStreams(input.id.slice("chill:download:".length))
-              .pipe(Effect.provide(layer)),
-          );
-        if (input.id.startsWith("chill:acquired:") && input.type === "movie") {
-          const file = await run(
-            acquired(input.id).pipe(Effect.provide(layer)),
-          );
-          return file
-            ? run(
-                createLibrary(file.parentId)
-                  .streams({ type: "movie", id: `chill:file:${file.id}` })
-                  .pipe(Effect.provide(layer)),
-              )
-            : { streams: [] };
+        if (input.id === "chill:reconnect")
+          return { streams: [reconnectStream] };
+        try {
+          return input.id.startsWith("chill:file:")
+            ? await run(library.streams(input).pipe(Effect.provide(layer)))
+            : await run(selection.streams(input).pipe(Effect.provide(layer)));
+        } catch (error) {
+          if (rejected(error)) return { streams: [reconnectStream] };
+          throw error;
         }
-        return input.id.startsWith("chill:file:")
-          ? run(library.streams(input).pipe(Effect.provide(layer)))
-          : run(selection.streams(input).pipe(Effect.provide(layer)));
       });
       builder.defineSubtitlesHandler(async (input) => {
-        if (input.id.startsWith("chill:file:")) {
+        if (!input.id.startsWith("chill:file:")) return { subtitles: [] };
+        try {
           const result = await run(
             library.streams(input).pipe(Effect.provide(layer)),
           );
@@ -777,52 +470,23 @@ export async function startHostedAdapter(options: {
               (stream) => stream.subtitles ?? [],
             ),
           };
+        } catch (error) {
+          if (rejected(error)) return { subtitles: [] };
+          throw error;
         }
-        if (input.type === "movie" && input.id.startsWith("chill:acquired:")) {
-          const file = await run(
-            acquired(input.id).pipe(Effect.provide(layer)),
-          );
-          if (!file) return { subtitles: [] };
-          const result = await run(
-            createLibrary(file.parentId)
-              .streams({ type: "movie", id: `chill:file:${file.id}` })
-              .pipe(Effect.provide(layer)),
-          );
-          return {
-            subtitles: result.streams.flatMap(
-              (stream) => stream.subtitles ?? [],
-            ),
-          };
-        }
-        // The SDK accepts filename extras, but its TypeScript definition omits them.
-        const extra = parse(
-          Schema.Struct({
-            filename: Schema.optional(
-              Schema.String.check(Schema.isMaxLength(516)),
-            ),
-          }),
-          input.extra,
-        );
-        return run(
-          selection
-            .subtitles({ ...input, filename: extra.filename })
-            .pipe(Effect.provide(layer)),
-        );
       });
       const addon = builder.getInterface();
-      if (match[2] === "/manifest.json") {
+      if (path === "/manifest.json") {
         json(response, 200, addon.manifest);
         return;
       }
-      if (match[2] === "/configure") {
-        response
-          .writeHead(302, { Location: `${options.webOrigin}/stremio` })
-          .end();
+      if (path === "/configure") {
+        response.writeHead(302, { Location: reconnectUrl }).end();
         return;
       }
       const route =
         /^\/(catalog|meta|stream|subtitles)\/([^/]+)\/([^/]+?)(?:\/([^/]+))?\.json$/.exec(
-          match[2],
+          path,
         );
       if (!route?.[1] || !route[2] || !route[3]) return fail("not_found");
       let type: string;
@@ -850,7 +514,7 @@ export async function startHostedAdapter(options: {
     };
     void handle().catch((error) => {
       const code =
-        error instanceof HttpFailure || error instanceof InstallationFailure
+        error instanceof HttpFailure
           ? error.code
           : controller.signal.aborted
             ? "deadline_exceeded"
@@ -881,6 +545,7 @@ export async function startHostedAdapter(options: {
     listenOrigin,
     close: () =>
       (closing ??= new Promise<void>((resolve, reject) => {
+        for (const key of submissions.keys()) forget(key);
         for (const controller of controllers) controller.abort();
         server.closeAllConnections();
         server.close((error) => (error ? reject(error) : resolve()));

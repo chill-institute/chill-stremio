@@ -381,8 +381,8 @@ const evaluateHosted = async (
   const automaticPlayback = await frameOf(
     `${runDirectory}/automatic-playback.png`,
   );
-  const downloadSubtitles = await frameOf(
-    `${runDirectory}/download-subtitles.png`,
+  const librarySubtitles = await frameOf(
+    `${runDirectory}/library-subtitles.png`,
   );
   const interrupted = await frameOf(`${runDirectory}/interrupted.png`);
   const recovered = await frameOf(`${runDirectory}/interrupted-recovered.png`);
@@ -443,23 +443,23 @@ const evaluateHosted = async (
       "failed",
       "Selection did not wait and automatically decode the downloaded video",
     );
-  if (!subtitlesVisible(downloadSubtitles) || !stage("download-subtitles"))
+  if (!subtitlesVisible(librarySubtitles) || !stage("library-subtitles"))
     setScenario(
       scenarios,
-      "download-subtitles",
+      "library-subtitles",
       "failed",
-      "Downloaded video subtitles were not requested and rendered",
+      "Library video subtitles were not requested and rendered",
     );
   if (
     !movieAdvances(movie, movieAdvancing, guestResult.movieSampleIntervalMs) ||
     !log.vo ||
-    !stage("acquired-playing")
+    !stage("library-playing")
   )
     setScenario(
       scenarios,
-      "acquired-playback",
+      "library-playback",
       "failed",
-      "libmpv screenshots did not show intact advancing acquired-file frames",
+      "libmpv screenshots did not show intact advancing library-file frames",
     );
   if (!(dbfs > pcmDbfsMin && log.ao))
     setScenario(
@@ -473,7 +473,7 @@ const evaluateHosted = async (
       scenarios,
       "interrupted-playback-recovery",
       "failed",
-      "Interrupted cut or recovered acquired-file pixels were not observed",
+      "Interrupted cut or recovered library-file pixels were not observed",
     );
   if (
     !hls &&
@@ -485,25 +485,29 @@ const evaluateHosted = async (
       "failed",
       "Chosen second file pixels were not decoded",
     );
-  if (hosted.proxy.deniedAfterRevocation < 1 || !stage("revoke"))
+  if (
+    hosted.engineCalls.unauthenticated < 1 ||
+    !stage("reject-credential") ||
+    !stage("reconnect-client")
+  )
     setScenario(
       scenarios,
-      "revocation-denied",
+      "reconnect-notice",
       "failed",
-      "Revoked installation still answered the client",
+      "Rejected credential did not show the reconnect notice",
     );
   if (
     hosted.engineCalls.transfer !== (hls ? 1 : 4) ||
     hosted.engineCalls.rejected !== 0 ||
-    hosted.adapterRestarts !== (hls ? 1 : 2)
+    hosted.adapterRestarts !== 1
   )
     setScenario(
       scenarios,
-      "durable-claims",
+      "one-transfer-per-selection",
       "failed",
       `Engine saw ${hosted.engineCalls.transfer} transfers, ${hosted.engineCalls.rejected} rejected requests and ${hosted.adapterRestarts} restarts`,
     );
-  else setScenario(scenarios, "durable-claims", "passed");
+  else setScenario(scenarios, "one-transfer-per-selection", "passed");
   const leaked: string[] = [];
   for (const file of await readdir(runDirectory)) {
     if (!/\.(json|log|txt)$/.test(file)) continue;
@@ -515,7 +519,7 @@ const evaluateHosted = async (
       scenarios,
       "ui-installation",
       "failed",
-      `Retained evidence contains the installation capability: ${leaked.join(", ")}`,
+      `Retained evidence contains the add-on credential: ${leaked.join(", ")}`,
     );
   return finishEvaluation(runDirectory, guestResult, scenarios, {
     vo: log.vo,
@@ -527,7 +531,7 @@ const evaluateHosted = async (
     movieSampleIntervalMs: guestResult.movieSampleIntervalMs,
     pendingLoadingKind: pendingLoading?.kind ?? null,
     automaticPlayback,
-    downloadSubtitles,
+    librarySubtitles,
     playbackContinuedAfterCut: interrupted?.kind === "movie",
     secondFile,
     hosted,

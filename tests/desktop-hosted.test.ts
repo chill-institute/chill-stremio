@@ -34,10 +34,10 @@ test("visible-text checks accept duplicate titles that click targeting rejects",
 
 test("hosted desktop trials need every scenario plus adapter-side proof", () => {
   const hosted = {
-    engineCalls: { transfer: 4, rejected: 0 },
-    proxy: { manifest: 1, stream: 6, deniedAfterRevocation: 3 },
+    engineCalls: { transfer: 4, rejected: 0, unauthenticated: 3 },
+    proxy: { manifest: 1, stream: 6 },
     media: { cuts: 1 },
-    adapterRestarts: 2,
+    adapterRestarts: 1,
   };
   const passing: HostedRunProof = {
     status: "passed",
@@ -50,18 +50,18 @@ test("hosted desktop trials need every scenario plus adapter-side proof", () => 
   assert.equal(hostedRunPassed(passing), true);
   assert.equal(hostedRunPassed({ ...passing, hosted: undefined }), false);
   for (const broken of [
-    { ...hosted, engineCalls: { transfer: 5, rejected: 0 } },
-    { ...hosted, engineCalls: { transfer: 4, rejected: 1 } },
-    { ...hosted, proxy: { ...hosted.proxy, deniedAfterRevocation: 0 } },
+    { ...hosted, engineCalls: { ...hosted.engineCalls, transfer: 5 } },
+    { ...hosted, engineCalls: { ...hosted.engineCalls, rejected: 1 } },
+    { ...hosted, engineCalls: { ...hosted.engineCalls, unauthenticated: 0 } },
     { ...hosted, proxy: { ...hosted.proxy, stream: 0 } },
     { ...hosted, media: { cuts: 0 } },
-    { ...hosted, adapterRestarts: 1 },
+    { ...hosted, adapterRestarts: 2 },
   ])
     assert.equal(hostedRunPassed({ ...passing, hosted: broken }), false);
   assert.equal(
-    hostedRunPassed({ ...passing, remaining: ["revocation-denied"] }),
+    hostedRunPassed({ ...passing, remaining: ["reconnect-notice"] }),
     false,
   );
   assert.ok(hostedRequired.includes("exact-file-playback"));
-  assert.ok(hostedRequired.includes("durable-claims"));
+  assert.ok(hostedRequired.includes("one-transfer-per-selection"));
 });
