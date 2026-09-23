@@ -7,6 +7,7 @@ import {
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { Context, Effect, Layer, Schema } from "effect";
+import { credentialPattern } from "./credential.ts";
 
 export class EngineError extends Schema.TaggedError<EngineError>()(
   "EngineError",
@@ -36,31 +37,43 @@ export class Engine extends Context.Service<
   }
 >()("chill-stremio/Engine") {}
 
-const Configuration = Schema.Struct({
-  baseUrl: Schema.String.check(
-    Schema.makeFilter((value) => {
-      try {
-        const url = new URL(value);
-        return (
-          !url.username &&
-          !url.password &&
-          !url.search &&
-          !url.hash &&
-          (url.protocol === "https:" ||
-            (url.protocol === "http:" &&
-              ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)))
-        );
-      } catch {
-        return false;
-      }
-    }),
-  ),
-  token: Schema.String.check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(8192),
-    Schema.isPattern(/^[A-Za-z0-9._~+/-]+=*$/),
-  ),
-});
+const BaseUrl = Schema.String.check(
+  Schema.makeFilter((value) => {
+    try {
+      const url = new URL(value);
+      return (
+        !url.username &&
+        !url.password &&
+        !url.search &&
+        !url.hash &&
+        (url.protocol === "https:" ||
+          (url.protocol === "http:" &&
+            ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)))
+      );
+    } catch {
+      return false;
+    }
+  }),
+);
+const Configuration = Schema.Union([
+  Schema.Struct({
+    baseUrl: BaseUrl,
+    token: Schema.String.check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(8192),
+      Schema.isPattern(/^[A-Za-z0-9._~+/-]+=*$/),
+    ),
+  }),
+  Schema.Struct({
+    baseUrl: BaseUrl,
+    credential: Schema.String.check(Schema.isPattern(credentialPattern)),
+  }),
+]);
+
+/** A chill bearer, or a Stremio credential that Engine accepts for add-on RPCs only. */
+export type EngineAuth =
+  | { baseUrl: string; token: string }
+  | { baseUrl: string; credential: string };
 
 const maxResponseBytes = 1024 * 1024;
 
@@ -134,45 +147,44 @@ function mapRpcError(error: unknown): EngineError {
   }
 }
 
-export const createEngineRpc = Effect.fn("Engine.createRpc")(
-  function* (configuration: { baseUrl: string; token: string }) {
-    const config = yield* Schema.decodeUnknownEffect(Configuration)(
-      configuration,
-    ).pipe(Effect.mapError(() => new EngineError({ code: "invalid_config" })));
-    const client = createClient(
-      UserService,
-      createConnectTransport({
-        baseUrl: config.baseUrl,
-        useBinaryFormat: false,
-        useHttpGet: false,
-        defaultTimeoutMs: 10_000,
-        fetch: boundedFetch,
+export const createEngineRpc = Effect.fn("Engine.createRpc")(function* (
+  configuration: EngineAuth,
+) {
+  const config = yield* Schema.decodeUnknownEffect(Configuration)(
+    configuration,
+  ).pipe(Effect.mapError(() => new EngineError({ code: "invalid_config" })));
+  const client = createClient(
+    UserService,
+    createConnectTransport({
+      baseUrl: config.baseUrl,
+      useBinaryFormat: false,
+      useHttpGet: false,
+      defaultTimeoutMs: 10_000,
+      fetch: boundedFetch,
+    }),
+  );
+  const headers: Record<string, string> =
+    "token" in config
+      ? { authorization: `Bearer ${config.token}` }
+      : { "x-chill-stremio-credential": config.credential };
+  return {
+    client,
+    call: <A>(
+      run: (options: {
+        signal: AbortSignal;
+        headers: Record<string, string>;
+      }) => Promise<A>,
+    ) =>
+      Effect.tryPromise({
+        try: (signal) => run({ signal, headers: { ...headers } }),
+        catch: mapRpcError,
       }),
-    );
-    return {
-      client,
-      call: <A>(
-        run: (options: {
-          signal: AbortSignal;
-          headers: { authorization: string };
-        }) => Promise<A>,
-      ) =>
-        Effect.tryPromise({
-          try: (signal) =>
-            run({
-              signal,
-              headers: { authorization: `Bearer ${config.token}` },
-            }),
-          catch: mapRpcError,
-        }),
-    };
-  },
-);
+  };
+});
 
-export function engineLayer(configuration: {
-  baseUrl: string;
-  token: string;
-}): Layer.Layer<Engine, EngineError> {
+export function engineLayer(
+  configuration: EngineAuth,
+): Layer.Layer<Engine, EngineError> {
   return Layer.effect(
     Engine,
     Effect.gen(function* () {

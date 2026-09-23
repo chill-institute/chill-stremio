@@ -7,7 +7,11 @@ import type {
 } from "@chill-institute/contracts/chill/v4/api_pb";
 import { Context, Effect, Layer } from "effect";
 import { movieMetadata } from "./cinemeta.ts";
-import { createEngineRpc, type EngineError } from "./engine.ts";
+import {
+  createEngineRpc,
+  type EngineAuth,
+  type EngineError,
+} from "./engine.ts";
 
 export class DiscoveryEngine extends Context.Service<
   DiscoveryEngine,
@@ -28,10 +32,7 @@ export class DiscoveryEngine extends Context.Service<
   }
 >()("chill-stremio/DiscoveryEngine") {}
 
-export function discoveryEngineLayer(configuration: {
-  baseUrl: string;
-  token: string;
-}) {
+export function discoveryEngineLayer(configuration: EngineAuth) {
   return Layer.effect(
     DiscoveryEngine,
     Effect.gen(function* () {
