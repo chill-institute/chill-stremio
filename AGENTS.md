@@ -32,19 +32,32 @@ Status clips are generated at setup/build time; runtime only loads them. Storage
 v2 preserves existing claims; do not roll it back to an unsupported v1 image.
 Keep keys and backups private, and suppress sensitive paths at ingress.
 
+## Proof map
+
+| Change                                                 | Check                                                                                                                                                                                                                             | Runs                                                                         | Leaves                                                                                                                                                      |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Docs, config, workflows, protocol and unit logic       | `mise run verify` (Vite+ fmt, lint, types, [tests](./tests); `actionlint`; `zizmor`)                                                                                                                                              | local, [CI](./.github/workflows/verify.yml) `verify` on PRs and `main`       | exit status                                                                                                                                                 |
+| Web playback harness, fixture media, pinned Web client | `mise run fixture:smoke`; HLS: [`hls-smoke.ts`](./docs/HARNESS.md#hls-playback)                                                                                                                                                   | local, [manual CI](./.github/workflows/playback.yml)                         | `artifacts/<timestamp>/results.json`, `run-N/` screenshots, failure trace; CI artifact `web-playback-<run_id>`                                              |
+| Engine-backed adapter                                  | `mise run adapter:smoke` ([scope](./docs/ADAPTER.md#verify))                                                                                                                                                                      | local                                                                        | `artifacts/adapter-<timestamp>/results.json`                                                                                                                |
+| Hosted service, authorization, storage, acquisition    | `mise run hosted:smoke`, then `docker build` and `mise run hosted:container` ([release](./docs/HOSTED.md#verification-and-release))                                                                                               | local, [publish](./.github/workflows/publish-hosted.yml) before image push   | `artifacts/hosted-<timestamp>/` receipt and `video/` recording, `artifacts/container-<timestamp>/results.json`; CI artifact `hosted-release-proof-<run_id>` |
+| Native desktop playback                                | `mise run native:desktop:probe` (client only), `native:desktop:probe hosted` (hosted adapter) ([scope](./docs/NATIVE-DESKTOP.md))                                                                                                 | Linux host, [manual CI](./.github/workflows/native-desktop.yml) fixture mode | `artifacts/desktop-<timestamp>/` or `desktop-hosted-<timestamp>/results.json`; CI artifact `linux-desktop-<run_id>`                                         |
+| Android TV playback                                    | `mise run native:android:probe`; `native:android:account` with the designated Stremio account ([scope](./docs/NATIVE-ANDROID.md))                                                                                                 | Linux host with an accelerated Android TV emulator                           | `artifacts/android-<timestamp>/results.json` and sanitized `emulator.log`; `artifacts/android-account-<timestamp>/results.json`                             |
+| Live put.io and production Engine                      | `mise run live:probe`, `adapter:live`, `hosted:live`; deployed endpoint: `hosted:public` ([LIVE](./docs/LIVE.md), [ADAPTER](./docs/ADAPTER.md#authenticated-playback-probe), [HOSTED](./docs/HOSTED.md#verification-and-release)) | registered executor only; designated accounts; shared allowance              | `artifacts/{live,live-adapter,live-hosted,public}-<timestamp>/results.json`                                                                                 |
+| Release and deploy                                     | `main` push tags a release ([`release`](./.github/workflows/verify.yml)); [publish](./.github/workflows/publish-hosted.yml) builds, pushes and dispatches the Engine deploy                                                       | CI, publish is manual                                                        | GitHub release, GHCR digest in release notes, Engine `deploy-stremio.yml` run                                                                               |
+
+Gaps:
+
+- Android TV decoded playback, audio, seek/pause and subtitles are unproven; the lane exits `blocked`. Owner: chill-institute/chill-stremio.
+- Android TV lanes have no CI or declared remote runner. Owner: operator.
+- `adapter:smoke` has no CI workflow. Owner: chill-institute/chill-stremio.
+- No macOS or Windows native lane. Owner: chill-institute/chill-stremio.
+
 ## Work and verify
 
-- Preserve unrelated changes. Live checks require the registered executor identity.
-- Keep the primary checkout on `main`. Commit verified changes with
-  Conventional Commits and push directly when repository policy permits;
-  otherwise use a pull request. Monitor the resulting CI.
+- Live checks require the registered executor identity.
+- Keep the primary checkout on `main`.
 - Run `mise trust`, `mise install`, then `mise run setup` from a fresh checkout.
-- Run `mise run verify` before delivery for deterministic unit and protocol
-  checks. `mise run fixture:smoke` exercises the real Web playback harness.
-- Native setup, commands and acceptance live in [Android TV](./docs/NATIVE-ANDROID.md)
-  and [desktop](./docs/NATIVE-DESKTOP.md). A Web pass does not establish native support.
-  `native:desktop:probe hosted` proves the actual hosted adapter in the native
-  client; the default fixture mode proves only the client.
+- A Web pass does not establish native support.
   The opt-in `native:android:account` lane uses only generated fixture media;
   serialize account addon edits, keep pairing/UI captures in memory, and verify
   exact owned-addon removal.
@@ -61,8 +74,7 @@ Keep keys and backups private, and suppress sensitive paths at ingress.
   `vite-plus/test` imports. Mise owns Node and pnpm.
 - Use TypeScript for service and harness orchestration. Keep resources scoped,
   deadlines finite, and SDK Promise conversion at the protocol boundary.
-- Run `actionlint` and `zizmor .github/workflows` after workflow changes.
-  Preserve read-only CI, hooks and organization policy.
+- Preserve read-only CI, hooks and organization policy.
 - Do not add credentials, sessions, installation registries, provider logic,
   live transfers, deployment or publication to the fixture workflow.
 - Do not log credentials or sensitive URLs. Fixture-only artifacts must never
@@ -84,5 +96,4 @@ guide doesn't cover, search through the source code in `node_modules/effect/src`
 HTTP success and advancing playback time do not establish decoded playback.
 Retain structured assertions and useful failure artifacts. Web evidence applies
 only to the pinned Web client and tested browser; native desktop, Android TV
-and live-account checks require their own proof. Report unavailable checks
-without presenting them as passes.
+and live-account checks require their own proof.
