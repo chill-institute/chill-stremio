@@ -125,8 +125,10 @@ Identical play requests share one submission while any of them is open and for
 60 seconds after the last one finishes, so a native player reopening the
 selected URL does not submit again. That memory is per process and bounded;
 selecting the same release after the window or after a restart adds another
-transfer. A failed or lost submission response is never retried and reports
-`unknown`.
+transfer. Under capacity pressure the oldest idle entries may be dropped before
+their window ends. A submission does not depend on the requesting client staying
+connected. A failed, lost or timed-out submission response is never retried and
+reports `unknown`.
 
 After submission the adapter polls `GetTransfer`, finds the downloaded video with
 `GetFolder` and resolves it with `ResolvePlayback`. A still-pending download
@@ -228,7 +230,7 @@ waits for it. The default verification and fixture workflows retain read-only
 permissions.
 
 Engine owns the adapter deployment and shared host-mutation lock; its manual
-dispatch remains the rollback path. Any published image can be a rollback
+dispatch remains the rollback path. Any v2.0.0 or later image can be a rollback
 target because the adapter keeps no state. The image does not read
 `CHILL_INSTALLATION_KEY_HEX` or a state directory.
 The Engine deploy workflow reads the package with its own repository token, so
