@@ -64,7 +64,7 @@ export const episodeTarget = `chill:episode:${hostedFixture.seriesImdbId}:1:1`;
 export const seriesMetaId = `chill:series:${hostedFixture.seriesImdbId}`;
 /** A generated value with the shape of an Engine-issued Stremio credential. */
 export const fakeCredential = (bytes = 300) =>
-  `v4.local.${randomBytes(bytes).toString("base64url")}`;
+  `v4.local.${randomBytes(bytes).toString("base64url")}.${Buffer.from('{"kid":"s1"}').toString("base64url")}`;
 
 export interface HostedEngineState {
   submitted: boolean;

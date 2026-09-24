@@ -417,7 +417,8 @@ test("malformed credentials and removed routes never reach Engine", async () => 
       "/s/v4.local.short/manifest.json",
       `/s/v4.public.${"a".repeat(64)}/manifest.json`,
       `/s/v4.local.${"a".repeat(1016)}/catalog/movie/library.json`,
-      `/s/v4.local.${"a".repeat(64)}.footer/manifest.json`,
+      `/s/v4.local.${"a".repeat(64)}.footer.extra/manifest.json`,
+      `/s/v4.local.${"a".repeat(64)}.${"b".repeat(87)}/manifest.json`,
       `/i/${"x".repeat(43)}/manifest.json`,
       "/api/installations",
     ])
@@ -425,6 +426,14 @@ test("malformed credentials and removed routes never reach Engine", async () => 
     assert.equal(
       (await fetch(`${f.base(`v4.local.${"a".repeat(1015)}`)}/manifest.json`))
         .status,
+      200,
+    );
+    assert.equal(
+      (
+        await fetch(
+          `${f.base(`v4.local.${"a".repeat(300)}.eyJraWQiOiJzMSJ9`)}/manifest.json`,
+        )
+      ).status,
       200,
     );
     const denied = await fetch(
