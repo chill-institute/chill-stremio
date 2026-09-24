@@ -231,8 +231,7 @@ permissions.
 
 Engine owns the adapter deployment and shared host-mutation lock; its manual
 dispatch remains the rollback path. Any v2.0.0 or later image can be a rollback
-target because the adapter keeps no state. The image does not read
-`CHILL_INSTALLATION_KEY_HEX` or a state directory.
+target because the adapter keeps no state.
 The Engine deploy workflow reads the package with its own repository token, so
 the `chill-stremio` container package must grant `chill-engine` read access in
 its Actions access settings; GitHub exposes no API for that grant.
