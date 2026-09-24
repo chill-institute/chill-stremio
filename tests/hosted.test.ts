@@ -51,6 +51,8 @@ async function fixture(options: { selectionReuseMs?: number } = {}) {
     loseTransferResponse: false,
     stallMovies: false,
     addCount: 0,
+    addDelayMs: 0,
+    addCredentials: [] as (string | string[] | undefined)[],
     transferFinished: true,
     singleFile: false,
     playbackPending: false,
@@ -221,6 +223,8 @@ async function fixture(options: { selectionReuseMs?: number } = {}) {
             "https://engine.fixture.test/download?token=fixture-release-secret",
           );
           state.addCount++;
+          state.addCredentials.push(presented);
+          await sleep(state.addDelayMs);
           if (state.loseTransferResponse) {
             response.destroy();
             return;
@@ -740,6 +744,50 @@ test("a lost submission response is reported as unknown and never retried", asyn
       f.calls.filter(({ method }) => method === "GetTransfer").length,
       0,
     );
+  } finally {
+    await f.close();
+  }
+});
+
+test("a disconnected first client does not duplicate a shared submission", async () => {
+  const f = await fixture();
+  try {
+    f.state.singleFile = true;
+    f.state.addDelayMs = 500;
+    const url = await releaseSelection(f);
+    const first = new AbortController();
+    const abandoned = fetch(url, {
+      redirect: "manual",
+      signal: first.signal,
+    }).catch(() => undefined);
+    await sleep(150);
+    first.abort();
+    await abandoned;
+    await sleep(700);
+    const reopened = await fetch(url, { redirect: "manual" });
+    assert.equal(reopened.status, 302);
+    assert.equal(f.state.addCount, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("identical selections under different credentials submit separately", async () => {
+  const f = await fixture();
+  try {
+    f.state.singleFile = true;
+    const url = await releaseSelection(f);
+    const path = new URL(url).pathname.replace(/^\/s\/[^/]+/, "");
+    for (const value of [ownerCredential, otherCredential])
+      assert.equal(
+        (await fetch(`${f.base(value)}${path}`, { redirect: "manual" })).status,
+        302,
+      );
+    assert.equal(f.state.addCount, 2);
+    assert.deepEqual(f.state.addCredentials, [
+      ownerCredential,
+      otherCredential,
+    ]);
   } finally {
     await f.close();
   }

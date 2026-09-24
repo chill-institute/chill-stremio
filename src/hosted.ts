@@ -81,6 +81,7 @@ export async function startHostedAdapter(options: {
     throw new Error("Invalid hosted origin");
   const statusMedia = options.statusMedia ?? (await loadStatusMedia());
   const controllers = new Set<AbortController>();
+  const shutdown = new AbortController();
   // Identical selections share one submission while any of their requests is
   // open and briefly afterwards: native players reopen the selected URL once
   // the first request resolves. Nothing survives a restart.
@@ -174,6 +175,7 @@ export async function startHostedAdapter(options: {
     request.once("aborted", () => controller.abort());
     const run = async <A, E extends { code: string }>(
       effect: Effect.Effect<A, E>,
+      signal = controller.signal,
     ) => {
       const result = await Effect.runPromise(
         effect.pipe(
@@ -182,7 +184,7 @@ export async function startHostedAdapter(options: {
             onFailure: (error) => ({ ok: false as const, code: error.code }),
           }),
         ),
-        { signal: controller.signal },
+        { signal },
       );
       return result.ok ? result.value : fail(result.code);
     };
@@ -339,12 +341,22 @@ export async function startHostedAdapter(options: {
               for (const [stale, candidate] of submissions)
                 if (submissions.size >= 256 && candidate.users === 0)
                   forget(stale);
+              // The submission outlives any single client. An interrupted
+              // submission may still have created the transfer.
+              const signal = AbortSignal.any([
+                shutdown.signal,
+                AbortSignal.timeout(timing.windowMs),
+              ]);
               const created = {
                 submission: run(
                   selection
                     .submit({ type, id, releaseId })
                     .pipe(Effect.provide(layer)),
-                ),
+                  signal,
+                ).catch((error: unknown): Submission => {
+                  if (signal.aborted) return { status: "unknown" };
+                  throw error;
+                }),
                 users: 0,
                 failed: false,
               };
@@ -546,6 +558,7 @@ export async function startHostedAdapter(options: {
     close: () =>
       (closing ??= new Promise<void>((resolve, reject) => {
         for (const key of submissions.keys()) forget(key);
+        shutdown.abort();
         for (const controller of controllers) controller.abort();
         server.closeAllConnections();
         server.close((error) => (error ? reject(error) : resolve()));
