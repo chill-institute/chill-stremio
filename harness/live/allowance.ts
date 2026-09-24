@@ -1,4 +1,4 @@
-import { open, readFile, rename, rm } from "node:fs/promises";
+import { lstat, open, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { Schema } from "effect";
@@ -66,7 +66,7 @@ export async function withAllowanceLock<T>(
       if (Schema.is(Schema.Struct({ code: Schema.Literal("EEXIST") }))(cause)) {
         if (performance.now() >= deadline)
           throw new AllowanceFailure(
-            "Live allowance lock is held; owner reconciliation is required if its process stopped",
+            "Live allowance lock is held; if no probe is running, remove allowance.lock after checking the ledger",
           );
         await setTimeout(
           Math.min(50, Math.max(1, deadline - performance.now())),
@@ -75,10 +75,9 @@ export async function withAllowanceLock<T>(
         );
         continue;
       }
-      throw new AllowanceFailure(
-        "Live allowance directory is unavailable; the registered owner must provision it",
-        { cause },
-      );
+      throw new AllowanceFailure("Live allowance directory is unavailable", {
+        cause,
+      });
     }
   }
   try {
@@ -99,7 +98,7 @@ export async function readLedger(path: string, now = new Date()) {
     );
   } catch (cause) {
     throw new AllowanceFailure(
-      "Live allowance ledger is missing, unreadable or invalid; owner reconciliation is required",
+      "Live allowance ledger is missing, unreadable or invalid; fix or restore allowance.json before running live probes",
       { cause },
     );
   }
@@ -148,23 +147,55 @@ export async function reserve(
         throw new AllowanceFailure(
           `Reservation exceeds the ${limits.byteLimit}-byte budget for ${current.day} UTC or safe accounting range`,
         );
-      const temporary = `${path}.next`;
-      const output = await open(temporary, "wx", 0o600);
-      try {
-        await output.writeFile(`${JSON.stringify(next, null, 2)}\n`);
-        await output.sync();
-      } finally {
-        await output.close();
-      }
-      await rename(temporary, path);
-      const ownerDirectory = await open(directory, "r");
-      try {
-        await ownerDirectory.sync();
-      } finally {
-        await ownerDirectory.close();
-      }
+      await writeLedger(directory, path, next);
       return next;
     },
     options,
   );
+}
+
+export async function createMissingLedger(
+  directory: string,
+  now = new Date(),
+  options: LockOptions = {},
+) {
+  return withAllowanceLock(
+    directory,
+    async (path) => {
+      try {
+        await lstat(path);
+        return false;
+      } catch (cause) {
+        if (
+          !Schema.is(Schema.Struct({ code: Schema.Literal("ENOENT") }))(cause)
+        )
+          throw cause;
+      }
+      await writeLedger(directory, path, {
+        day: utcDay(now),
+        reservedTransfers: 0,
+        reservedBytes: 0,
+      });
+      return true;
+    },
+    options,
+  );
+}
+
+async function writeLedger(directory: string, path: string, ledger: Ledger) {
+  const temporary = `${path}.next`;
+  const output = await open(temporary, "wx", 0o600);
+  try {
+    await output.writeFile(`${JSON.stringify(ledger, null, 2)}\n`);
+    await output.sync();
+  } finally {
+    await output.close();
+  }
+  await rename(temporary, path);
+  const ownerDirectory = await open(directory, "r");
+  try {
+    await ownerDirectory.sync();
+  } finally {
+    await ownerDirectory.close();
+  }
 }

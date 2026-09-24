@@ -4,7 +4,7 @@ import { chromium, type Browser } from "@playwright/test";
 import { Effect, Schema } from "effect";
 import { createEngineRpc, EngineError } from "../../src/engine.ts";
 import { cachedAuthorization } from "./auth-session.ts";
-import { registeredLiveRunner } from "./runner.ts";
+import { liveRunnerDirectory } from "./runner.ts";
 import { liveVersions } from "./versions.ts";
 
 const Base32 = Schema.String.check(
@@ -220,7 +220,7 @@ export async function authorizeChill(
   } catch {
     throw new ChillAuthorizationFailure("configuration");
   }
-  const directory = await registeredLiveRunner();
+  const directory = await liveRunnerDirectory();
   return cachedAuthorization({
     directory,
     username,

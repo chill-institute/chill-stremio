@@ -202,8 +202,8 @@ for (const scenario of ["valid", "wrong-account", "unavailable"] as const) {
   test(`cached authorization ${scenario} does not launch OAuth`, async () => {
     const runner = await import("../harness/live/runner.ts");
     const directory = await mkdtemp(join(tmpdir(), "auth-reuse-"));
-    const registered = vi
-      .spyOn(runner, "registeredLiveRunner")
+    const runnerState = vi
+      .spyOn(runner, "liveRunnerDirectory")
       .mockResolvedValue(directory);
     const launch = vi
       .spyOn(chromium, "launch")
@@ -264,7 +264,7 @@ for (const scenario of ["valid", "wrong-account", "unavailable"] as const) {
         );
       assert.equal(launch.mock.calls.length, 0);
     } finally {
-      registered.mockRestore();
+      runnerState.mockRestore();
       launch.mockRestore();
       await rm(directory, { recursive: true, force: true });
     }

@@ -17,7 +17,7 @@ const state = vi.hoisted(() => ({
 
 vi.mock("../harness/live/runner.ts", async (original) => ({
   ...(await original<typeof import("../harness/live/runner.ts")>()),
-  registeredLiveRunner: async () => state.directory,
+  liveRunnerDirectory: async () => state.directory,
 }));
 
 vi.mock("../harness/live/source.ts", async (original) => {

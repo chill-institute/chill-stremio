@@ -50,8 +50,7 @@ Native and live checks have separate runner and account prerequisites:
   It requires the fixture setup stamp; rerun setup if cleanup removed it.
 - [Android TV](./docs/NATIVE-ANDROID.md): emulator setup, playback checks and
   account cleanup.
-- [Live put.io](./docs/LIVE.md): designated test account, registered executor,
-  allowance and recovery requirements.
+- [Live put.io](./docs/LIVE.md): designated test account, allowance and recovery requirements.
 - [Authenticated adapter](./docs/ADAPTER.md#authenticated-playback-probe): the Web
   flow through Engine with maintainer test accounts.
 

@@ -1,13 +1,12 @@
 # Live put.io harness
 
 This maintainer-only lane tests transfers and playback on the designated put.io
-test account. The account owner must provision one executor before using it.
-Engine owns production provider access; this harness owns bounded live proof.
+test account. Engine owns production provider access; this harness owns bounded live proof.
 
 `live:probe` tests put.io directly. The separate
 [authenticated adapter probe](./ADAPTER.md#authenticated-playback-probe),
 `mise run adapter:live`, exercises Stremio Web through production Engine using
-the designated accounts and the same executor, budget and capture boundaries.
+the designated accounts and the same budget and capture boundaries.
 
 ## Commands
 
@@ -17,7 +16,7 @@ mise run live:probe
 ```
 
 Load the designated test credentials into the process environment before
-`live:probe`; see [executor setup](#executor-setup). Do not copy values into this
+`live:probe`; see [setup](#setup). Do not copy values into this
 checkout.
 
 Authenticated requests are restricted to the API and upload origins in
@@ -64,7 +63,7 @@ Native playback needs separate [Android TV](./NATIVE-ANDROID.md) and
 The put.io file-API reference is pinned in
 [versions.ts](../harness/live/versions.ts).
 
-## Executor setup
+## Setup
 
 Supply `PUTIO_ACCOUNT_NAME` as the designated account label, `PUTIO_USERNAME`,
 `PUTIO_PASSWORD`, `PUTIO_OTP_SECRET` and `PUTIO_TEST_TOKEN` through a private
@@ -72,28 +71,12 @@ process environment. The token must belong to the same test login. Lanes that
 sign into Stremio also require `STREMIO_TEST_EMAIL` as the expected test identity,
 plus matching `STREMIO_EMAIL` and `STREMIO_PASSWORD` credentials.
 
-All checkouts use `~/.local/state/chill-stremio/live/runner`. The executor owner
-must provision this directory with mode `0700` and its state files with mode
-`0600`, owned by the registered OS user. `runner.json` has these fields:
-
-| Field             | Value                                                    |
-| ----------------- | -------------------------------------------------------- |
-| `version`         | `2`                                                      |
-| `account`         | Nonempty label matching `PUTIO_ACCOUNT_NAME`             |
-| `username`        | Executor's OS username                                   |
-| `uid`             | Executor's numeric OS UID                                |
-| `machineIdSha256` | Lowercase SHA-256 of the trimmed `/etc/machine-id` value |
-
-Registration does not create the allowance ledger. Provision or migrate it only
-after reconciling usage under the [budget rules](#credential-and-budget). There
-is no automatic registration or environment override for the state directory.
-
-Older account-specific state requires manual migration while all live probes
-are stopped. Preserve the existing allowance day, counters, overrides, cached
-authentication, lock files and pending writes when moving state to the fixed
-directory; update registration to version 2 with the matching identity. Reconcile
-interrupted owners before releasing any locks. Do not initialize a fresh ledger
-or delete authentication state to bypass an unresolved attempt.
+Live state lives in `~/.local/state/chill-stremio/live/runner`, shared by every
+checkout of the current OS user. The first live run creates the directory
+(`0700`) and a zeroed `allowance.json` (`0600`) for the current UTC day. An
+existing directory or ledger that is not private, not owned by the current user
+or not valid stops the run; it is never replaced. There is no checkout-local
+fallback or environment path override.
 
 ## Credential and budget
 
@@ -101,13 +84,8 @@ Use only the designated test account and its `PUTIO_TEST_TOKEN`. Never borrow
 production keys. The lawful source is `.cache/media/movie.mp4` plus `english.vtt`.
 
 The default allowance is 10 GiB per UTC day, with no transfer-count quota. This is
-the standing test budget; ordinary runs need no daily approval. The designated
-Linux devbox is the sole executor; other runners must submit live work there.
-Every checkout shares `allowance.json` in
-`~/.local/state/chill-stremio/live/runner`. The adjacent `runner.json` binds
-registration to the test account, Linux machine ID, OS username and UID. The
-directory and files must be private (`0700`/`0600`). There is no checkout-local
-fallback, environment path override or automatic registration.
+the standing test budget; ordinary runs need no daily approval. The budget is
+tracked per OS user and machine in the shared `allowance.json`.
 
 The [probe](../harness/live/probe.ts) reserves four creations and the prepared
 media size twice plus both generated subtitle sizes before provider mutations.
@@ -116,13 +94,11 @@ atomically replaced with filesystem synchronization. Probes may cross UTC
 midnight; each reservation is charged to its start day. Transfer counts remain
 recorded for recovery and reporting.
 
-The executor owner must reconcile existing usage before provisioning or
-repairing registration and the ledger. Unknown current-day usage requires a
-full-cap reservation, never a fresh zero balance. A valid older ledger rolls
-forward at UTC midnight; missing, invalid or future-dated state fails closed.
-Locks are never stolen by age. After a crash, preserve `allowance.lock` and any
-`allowance.json.next` until the owner establishes the process stopped and
-reconciles uncertain reservations. Do not reset state to retry a failed probe.
+When repairing a ledger with unknown current-day usage, reserve the full cap,
+never a fresh zero balance. A valid older ledger rolls forward at UTC midnight;
+invalid or future-dated state fails closed. Locks are never stolen by age.
+After a crash, preserve `allowance.lock` and any `allowance.json.next` until
+the probe process has stopped and uncertain reservations are accounted for. Do not reset state to retry a failed probe.
 Cleanup targets only newly created, positively attributed test artifacts and
 never calls account-wide transfer clean.
 
@@ -139,8 +115,8 @@ removed on the next reservation without changing recorded usage.
 
 ## Session reuse
 
-All probes using `authorizeChill` share a private `auth.json` on the registered
-executor. This owner-only (`0600`) file contains the ordinary chill token and
+All probes using `authorizeChill` share a private `auth.json` in the same state
+directory. This owner-only (`0600`) file contains the ordinary chill token and
 account identity. It stays outside the checkout and artifacts. No browser
 cookies or browser storage are persisted.
 
@@ -155,7 +131,7 @@ Waiters are cancellable and stop after 130 seconds; locks are never stolen.
 OAuth attempts persist a one-hour cooldown before opening the browser, including
 when a process crashes or put.io rejects a login. Successful validated login
 clears the cooldown. Do not delete session state to retry a rate-limited login;
-honor longer provider limits. Reconcile a crashed owner before removing its lock.
+honor longer provider limits. Confirm a crashed process stopped before removing its lock.
 
 ## Capture
 

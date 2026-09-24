@@ -96,8 +96,7 @@ support still needs its own proof.
 
 ## Authenticated playback probe
 
-This is a maintainer-only lane on the registered Linux executor. Follow
-[executor setup](./LIVE.md#executor-setup), including the designated Stremio
+This is a maintainer-only lane. Follow [live setup](./LIVE.md#setup), including the designated Stremio
 identity and credentials. Once configured, run:
 
 ```sh

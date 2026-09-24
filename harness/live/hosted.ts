@@ -21,7 +21,7 @@ import {
   reserve,
   withAllowanceLock,
 } from "./allowance.ts";
-import { registeredLiveRunner } from "./runner.ts";
+import { liveRunnerDirectory } from "./runner.ts";
 import {
   createLiveAttempt,
   trackAcquisition,
@@ -437,7 +437,7 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
     const work = Effect.gen(function* () {
       yield* validateProvenance();
       const ledgerDirectory = yield* Effect.tryPromise(() =>
-        registeredLiveRunner(),
+        liveRunnerDirectory(),
       );
       const account = yield* accountInfo();
       if (

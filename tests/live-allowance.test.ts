@@ -10,7 +10,7 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir, userInfo } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vite-plus/test";
 import {
@@ -20,10 +20,9 @@ import {
   withAllowanceLock,
 } from "../harness/live/allowance.ts";
 import {
+  liveRunnerDirectory,
+  liveRunnerPath,
   measureLivePayloads,
-  registeredLiveRunner,
-  runnerDirectory,
-  type RunnerIdentity,
 } from "../harness/live/runner.ts";
 import { liveVersions } from "../harness/live/versions.ts";
 
@@ -49,36 +48,17 @@ const seed = async (
 
 const fixture = async () => {
   const home = await mkdtemp(join(tmpdir(), "live-owner-"));
-  const identity: RunnerIdentity = {
-    platform: "linux",
-    username: "fixture-owner",
-    account: "fixture-account",
-    uid: userInfo().uid,
-    home,
-    machineIdSha256: "a".repeat(64),
-  };
-  const directory = runnerDirectory(home);
+  const directory = liveRunnerPath(home);
   await seed(directory);
-  await writeFile(
-    join(directory, "runner.json"),
-    JSON.stringify({
-      version: 2,
-      account: identity.account,
-      username: identity.username,
-      machineIdSha256: identity.machineIdSha256,
-      uid: identity.uid,
-    }),
-    { mode: 0o600 },
-  );
-  return { home, identity, directory };
+  return { home, directory };
 };
 
-test("independent checkout contexts resolve one owner and atomically compete for its last slot", async () => {
+test("independent checkout contexts share one runner and atomically compete for its last slot", async () => {
   const owner = await fixture();
   try {
     await seed(owner.directory, 9, liveVersions.byteLimit - 1);
-    const first = await registeredLiveRunner({ ...owner.identity }, now);
-    const second = await registeredLiveRunner({ ...owner.identity }, now);
+    const first = await liveRunnerDirectory(owner.home, now);
+    const second = await liveRunnerDirectory(owner.home, now);
     assert.equal(first, second);
     const results = await Promise.allSettled([
       reserve(first, 1, 1, now),
@@ -190,39 +170,73 @@ test("an old lock is not stolen and a cancelled waiter cannot remove it", async 
   }
 });
 
-test("registration binds the host and user and requires private regular state", async () => {
+test("a missing ledger is created fresh and private, then reused", async () => {
+  const home = await mkdtemp(join(tmpdir(), "live-fresh-"));
+  try {
+    const directory = await liveRunnerDirectory(home, now);
+    const path = join(directory, "allowance.json");
+    assert.equal((await stat(directory)).mode & 0o777, 0o700);
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), {
+      day,
+      reservedTransfers: 0,
+      reservedBytes: 0,
+    });
+    await reserve(directory, 4, 34, now);
+    await liveRunnerDirectory(home, now);
+    assert.equal((await readLedger(path, now)).reservedBytes, 34);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("an existing invalid or future ledger fails without being overwritten", async () => {
   const owner = await fixture();
   try {
-    for (const identity of [
-      { ...owner.identity, machineIdSha256: "b".repeat(64) },
-      { ...owner.identity, uid: owner.identity.uid + 1 },
-      { ...owner.identity, platform: "darwin" },
-      { ...owner.identity, username: "other" },
-      { ...owner.identity, account: "other" },
-      { ...owner.identity, account: "" },
-    ])
+    const path = join(owner.directory, "allowance.json");
+    for (const contents of [
+      "{",
+      "{}",
+      JSON.stringify({
+        day: "2026-09-14",
+        reservedTransfers: 0,
+        reservedBytes: 0,
+      }),
+    ]) {
+      await writeFile(path, contents);
       await assert.rejects(
-        () => registeredLiveRunner(identity, now),
+        () => liveRunnerDirectory(owner.home, now),
         AllowanceFailure,
       );
-    const registration = join(owner.directory, "runner.json");
-    await chmod(registration, 0o644);
+      assert.equal(await readFile(path, "utf8"), contents);
+    }
+  } finally {
+    await rm(owner.home, { recursive: true, force: true });
+  }
+});
+
+test("runner state must be private, regular and owned by this user", async () => {
+  const owner = await fixture();
+  try {
+    const path = join(owner.directory, "allowance.json");
+    await chmod(owner.directory, 0o755);
     await assert.rejects(
-      () => registeredLiveRunner(owner.identity, now),
+      () => liveRunnerDirectory(owner.home, now),
       AllowanceFailure,
     );
-    await chmod(registration, 0o600);
-    const contents = await readFile(registration);
-    await rm(registration);
+    await chmod(owner.directory, 0o700);
+    await chmod(path, 0o644);
     await assert.rejects(
-      () => registeredLiveRunner(owner.identity, now),
+      () => liveRunnerDirectory(owner.home, now),
       AllowanceFailure,
     );
+    await chmod(path, 0o600);
     const target = join(owner.home, "copy.json");
-    await writeFile(target, contents, { mode: 0o600 });
-    await symlink(target, registration);
+    await writeFile(target, await readFile(path), { mode: 0o600 });
+    await rm(path);
+    await symlink(target, path);
     await assert.rejects(
-      () => registeredLiveRunner(owner.identity, now),
+      () => liveRunnerDirectory(owner.home, now),
       AllowanceFailure,
     );
   } finally {
@@ -314,7 +328,7 @@ test("legacy transfer ceilings no longer block reservations or erase usage", asy
   }
 });
 
-test("an interrupted durable write blocks reservations until owner reconciliation", async () => {
+test("an interrupted durable write blocks reservations until the partial write is resolved", async () => {
   const root = await mkdtemp(join(tmpdir(), "live-ledger-write-"));
   try {
     await seed(root, 6, 100);

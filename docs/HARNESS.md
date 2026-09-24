@@ -173,7 +173,7 @@ XML, or account-linking screenshots.
 
 Live put.io validation is a separate lane: `mise run live:setup` and
 `mise run live:probe`. Follow the
-[sole-executor allowance contract](./LIVE.md#credential-and-budget)
+[allowance contract](./LIVE.md#credential-and-budget)
 before running it. With the designated token loaded it uploads the
 self-generated fixture movie and captions, decodes playback, checks Range
 pause/resume and URL reissue, requires put.io-delivered English cue text when

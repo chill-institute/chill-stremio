@@ -262,7 +262,7 @@ context and Web listener cleanup and absence of the Engine bearer from browser
 requests. This uses the same devbox and direct provider HTTPS; it does not
 establish playback from another device or network.
 
-The shared executor ledger reserves the source upload and copied bytes plus
+The shared live ledger reserves the source upload and copied bytes plus
 three creations before any provider mutation. An explicitly approved one-attempt
 extension is available through `--approved-extra`; it preserves existing usage
 and audit history. Persisted private preflight and result checkpoints support

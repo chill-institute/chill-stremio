@@ -55,7 +55,7 @@ import {
   liveUploadName,
 } from "./source.ts";
 import { liveVersions } from "./versions.ts";
-import { measureLivePayloads, registeredLiveRunner } from "./runner.ts";
+import { measureLivePayloads, liveRunnerDirectory } from "./runner.ts";
 import {
   createLiveAttempt,
   trackAcquisition,
@@ -221,9 +221,7 @@ const proveSubtitles = Effect.fn("live.proveSubtitles")(function* (
 });
 
 export const runLive = Effect.fn("live.run")(function* (directory: string) {
-  const ledgerDirectory = yield* Effect.tryPromise(() =>
-    registeredLiveRunner(),
-  );
+  const ledgerDirectory = yield* Effect.tryPromise(() => liveRunnerDirectory());
   const expectedUsername = process.env[liveVersions.usernameEnv]?.trim();
   if (!expectedUsername)
     return yield* new LiveFailure({
@@ -450,7 +448,7 @@ const program = Effect.gen(function* () {
   const readAllowance = () =>
     Effect.promise(async () => {
       try {
-        const ledgerDirectory = await registeredLiveRunner();
+        const ledgerDirectory = await liveRunnerDirectory();
         return await readLedger(join(ledgerDirectory, "allowance.json"));
       } catch (cause) {
         return {

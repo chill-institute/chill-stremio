@@ -14,7 +14,7 @@ for the per-process installation capability and SSH forwarding. Never print the
 private installation receipt or use real credentials in the fixture lane.
 `mise run adapter:live` uses both designated test accounts, normal chill
 OAuth and production Engine for the authenticated Web flow. It shares the
-registered executor and allowance; see [ADAPTER.md](./docs/ADAPTER.md#authenticated-playback-probe).
+live allowance; see [ADAPTER.md](./docs/ADAPTER.md#authenticated-playback-probe).
 `mise run adapter:smoke` proves the actual adapter against a generated local
 Engine in the pinned Web client; preserve fake-only capture and cleanup proof.
 
@@ -44,7 +44,7 @@ suppress sensitive paths at ingress.
 | Hosted service, credentials, routes, acquisition       | `mise run hosted:smoke`, then `docker build` and `mise run hosted:container` ([release](./docs/HOSTED.md#verification-and-release))                                                                                                                               | local, [publish](./.github/workflows/publish-hosted.yml) before image push   | `artifacts/hosted-<timestamp>/` receipt and `video/` recording, `artifacts/container-<timestamp>/results.json`; CI artifact `hosted-release-proof-<run_id>` |
 | Native desktop playback                                | `mise run native:desktop:probe` (client only), `native:desktop:probe hosted` (hosted adapter) ([scope](./docs/NATIVE-DESKTOP.md))                                                                                                                                 | Linux host, [manual CI](./.github/workflows/native-desktop.yml) fixture mode | `artifacts/desktop-<timestamp>/` or `desktop-hosted-<timestamp>/results.json`; CI artifact `linux-desktop-<run_id>`                                         |
 | Android TV playback                                    | `mise run native:android:probe`; `native:android:account` with the designated Stremio account ([scope](./docs/NATIVE-ANDROID.md))                                                                                                                                 | Linux host with an accelerated Android TV emulator                           | `artifacts/android-<timestamp>/results.json` and sanitized `emulator.log`; `artifacts/android-account-<timestamp>/results.json`                             |
-| Live put.io and production Engine                      | `mise run live:probe`, `adapter:live`, `hosted:live`; deployed endpoint: `hosted:public` with `CHILL_STREMIO_CREDENTIAL` ([LIVE](./docs/LIVE.md), [ADAPTER](./docs/ADAPTER.md#authenticated-playback-probe), [HOSTED](./docs/HOSTED.md#verification-and-release)) | registered executor only; designated accounts; shared allowance              | `artifacts/{live,live-adapter,live-hosted,public}-<timestamp>/results.json`                                                                                 |
+| Live put.io and production Engine                      | `mise run live:probe`, `adapter:live`, `hosted:live`; deployed endpoint: `hosted:public` with `CHILL_STREMIO_CREDENTIAL` ([LIVE](./docs/LIVE.md), [ADAPTER](./docs/ADAPTER.md#authenticated-playback-probe), [HOSTED](./docs/HOSTED.md#verification-and-release)) | designated accounts; shared allowance                                        | `artifacts/{live,live-adapter,live-hosted,public}-<timestamp>/results.json`                                                                                 |
 | Release and deploy                                     | `main` push tags a release ([`release`](./.github/workflows/verify.yml)); [publish](./.github/workflows/publish-hosted.yml) builds, pushes and dispatches the Engine deploy                                                                                       | CI, publish is manual                                                        | GitHub release, GHCR digest in release notes, Engine `deploy-stremio.yml` run                                                                               |
 
 Gaps:
@@ -58,7 +58,6 @@ Gaps:
 
 ## Work and verify
 
-- Live checks require the registered executor identity.
 - Keep the primary checkout on `main`.
 - Run `mise trust`, `mise install`, then `mise run setup` from a fresh checkout.
 - A Web pass does not establish native support.
@@ -66,7 +65,7 @@ Gaps:
   serialize account addon edits, keep pairing/UI captures in memory, and verify
   exact owned-addon removal.
 - For direct put.io validation, follow [LIVE.md](./docs/LIVE.md) and its
-  designated-account, sole-executor and allowance boundaries.
+  designated-account and allowance boundaries.
 - Use `mise run fixture:serve` for a foreground fixture server and
   `mise run cleanup` for cleanup. See [harness guidance](./docs/HARNESS.md)
   for browser setup, fresh-state runs, result files and failure artifacts.

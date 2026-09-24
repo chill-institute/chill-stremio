@@ -13,7 +13,7 @@ import { createLibrary } from "../../src/library.ts";
 import { engineLayer } from "../../src/engine.ts";
 import { authorizeChill } from "./auth.ts";
 import { reserve } from "./allowance.ts";
-import { registeredLiveRunner } from "./runner.ts";
+import { liveRunnerDirectory } from "./runner.ts";
 import {
   accountInfo,
   createFolder,
@@ -40,7 +40,7 @@ let stage = "setup";
 
 const work = Effect.gen(function* () {
   yield* validateProvenance();
-  const ledger = yield* Effect.tryPromise(() => registeredLiveRunner());
+  const ledger = yield* Effect.tryPromise(() => liveRunnerDirectory());
   const account = yield* accountInfo();
   assert.equal(account.username, process.env.PUTIO_USERNAME?.trim());
   yield* Effect.tryPromise(() => generateHls(`.cache/live/hls-${stamp}`));

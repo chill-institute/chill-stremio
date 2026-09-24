@@ -25,7 +25,7 @@ import {
   uploadFile,
 } from "./putio.ts";
 import { removeOwnedAddon } from "./stremio-account.ts";
-import { registeredLiveRunner } from "./runner.ts";
+import { liveRunnerDirectory } from "./runner.ts";
 import {
   ensureLiveSource,
   fixtureSrt,
@@ -211,7 +211,7 @@ export const runAuthenticatedAdapter = Effect.fn(
     )(credentials);
     yield* validateProvenance();
     const ledgerDirectory = yield* Effect.tryPromise(() =>
-      registeredLiveRunner(),
+      liveRunnerDirectory(),
     );
     const account = yield* accountInfo();
     if (
