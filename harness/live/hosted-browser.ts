@@ -15,6 +15,10 @@ const Streams = Schema.Struct({
   streams: Schema.Array(Schema.Struct({ url: Schema.String })),
 });
 
+// put.io redirects media requests to its CDN hosts.
+const isPutioMediaHost = (url: URL) =>
+  url.protocol === "https:" && url.hostname.endsWith(".put.io");
+
 export interface HostedBrowserCleanup {
   browserClosed: boolean;
   contextClosed: boolean;
@@ -116,7 +120,10 @@ export const proveHostedBrowserPlayback = Effect.fn("live.hosted.browser")(
         ) {
           input.cleanup.engineBearerAbsent = false;
           await route.abort();
-        } else if (allowedOrigins.has(new URL(request.url()).origin))
+        } else if (
+          allowedOrigins.has(new URL(request.url()).origin) ||
+          isPutioMediaHost(new URL(request.url()))
+        )
           await route.continue();
         else await route.abort();
       });
