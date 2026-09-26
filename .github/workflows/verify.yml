@@ -25,6 +25,18 @@ jobs:
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
       - run: pnpm install --frozen-lockfile
       - run: mise run verify
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install locked semantic-release
+        run: npm ci --prefix .github/release --ignore-scripts --no-audit --no-fund
+
+      - name: Smoke-test semantic-release
+        run: node .github/release/smoke.mjs
+
       - name: Clean fixture runtime
         if: always()
         run: mise run cleanup
