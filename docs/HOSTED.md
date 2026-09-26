@@ -222,12 +222,17 @@ contain the credential.
 
 Every push to `main` cuts a semantic-release version and GitHub release as
 `chill-ci`. [Publish hosted adapter](../.github/workflows/publish-hosted.yml) is
-a manual, main-only workflow. It resolves the latest published release (or a
-chosen tag), verifies that exact commit, builds one image, tests it, pushes it
-to GHCR as `X.Y.Z`, `X.Y`, `X`, `latest` and `sha-<commit>`, records the digest
-on the release, then dispatches the hosting repository's adapter deploy and
-waits for it. The default verification and fixture workflows retain read-only
-permissions.
+a manual, main-only workflow in two jobs. The `build` job has no Environment
+and only `contents: read` and `packages: write`: it resolves the latest
+published release (or a chosen tag), installs, verifies that exact commit,
+builds one image, tests it, pushes it to GHCR as `X.Y.Z`, `X.Y`, `X`, `latest`
+and `sha-<commit>`, and outputs the tag and pushed digest. The `publish` job
+runs in the `publish` Environment with no `GITHUB_TOKEN` permissions and no
+checkout, so dependency, verify and test code never runs next to the `chill-ci`
+key. It validates the build outputs, mints scoped `chill-ci` tokens, records
+the digest on the release, then dispatches the hosting repository's adapter
+deploy with that digest and waits for it. The default verification and fixture
+workflows retain read-only permissions.
 
 Engine owns the adapter deployment and shared host-mutation lock; its manual
 dispatch remains the rollback path. Any v2.0.0 or later image can be a rollback
