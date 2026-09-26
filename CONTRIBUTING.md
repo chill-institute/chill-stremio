@@ -71,5 +71,11 @@ dependencies that require review and fresh browser evidence.
 Use Conventional Commits. Push verified changes directly when repository rules
 permit; otherwise open a pull request.
 
+Only `feat` (minor), `fix`, `perf`, `refactor`, `revert` (patch) and breaking
+(major) commits release from `main`; `docs`, `test`, `build`, `ci`, `chore`
+and `deps` do not. The rule set is the commit-analyzer `releaseRules` in
+[`.releaserc.json`](./.releaserc.json), identical in every chill.institute
+package repo; [`smoke.mjs`](./.github/release/smoke.mjs) fails when it drifts.
+
 Original code and documentation are [MIT licensed](./LICENSE). Third-party
 dependencies retain their own licenses.

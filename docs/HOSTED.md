@@ -220,8 +220,9 @@ non-root user, health, a generated credential's manifest, removed routes,
 sanitized Engine failures, clean SIGTERM, restart and that container logs never
 contain the credential.
 
-Every push to `main` cuts a semantic-release version and GitHub release as
-`chill-ci`. [Publish hosted adapter](../.github/workflows/publish-hosted.yml) is
+Every `feat`, `fix`, `perf`, `refactor`, `revert` or breaking change on `main`
+cuts a semantic-release version and GitHub release as `chill-ci`; see the
+[release rules](../CONTRIBUTING.md). [Publish hosted adapter](../.github/workflows/publish-hosted.yml) is
 a manual, main-only workflow in two jobs. The `build` job has no Environment
 and only `contents: read` and `packages: write`: it resolves the latest
 published release (or a chosen tag), installs, verifies that exact commit,
