@@ -1,0 +1,9 @@
+{
+  "name": "chill-stremio-release",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "conventional-changelog-conventionalcommits": "9.3.1",
+    "semantic-release": "25.0.9"
+  }
+}
