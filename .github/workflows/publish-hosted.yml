@@ -16,16 +16,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  build:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 75
-    environment:
-      name: publish
-      deployment: false
     permissions:
       contents: read
       packages: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      image-ref: ${{ steps.publish.outputs.ref }}
     env:
       IMAGE_NAME: ghcr.io/chill-institute/chill-stremio
     steps:
@@ -39,7 +39,6 @@ jobs:
           tag="$INPUT_TAG"
           [ -n "$tag" ] || tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)"
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::no release tag to publish ($tag)"; exit 1; }
-          # Only published, non-draft releases may be built and pushed.
           [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft)" = "false" ] || { echo "::error::$tag is not a published release"; exit 1; }
           sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" -q .sha)"
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve $tag to a commit"; exit 1; }
@@ -90,6 +89,40 @@ jobs:
           [ -n "$digest_ref" ] || { echo "no digest reference for $IMAGE_NAME:$VERSION"; exit 1; }
           echo "ref=$digest_ref" >> "$GITHUB_OUTPUT"
           printf '%s:%s\n%s\n' "$IMAGE_NAME" "$VERSION" "$digest_ref" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain fake-only release proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: hosted-release-proof-${{ github.run_id }}
+          path: |
+            artifacts/hosted-*/results.json
+            artifacts/container-*/results.json
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Clean fixture runtime
+        if: always()
+        run: mise run cleanup
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: publish
+      deployment: false
+    permissions: {}
+    env:
+      IMAGE_NAME: ghcr.io/chill-institute/chill-stremio
+    steps:
+      - name: Validate the tested build
+        env:
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          IMAGE_REF: ${{ needs.build.outputs.image-ref }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::invalid release tag"; exit 1; }
+          [[ "$IMAGE_REF" =~ ^"$IMAGE_NAME"@sha256:[0-9a-f]{64}$ ]] || { echo "::error::invalid image digest reference"; exit 1; }
       - name: Mint a chill-ci token for chill-engine
         id: releaser
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -108,25 +141,22 @@ jobs:
           owner: chill-institute
           repositories: chill-stremio
           permission-contents: write
-
       - name: Record the image on the release
         env:
           GH_TOKEN: ${{ steps.notes.outputs.token }}
-          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
-          VERSION: ${{ steps.tag.outputs.version }}
-          IMAGE_REF: ${{ steps.publish.outputs.ref }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          IMAGE_REF: ${{ needs.build.outputs.image-ref }}
         run: |
           set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body > "$RUNNER_TEMP/body.md"
-          # Idempotent: drop any earlier image section before appending this one.
           awk '/^## Image$/ {exit} {print}' "$RUNNER_TEMP/body.md" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > "$RUNNER_TEMP/notes.md"
           printf '\n\n## Image\n\n~~~\n%s:%s\n%s\n~~~\n' "$IMAGE_NAME" "$VERSION" "$IMAGE_REF" >> "$RUNNER_TEMP/notes.md"
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/notes.md"
-
       - name: Deploy through chill-engine
         env:
           GH_TOKEN: ${{ steps.releaser.outputs.token }}
-          IMAGE_REF: ${{ steps.publish.outputs.ref }}
+          IMAGE_REF: ${{ needs.build.outputs.image-ref }}
         run: |
           set -euo pipefail
           dispatch_id="$GITHUB_REPOSITORY-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -140,16 +170,3 @@ jobs:
           [ -n "$run_id" ] || { echo "::error::could not find the dispatched deploy run $dispatch_id"; exit 1; }
           echo "Deploy run: https://github.com/chill-institute/chill-engine/actions/runs/$run_id" >> "$GITHUB_STEP_SUMMARY"
           gh run watch "$run_id" -R chill-institute/chill-engine --exit-status
-      - name: Retain fake-only release proof
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: hosted-release-proof-${{ github.run_id }}
-          path: |
-            artifacts/hosted-*/results.json
-            artifacts/container-*/results.json
-          retention-days: 7
-          if-no-files-found: warn
-      - name: Clean fixture runtime
-        if: always()
-        run: mise run cleanup
