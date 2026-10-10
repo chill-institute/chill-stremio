@@ -1,4 +1,4 @@
-import { test } from "vite-plus/test";
+import { test, vi } from "vite-plus/test";
 import { Effect } from "effect";
 import { NodeServices } from "@effect/platform-node";
 import assert from "node:assert/strict";
@@ -35,6 +35,17 @@ test("Android diagnostics redact secrets, URLs and local paths", () => {
     "fetch [url]",
   );
   assert.ok(!diagnostic(`cwd ${process.cwd()}`).includes(process.cwd()));
+});
+
+test("Android diagnostics replace HOME only when it is set", () => {
+  try {
+    vi.stubEnv("HOME", "/home/fixture");
+    assert.equal(diagnostic("/home/fixture/log"), "[home]/log");
+    vi.stubEnv("HOME", "");
+    assert.equal(diagnostic("fixture log"), "fixture log");
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
 
 test("Android APK pin is a 64-character SHA256", () => {

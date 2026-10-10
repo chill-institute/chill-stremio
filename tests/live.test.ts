@@ -51,6 +51,17 @@ test("live redaction strips tokens, magnets, URLs and local paths", () => {
   assert.ok(!redactLive(`cwd ${process.cwd()}`).includes(process.cwd()));
 });
 
+test("live redaction replaces HOME only when it is set", () => {
+  try {
+    vi.stubEnv("HOME", "/home/fixture");
+    assert.equal(redactLive("/home/fixture/log"), "[home]/log");
+    vi.stubEnv("HOME", "");
+    assert.equal(redactLive("fixture log"), "fixture log");
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
 test("generic PUTIO_OAUTH_TOKEN does not count as the designated account", () => {
   const previous = {
     account: process.env.PUTIO_ACCOUNT_NAME,

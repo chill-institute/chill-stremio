@@ -33,10 +33,11 @@ export function diagnostic(line: string) {
     )
   )
     return "[redacted]";
-  return stripVTControlCharacters(line)
+  const text = stripVTControlCharacters(line)
     .replace(/https?:\/\/\S+/g, "[url]")
-    .replaceAll(process.cwd(), "[checkout]")
-    .replaceAll(process.env.HOME ?? "\u0000", "[home]");
+    .replaceAll(process.cwd(), "[checkout]");
+  const home = process.env.HOME;
+  return home ? text.replaceAll(home, "[home]") : text;
 }
 
 const installFailures = new Set([

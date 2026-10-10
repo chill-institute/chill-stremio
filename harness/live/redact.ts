@@ -9,10 +9,11 @@ export function redactLive(value: string) {
     )
   )
     return "[redacted]";
-  return stripVTControlCharacters(value)
+  const text = stripVTControlCharacters(value)
     .replace(/https?:\/\/\S+/g, "[url]")
-    .replaceAll(process.cwd(), "[checkout]")
-    .replaceAll(process.env.HOME ?? "\u0000", "[home]");
+    .replaceAll(process.cwd(), "[checkout]");
+  const home = process.env.HOME;
+  return home ? text.replaceAll(home, "[home]") : text;
 }
 
 const filled = (name: string) => {
