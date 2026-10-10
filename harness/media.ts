@@ -3,7 +3,10 @@ import { Effect, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import sharp from "sharp";
+
+const fontConfig = fileURLToPath(new URL("fonts/fonts.conf", import.meta.url));
 
 export const mediaFixtures = [
   { file: "movie", label: "FIXTURE MOVIE", color: "#d02020", frequency: 440 },
@@ -140,12 +143,22 @@ async function encodeMedia(
   directory: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  await Effect.runPromise(
-    Effect.forEach(mediaFixtures, (fixture) =>
-      encodeFixture(directory, fixture),
-    ).pipe(Effect.provide(NodeServices.layer)),
-    { signal },
-  );
+  // Fontconfig reads FONTCONFIG_FILE once, at the first text layout in a
+  // process. The bundled config sees only the bundled font, so frames match on
+  // any host; restoring the variable keeps later child processes on host fonts.
+  const hostFontConfig = process.env.FONTCONFIG_FILE;
+  process.env.FONTCONFIG_FILE = fontConfig;
+  try {
+    await Effect.runPromise(
+      Effect.forEach(mediaFixtures, (fixture) =>
+        encodeFixture(directory, fixture),
+      ).pipe(Effect.provide(NodeServices.layer)),
+      { signal },
+    );
+  } finally {
+    if (hostFontConfig === undefined) delete process.env.FONTCONFIG_FILE;
+    else process.env.FONTCONFIG_FILE = hostFontConfig;
+  }
   await writeFile(
     join(directory, "english.vtt"),
     "WEBVTT\n\n00:00:00.000 --> 00:00:35.900\nFIXTURE SUBTITLE ENGLISH\n",

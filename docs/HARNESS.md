@@ -7,7 +7,8 @@ media and no account credentials.
 
 ## Prerequisites
 
-Install a full FFmpeg encoder before setup. On Ubuntu:
+Install a full FFmpeg encoder and the DejaVu fonts used by status clips before
+setup. On Ubuntu:
 
 ```sh
 sudo apt-get update
@@ -54,10 +55,13 @@ result. A changed build, encoder or fixture fails until setup succeeds again.
 
 The generated 36-second H.264/AAC fixtures are a red movie, green episode 1
 and blue episode 2, each with a visible title, time, frame number and moving
-one-second marker. English and Spanish WebVTT tracks are selectable. FFmpeg
-with `libx264`, `aac` and `lavfi` is required; the harness records the installed
-encoder version and hashes rather than assuming cross-platform identical
-encodes. Media generation stages complete files before replacing the cache.
+one-second marker. Frame text uses the DejaVu Sans subset in
+[harness/fonts](../harness/fonts) through its own fontconfig file, which tests
+share, so host fonts do not change frames. English and Spanish WebVTT tracks
+are selectable. FFmpeg with `libx264`, `aac` and `lavfi` is required; the
+harness records the installed encoder version and hashes rather than assuming
+cross-platform identical encodes. Media generation stages complete files
+before replacing the cache.
 
 The harness clicks Addons → Add addon → URL → Add → Install in the real
 client. It injects no local storage or installation state. Stremio's default

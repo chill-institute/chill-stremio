@@ -1,8 +1,14 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 
 export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
+    env: {
+      FONTCONFIG_FILE: fileURLToPath(
+        new URL("harness/fonts/fonts.conf", import.meta.url),
+      ),
+    },
   },
   fmt: {
     printWidth: 80,
