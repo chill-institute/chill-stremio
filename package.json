@@ -43,7 +43,7 @@
     "@playwright/test": "1.63.0",
     "@types/node": "26.5.0",
     "@types/stremio-addon-sdk": "1.6.12",
-    "sharp": "0.35.4",
+    "sharp": "0.35.5",
     "stremio-addon-client": "1.16.1",
     "stremio-addon-linter": "1.7.0",
     "typescript": "7.0.2",
