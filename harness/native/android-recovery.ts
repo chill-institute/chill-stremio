@@ -1,5 +1,13 @@
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, open, readFile, rename } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+} from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { Predicate, Schema } from "effect";
 
@@ -40,17 +48,45 @@ const syncDirectory = async (path: string) => {
     await directory.close();
   }
 };
-const save = async (path: string, receipt: typeof Receipt.Type) => {
-  const pending = `${path}.pending`;
-  const output = await open(pending, "wx", 0o600);
+const exited = Schema.is(Schema.Struct({ code: Schema.Literal("ESRCH") }));
+const running = (pid: number) => {
   try {
-    await output.writeFile(JSON.stringify(receipt, null, 2));
-    await output.sync();
-  } finally {
-    await output.close();
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !exited(error);
   }
-  await rename(pending, path);
-  await syncDirectory(dirname(path));
+};
+// Each writer creates its own pending file before looking for others, so of
+// two overlapping writers at least one sees the other and fails. A pending
+// file whose process has exited is a crashed write and is discarded.
+const save = async (path: string, receipt: typeof Receipt.Type) => {
+  const directory = dirname(path);
+  const prefix = `${basename(path)}.`;
+  const own = `${prefix}${process.pid}.${randomUUID()}.pending`;
+  const pending = join(directory, own);
+  try {
+    const output = await open(pending, "wx", 0o600);
+    try {
+      for (const entry of await readdir(directory)) {
+        const owner = entry.startsWith(prefix)
+          ? /^(\d+)\.[0-9a-f-]+\.pending$/.exec(entry.slice(prefix.length))
+          : null;
+        if (!owner?.[1] || entry === own) continue;
+        if (running(Number(owner[1])))
+          throw new Error("Another process is writing this recovery receipt");
+        await rm(join(directory, entry), { force: true });
+      }
+      await output.writeFile(JSON.stringify(receipt, null, 2));
+      await output.sync();
+    } finally {
+      await output.close();
+    }
+    await rename(pending, path);
+  } finally {
+    await rm(pending, { force: true });
+  }
+  await syncDirectory(directory);
 };
 export async function createAndroidRecoveryJournal(
   transportUrl: string,

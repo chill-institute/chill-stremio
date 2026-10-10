@@ -1,8 +1,11 @@
 import { expect, test } from "vite-plus/test";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
+  type AndroidRecoveryJournal,
   createAndroidRecoveryJournal,
   descriptorHash,
   reconcileAndroidRecoveryJournal,
@@ -24,6 +27,46 @@ const other = {
   transportUrl: "https://private.example/secret-capability/manifest.json",
   manifest: { id: "other" },
   flags: { protected: true },
+};
+
+// Reconciles in another process that stays parked in its first file sync:
+// the receipt write has started but has not replaced the receipt.
+const stalledWriter = async (journal: AndroidRecoveryJournal) => {
+  const script = `
+    import { open } from "node:fs/promises";
+    const [recovery, journal] = process.argv.slice(1);
+    const probe = await open(process.execPath);
+    Object.getPrototypeOf(probe).sync = () => {
+      setInterval(() => {}, 60_000);
+      console.log("stalled");
+      return new Promise(() => {});
+    };
+    await probe.close();
+    const { reconcileAndroidRecoveryJournal } = await import(recovery);
+    await reconcileAndroidRecoveryJournal(JSON.parse(journal), []);
+  `;
+  const writer = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      script,
+      new URL("../harness/native/android-recovery.ts", import.meta.url).href,
+      JSON.stringify(journal),
+    ],
+    {
+      stdio: ["ignore", "pipe", "inherit"],
+      timeout: 10_000,
+      killSignal: "SIGKILL",
+    },
+  );
+  const exited = once(writer, "exit");
+  let output = "";
+  for await (const chunk of writer.stdout) {
+    output += String(chunk);
+    if (output.includes("stalled")) return { writer, exited };
+  }
+  throw new Error("The receipt writer exited before its write started");
 };
 
 test("recovery journal is private, contains only baseline hashes, and verifies exact absence", async () => {
@@ -61,6 +104,38 @@ test("recovery journal is private, contains only baseline hashes, and verifies e
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test(
+  "an interrupted receipt write blocks reconciliation only while its writer runs",
+  { timeout: 15_000 },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "android-recovery-test-"));
+    let stalled: Awaited<ReturnType<typeof stalledWriter>> | undefined;
+    try {
+      const journal = await createAndroidRecoveryJournal(
+        owned.transportUrl,
+        [other],
+        root,
+      );
+      stalled = await stalledWriter(journal);
+      await expect(
+        reconcileAndroidRecoveryJournal(journal, [other]),
+      ).rejects.toThrow();
+      stalled.writer.kill("SIGKILL");
+      await stalled.exited;
+      expect(JSON.parse(await readFile(journal.path, "utf8")).state).toBe(
+        "prepared",
+      );
+      await reconcileAndroidRecoveryJournal(journal, [other]);
+      expect(JSON.parse(await readFile(journal.path, "utf8")).state).toBe(
+        "removal-verified",
+      );
+    } finally {
+      stalled?.writer.kill("SIGKILL");
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("baseline journal completes before mutation and cleanup reports verified readback", async () => {
   let prepared = false;

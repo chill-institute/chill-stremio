@@ -197,6 +197,9 @@ hashes of baseline descriptors; it contains no authentication material or
 unrelated addon URLs. The sanitized run result retains only the journal ID.
 
 The receipt and parent directories are synced before the provider write.
+Receipt writes replace the file atomically. A write fails when another running
+process is writing the same receipt; a write interrupted by a crash keeps the
+previous receipt and does not block later reconciliation.
 Reconcile every unresolved `prepared` or `uncertain` receipt before any future
 account mutation, including a new command invocation.
 
