@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, type RequestListener } from "node:http";
-import { test } from "vite-plus/test";
+import { test, vi } from "vite-plus/test";
 import { Effect } from "effect";
 import { Engine, engineLayer } from "../src/engine.ts";
 
@@ -253,23 +253,34 @@ test("interrupting Engine cancels an in-flight response", async () => {
 
 test("Engine stops a stalled response at its ten-second deadline", async () => {
   let calls = 0;
+  let stall = () => {};
+  const stalled = new Promise<void>((resolve) => {
+    stall = resolve;
+  });
   await withEngineServer(
     (_request, response) => {
       calls += 1;
       response.writeHead(200, { "content-type": "application/json" });
       response.write('{"files":[');
+      stall();
     },
     async (baseUrl) => {
-      const started = performance.now();
-      const error = await Effect.runPromise(
-        Effect.flatMap(Engine, (engine) => engine.getFolder(1n)).pipe(
-          Effect.provide(engineLayer({ baseUrl, token })),
-          Effect.flip,
-        ),
-      );
-      assert.equal(error.code, "deadline_exceeded");
-      assert.ok(performance.now() - started < 12_000);
-      assert.equal(calls, 1);
+      // Fake only the RPC deadline timer; sockets stay real.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const failure = Effect.runPromise(
+          Effect.flatMap(Engine, (engine) => engine.getFolder(1n)).pipe(
+            Effect.provide(engineLayer({ baseUrl, token })),
+            Effect.flip,
+          ),
+        );
+        await stalled;
+        await vi.advanceTimersByTimeAsync(10_000);
+        assert.equal((await failure).code, "deadline_exceeded");
+        assert.equal(calls, 1);
+      } finally {
+        vi.useRealTimers();
+      }
     },
   );
-}, 15_000);
+});

@@ -1,4 +1,4 @@
-import { test } from "vite-plus/test";
+import { test, vi } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,6 +23,16 @@ async function withFixture(run: (fixture: Fixture) => Promise<void>) {
   }
 }
 
+// Fake only the fixture's deadline timers; sockets and polling stay real.
+async function withFakeDeadlines(run: () => Promise<void>) {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    await run();
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 async function interrupted(fixture: Fixture, signal?: AbortSignal) {
   const response = await fetch(`${fixture.origin}/failure/interrupted.mp4`, {
     signal: signal ?? AbortSignal.timeout(40000),
@@ -38,15 +48,13 @@ async function released(fixture: Fixture) {
   assert.equal(fixture.metrics.interruptedActive, 0);
 }
 
-test(
-  "delayed arming cuts every real response after the standalone deadline",
-  { timeout: 8000 },
-  async () => {
-    await withFixture(async (fixture) => {
+test("delayed arming cuts every real response after the standalone deadline", async () => {
+  await withFakeDeadlines(() =>
+    withFixture(async (fixture) => {
       const control = fixture.prepareInterruption();
       const first = await interrupted(fixture);
       const second = await interrupted(fixture);
-      await delay(4100);
+      await vi.advanceTimersByTimeAsync(4100);
       assert.equal(fixture.metrics.interruptedActive, 2);
       assert.equal(fixture.metrics.interruptedCuts, 0);
       assert.ok(fixture.metrics.interruptedBytes > 0);
@@ -63,9 +71,9 @@ test(
       control.cancel();
       const recovered = await fetch(`${fixture.origin}/media/movie.mp4`);
       assert.equal((await recovered.arrayBuffer()).byteLength, 12000);
-    });
-  },
-);
+    }),
+  );
+});
 
 test("disconnect and cancellation release pending responses without claiming a cut", async () => {
   await withFixture(async (fixture) => {
@@ -108,19 +116,18 @@ test("reset and server shutdown cancel pending interruption work", async () => {
   });
 });
 
-test(
-  "an unarmed decode session expires and releases real connections",
-  { timeout: 40000 },
-  async () => {
-    await withFixture(async (fixture) => {
+test("an unarmed decode session expires and releases real connections", async () => {
+  await withFakeDeadlines(() =>
+    withFixture(async (fixture) => {
       const control = fixture.prepareInterruption();
       const pending = await interrupted(fixture);
+      await vi.advanceTimersByTimeAsync(35_000);
       await pending.rejected;
       assert.equal(fixture.metrics.interruptedTimeouts, 1);
       assert.equal(fixture.metrics.interruptedCuts, 1);
       await released(fixture);
       assert.throws(() => control.arm(), /expired/);
       control.cancel();
-    });
-  },
-);
+    }),
+  );
+});

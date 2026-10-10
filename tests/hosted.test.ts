@@ -6,11 +6,17 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import * as proto from "@chill-institute/contracts/chill/v4/api_pb";
 import { Schema } from "effect";
-import { test } from "vite-plus/test";
+import { test, vi } from "vite-plus/test";
 import { redactCredentials } from "../src/credential.ts";
 import { startHostedAdapter } from "../src/hosted.ts";
 import { statusMessages, type StatusMediaKind } from "../src/status-media.ts";
 import { discoveryTargetId } from "../src/discovery.ts";
+
+// Poll pending playback quickly; its window and continuation limits stay real.
+vi.mock("../src/playback-wait.ts", async (original) => {
+  const actual = await original<typeof import("../src/playback-wait.ts")>();
+  return { ...actual, playbackWait: { ...actual.playbackWait, pollMs: 20 } };
+});
 
 const statusMedia = new Map(
   (Object.keys(statusMessages) as StatusMediaKind[]).map((kind) => [
@@ -580,23 +586,31 @@ test("hosted protocol configuration and malformed routes stay within their crede
 
 test("a stalled protocol response times out once and the server remains usable", async () => {
   const f = await fixture();
+  // Fake only the request deadline timers; sockets stay real.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     f.state.stallMovies = true;
-    const response = await fetch(
-      `${f.base()}/catalog/movie/discover-movies.json`,
-      { signal: AbortSignal.timeout(12_000) },
-    );
+    const stalled = fetch(`${f.base()}/catalog/movie/discover-movies.json`);
+    while (!f.calls.some(({ method }) => method === "GetMovies"))
+      await sleep(5);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const response = await stalled;
     assert.equal(response.status, 504);
     await response.arrayBuffer();
+    assert.equal(
+      f.calls.filter(({ method }) => method === "GetMovies").length,
+      1,
+    );
     f.state.stallMovies = false;
     assert.equal(
       (await fetch(`${f.base()}/catalog/movie/discover-movies.json`)).status,
       200,
     );
   } finally {
+    vi.useRealTimers();
     await f.close();
   }
-}, 15_000);
+});
 
 test("Stremio media selection waits for its download and plays without reselection", async () => {
   const f = await fixture();
@@ -639,7 +653,7 @@ test("Stremio media selection waits for its download and plays without reselecti
     assert.equal(responded, false);
     f.state.playbackPending = true;
     f.state.transferFinished = true;
-    await sleep(2100);
+    await sleep(100);
     assert.equal(responded, false);
     f.state.playbackPending = false;
     for (const ready of await Promise.all([selected, repeated])) {
