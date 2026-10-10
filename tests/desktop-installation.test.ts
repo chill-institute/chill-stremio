@@ -15,7 +15,7 @@ test("native mouse success and an empty add dialog do not prove installation", (
       guestPassed: true,
       manifestStage: "add-url",
       installedStage: "addons",
-      streamRequests: 0,
+      streamRequests: 1,
     }),
     false,
   );

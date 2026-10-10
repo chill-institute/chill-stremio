@@ -104,8 +104,9 @@ test("baseline journal completes before mutation and cleanup reports verified re
 });
 
 test("failed recovery preparation prevents account mutation", async () => {
+  const calls: string[] = [];
   const fetcher: typeof fetch = async (input) => {
-    expect(requestUrl(input).endsWith("addonCollectionGet")).toBe(true);
+    calls.push(requestUrl(input));
     return Response.json({ result: { addons: [other] } });
   };
   await expect(
@@ -122,4 +123,5 @@ test("failed recovery preparation prevents account mutation", async () => {
       },
     ),
   ).rejects.toThrow("Owned addon installation failed");
+  expect(calls.some((url) => url.endsWith("addonCollectionSet"))).toBe(false);
 });

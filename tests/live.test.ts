@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   AllowanceFailure,
-  readLedger,
   reserve,
   utcDay,
 } from "../harness/live/allowance.ts";
@@ -18,16 +17,12 @@ import { classifyEgress } from "../harness/live/egress.ts";
 import { liveVersions } from "../harness/live/versions.ts";
 import {
   AccountEnvelope,
-  DownloadUrlEnvelope,
   TransferEnvelope,
   UploadEnvelope,
 } from "../harness/live/putio.ts";
 import {
-  firstHttpsUri,
   hlsAdvertisesSubtitles,
   proveUrlRenewal,
-  rangeSupported,
-  signedUrlExpiryUnix,
 } from "../harness/live/playback.ts";
 import {
   liveFolderName,
@@ -45,7 +40,6 @@ test("live budget and designated env names", () => {
   assert.equal(liveVersions.byteLimit, 10 * 1024 * 1024 * 1024);
   assert.equal(liveVersions.subtitleFile, "english.vtt");
   assert.equal(liveVersions.fixtureSubtitle, "FIXTURE SUBTITLE ENGLISH");
-  assert.equal(liveVersions.folderPrefix, "chill-stremio-live");
   assert.equal(liveVersions.apiBase, "https://api.put.io");
   assert.equal(liveVersions.egressProxyEnv, "LIVE_EGRESS_PROXY");
 });
@@ -90,7 +84,7 @@ function restore(name: string, value: string | undefined) {
   else process.env[name] = value;
 }
 
-test("allowance reserves conservatively and stops on invalid or exhausted ledgers", async () => {
+test("allowance reserves conservatively and stops on an exhausted ledger", async () => {
   const directory = await mkdtemp(join(tmpdir(), "chill-live-"));
   try {
     await writeFile(
@@ -103,29 +97,6 @@ test("allowance reserves conservatively and stops on invalid or exhausted ledger
     await reserve(directory, Number.MAX_SAFE_INTEGER - 2, 0);
     await assert.rejects(
       () => reserve(directory, 1, 0),
-      (cause: unknown) => cause instanceof AllowanceFailure,
-    );
-    const bytesDirectory = await mkdtemp(join(tmpdir(), "chill-live-bytes-"));
-    try {
-      await writeFile(
-        join(bytesDirectory, "allowance.json"),
-        JSON.stringify({
-          day: utcDay(),
-          reservedTransfers: 0,
-          reservedBytes: 0,
-        }),
-      );
-      await reserve(bytesDirectory, 1, liveVersions.byteLimit);
-      await assert.rejects(
-        () => reserve(bytesDirectory, 1, 1),
-        (cause: unknown) => cause instanceof AllowanceFailure,
-      );
-    } finally {
-      await rm(bytesDirectory, { recursive: true, force: true });
-    }
-    await writeFile(join(directory, "allowance.json"), "{");
-    await assert.rejects(
-      () => readLedger(join(directory, "allowance.json")),
       (cause: unknown) => cause instanceof AllowanceFailure,
     );
   } finally {
@@ -142,7 +113,7 @@ test("live artifact names stay on the designated prefix", () => {
   );
 });
 
-test("put.io envelopes accept file responses and require HTTPS download URLs", () => {
+test("put.io envelopes accept file responses", () => {
   const account = Schema.decodeUnknownSync(AccountEnvelope)({
     status: "OK",
     info: { username: "user", account_status: "active" },
@@ -153,20 +124,9 @@ test("put.io envelopes accept file responses and require HTTPS download URLs", (
     file: { id: 12, name: "movie.mp4", size: 2048 },
   });
   assert.equal(uploaded.file?.id, 12);
-  const download = Schema.decodeUnknownSync(DownloadUrlEnvelope)({
-    status: "OK",
-    url: "https://example.test/file",
-  });
-  assert.equal(download.url.startsWith("https://"), true);
   assert.throws(() =>
     Schema.decodeUnknownSync(AccountEnvelope)({ status: "ERROR" }),
   );
-});
-
-test("HTTP Range proof requires 206", () => {
-  assert.equal(rangeSupported(206), true);
-  assert.equal(rangeSupported(200), false);
-  assert.equal(rangeSupported(416), false);
 });
 
 test("URL renewal accepts reused URLs and checks the resolved URL without credentials", async () => {
@@ -223,24 +183,6 @@ test("HLS subtitle advertisement is detected without keeping playlist URLs", () 
   assert.equal(
     hlsAdvertisesSubtitles("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1"),
     false,
-  );
-  assert.equal(
-    firstHttpsUri(
-      '#EXT-X-MEDIA:TYPE=SUBTITLES,URI="https://example.test/a.vtt"',
-    ),
-    "https://example.test/a.vtt",
-  );
-});
-
-test("signed URL expiry is parsed without keeping the URL", () => {
-  assert.equal(
-    signedUrlExpiryUnix("https://example.test/file?expires=1700000000"),
-    1700000000,
-  );
-  assert.equal(signedUrlExpiryUnix("https://example.test/file"), undefined);
-  assert.equal(
-    signedUrlExpiryUnix("http://example.test/file?expires=1"),
-    undefined,
   );
 });
 

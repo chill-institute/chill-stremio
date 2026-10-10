@@ -10,7 +10,12 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
-import { accountInfo, hlsCueText, uploadFile } from "../harness/live/putio.ts";
+import {
+  accountInfo,
+  downloadUrl,
+  hlsCueText,
+  uploadFile,
+} from "../harness/live/putio.ts";
 import { liveVersions } from "../harness/live/versions.ts";
 
 afterEach(() => {
@@ -118,6 +123,16 @@ test("canonical API and upload calls retain provider authentication", async () =
     assert.deepEqual(origins, [liveVersions.apiBase, liveVersions.uploadBase]);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("put.io download URLs must be HTTPS", async () => {
+  vi.stubEnv(liveVersions.putioTokenEnv, "synthetic-test-token");
+  for (const url of ["https://example.test/file", "http://example.test/file"]) {
+    vi.stubGlobal("fetch", async () => Response.json({ status: "OK", url }));
+    const resolved = Effect.runPromise(downloadUrl(1));
+    if (url.startsWith("https:")) assert.equal(await resolved, url);
+    else await assert.rejects(resolved, /not HTTPS/);
   }
 });
 

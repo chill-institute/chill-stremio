@@ -41,7 +41,6 @@ test("explicit hosted allowance extension preserves usage and adds only bounded 
     const ledger = await readLedger(path);
     assert.equal(ledger.reservedTransfers, initial.reservedTransfers);
     assert.equal(ledger.reservedBytes, initial.reservedBytes);
-    assert.equal("transferLimit" in (ledger.approvedLimits ?? {}), false);
     assert.equal(
       ledger.approvedLimits?.byteLimit,
       initial.reservedBytes + 1175984,

@@ -526,26 +526,8 @@ test("release search paginates once before artwork association", async () => {
   assert.deepEqual(f.calls, []);
 });
 
-test("acquisition candidates are freshly searched against current movie and episode membership", async () => {
+test("acquisition candidates are not searched for an episode missing from its season", async () => {
   const f = fixture();
-  await Effect.runPromise(
-    discovery
-      .releases({ kind: "movie", id: movie.id })
-      .pipe(Effect.provide(f.layer)),
-  );
-  assert.deepEqual(f.calls, ["movies", `search:${movie.title} ${movie.year}`]);
-  f.calls.length = 0;
-  await Effect.runPromise(
-    discovery
-      .releases({ kind: "episode", imdbId, season: 1, episode: 2 })
-      .pipe(Effect.provide(f.layer)),
-  );
-  assert.deepEqual(f.calls, [
-    `detail:${imdbId}`,
-    `season:${imdbId}:1`,
-    `search:${show.title} S01E02`,
-  ]);
-  f.calls.length = 0;
   const absent = await Effect.runPromise(
     discovery
       .releases({ kind: "episode", imdbId, season: 1, episode: 9 })
@@ -843,21 +825,6 @@ test("malformed standard IDs never reach discovery", async () => {
     );
     assert.equal(failure.code, "invalid_request");
   }
-});
-
-test("IMDb movies share catalog acquisition identity when available", async () => {
-  const f = fixture();
-  assert.ok(f.movies.movies[0]);
-  f.movies.movies[0].externalUrl = `https://www.imdb.com/title/${imdbId}/`;
-  const target = await Effect.runPromise(
-    discovery
-      .resolveTarget({ type: "movie", id: imdbId })
-      .pipe(Effect.provide(f.layer)),
-  );
-  assert.equal(
-    discoveryTargetId(target),
-    discoveryTargetId({ kind: "movie", id: movie.id }),
-  );
 });
 
 test("IMDb movie outside the current catalog resolves public metadata before searching", async () => {

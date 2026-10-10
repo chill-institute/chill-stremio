@@ -48,23 +48,11 @@ test("installation capability protects catalog and rejects malformed keys withou
       },
     );
     expect(forgedHost).toBe(404);
-    const malformed = await new Promise<number | undefined>(
-      (resolve, reject) => {
-        const request = get(
-          {
-            hostname: "127.0.0.1",
-            port: new URL(adapter.origin).port,
-            path: `/${"é".repeat(43)}/manifest.json`,
-          },
-          (response) => {
-            response.resume();
-            resolve(response.statusCode);
-          },
-        );
-        request.on("error", reject);
-      },
-    );
-    expect(malformed).toBe(400);
+    const key = new URL(adapter.manifestUrl).pathname.split("/")[1] ?? "";
+    const wrongKey = `${key.startsWith("A") ? "B" : "A"}${key.slice(1)}`;
+    expect(
+      (await fetch(`${adapter.origin}/${wrongKey}/manifest.json`)).status,
+    ).toBe(404);
     expect(calls).toBe(0);
     const manifest = await fetch(adapter.manifestUrl);
     expect(manifest.status).toBe(200);

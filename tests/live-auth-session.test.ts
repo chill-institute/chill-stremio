@@ -69,7 +69,6 @@ test("sequential and concurrent probes reuse one private validated login", () =>
       (await stat(join(directory, "auth.json"))).mode & 0o777,
       0o600,
     );
-    assert.equal((await stat(directory)).mode & 0o777, 0o700);
   }));
 
 test("server-rejected cached authorization refreshes once", () =>

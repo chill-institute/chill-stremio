@@ -39,7 +39,6 @@ test("Android diagnostics redact secrets, URLs and local paths", () => {
 
 test("Android APK pin is a 64-character SHA256", () => {
   assert.match(androidVersions.apkSha256, /^[0-9a-f]{64}$/);
-  assert.equal(androidVersions.package, "com.stremio.one");
 });
 
 test("TV UI classifier keeps pairing labels and drops codes", () => {

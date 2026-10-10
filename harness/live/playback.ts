@@ -17,21 +17,6 @@ export class LivePlaybackFailure extends Schema.TaggedError<LivePlaybackFailure>
   { message: Schema.String },
 ) {}
 
-export const signedUrlExpiryUnix = (url: string) => {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return undefined;
-  }
-  if (parsed.protocol !== "https:") return undefined;
-  const raw =
-    parsed.searchParams.get("expires") ?? parsed.searchParams.get("expiry");
-  if (!raw || !/^\d+$/.test(raw)) return undefined;
-  const value = Number(raw);
-  return value > 1e12 ? Math.floor(value / 1000) : value;
-};
-
 export const rangeSupported = (status: number) => status === 206;
 
 export const hlsAdvertisesSubtitles = (playlist: string) =>
