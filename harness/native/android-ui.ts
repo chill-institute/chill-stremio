@@ -26,7 +26,8 @@ export const allowedTvLabels = [
 
 const allowed = new Set(allowedTvLabels.map((label) => label.toLowerCase()));
 
-const pairingCode = /^(?:[A-Z0-9]{4,8}|[A-Z0-9]{4}-[A-Z0-9]{4})$/i;
+// Pairing codes are uppercase; mixed-case words such as "Guest" are labels.
+const pairingCode = /^(?:[A-Z0-9]{4,8}|[A-Z0-9]{4}-[A-Z0-9]{4})$/;
 
 const loginWallLabels = new Set(
   [

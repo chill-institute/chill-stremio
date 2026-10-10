@@ -55,6 +55,13 @@ test("TV UI classifier keeps pairing labels and drops codes", () => {
   assert.equal(ui.uiText.includes("WXYZ9876"), false);
 });
 
+test("TV UI classifier keeps one-word labels and detects the guest entry", () => {
+  const xml = `<hierarchy><node package="com.stremio.one" text="Stremio"/><node text="Guest"/><node text="Settings"/><node text="WXYZ"/><node text="AB12-CD34"/></hierarchy>`;
+  const ui = classifyTvHierarchy(xml, androidVersions.package);
+  assert.equal(ui.guest, true);
+  assert.deepEqual(ui.uiText, ["Stremio", "Guest", "Settings"]);
+});
+
 test("native log parser requires libmpv VO and Pulse AO lines", () => {
   assert.deepEqual(
     parseNativeLog("VO: [libmpv] 640x360 yuv420p\nAO: [pulse] 48000Hz mono"),
