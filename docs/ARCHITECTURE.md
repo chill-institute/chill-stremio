@@ -100,7 +100,9 @@ The [library translator](../src/library.ts) validates media/subtitle URLs and
 expiry. Ready playback returns a direct source; pending/unavailable returns no
 source. Authentication, malformed responses, timeouts and provider rate limits
 remain errors instead of empty successful catalogs. Requests have finite total
-deadlines and cancel on disconnect. Transfer submission is never retried.
+deadlines and cancel on disconnect. Transfer submission is never retried. The
+hosted process bounds concurrent work per process and per add-on link; see
+[capacity](./HOSTED.md#capacity).
 Discovery RPCs give Engine the time left until the first of the request
 deadline, a selection's wait window and the current 10-second discovery step,
 less 500 ms to receive the answer and at most 10 seconds. A spent deadline

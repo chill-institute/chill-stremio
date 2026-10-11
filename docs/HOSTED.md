@@ -39,7 +39,28 @@ the credential, and returned playback URLs are provider credentials. Disable
 request/response capture, analytics and third-party scripts on add-on and
 playback surfaces. `GET /health` reports process liveness without contacting
 Engine or providers, and still answers when other requests fill the adapter's
-concurrency limit.
+[capacity](#capacity).
+
+## Capacity
+
+Each process admits 64 units of work at once: one for each open request and one
+for each selection submission until Engine answers it. One add-on link may hold
+16 of them. Stremio requests every visible catalog, a title's resources and the
+player's resources at once, does not cancel them when the user moves on, and
+syncs installed add-ons to every device signed in to the same Stremio account;
+16 covers one link browsing, searching and playing on two devices.
+
+A request over the process limit gets `503 {"error":"unavailable"}`. A request
+over its link's limit gets `429 {"error":"resource_exhausted"}`, except selected
+media under `/play/` and `/status/`, which gets `503 unavailable` because HLS
+players retry a 5xx but not a 4xx. Every refusal carries `Retry-After: 5` and
+`Access-Control-Allow-Origin: *`. A new selection needs two free units on its
+link, one for the request and one for its submission; otherwise it returns that
+`503` and submits nothing. Stremio Web retries refused HLS media; Stremio for
+Linux does not, so select the source again there. `GET /health`, HEAD and
+OPTIONS never count, and status clips under `/notice/` count only toward the
+process limit. Each process keeps its own counts, keyed by a hash of the
+credential and dropped when a link's last unit ends.
 
 ## Add-on links
 

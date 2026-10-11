@@ -31,6 +31,8 @@ transfer, reused in memory for 60 seconds, and a lost submission response is
 never retried. HLS terminal states, and waits past the four-minute pending limit
 or an HLS status URL's fifth redirect, redirect to status clips under `/notice/`,
 which never call Engine. Engine `401`/`403` becomes the reconnect notice.
+[Capacity](./docs/HOSTED.md#capacity) refusals of selected media stay `503`;
+`/health`, HEAD, OPTIONS and `/notice/` stay outside the per-link limit.
 `mise run hosted:smoke` is fake-only, including its recording. Status clips are
 generated at setup/build time; runtime only loads them. Redact credentials from
 logs, errors, receipts and recordings, and suppress sensitive paths at ingress.

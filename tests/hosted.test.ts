@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createHash, randomBytes } from "node:crypto";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer, get, type ServerResponse } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import * as proto from "@chill-institute/contracts/chill/v4/api_pb";
@@ -33,6 +33,8 @@ const webOrigin = "http://127.0.0.1:3000";
 const credential = () => `v4.local.${randomBytes(300).toString("base64url")}`;
 const ownerCredential = credential();
 const otherCredential = credential();
+// More accepted links, so stalled requests can fill the whole process.
+const spareCredentials = [credential(), credential()];
 const target = discoveryTargetId({ kind: "movie", id: "fixture-film" });
 const Catalog = Schema.Struct({
   metas: Schema.Array(
@@ -99,7 +101,10 @@ async function fixture(
           ? "101"
           : presented === otherCredential
             ? "202"
-            : undefined;
+            : typeof presented === "string" &&
+                spareCredentials.includes(presented)
+              ? "303"
+              : undefined;
       if (!owner || request.headers.authorization !== undefined) {
         error(response, 401, "unauthenticated");
         return;
@@ -411,6 +416,26 @@ async function releaseSelection(f: Fixture) {
   return url;
 }
 
+// Real time bounds each wait, so a missing limit fails instead of stalling.
+async function until(condition: () => boolean) {
+  const deadline = Date.now() + 2_000;
+  while (!condition()) {
+    assert.ok(Date.now() < deadline, "condition not reached");
+    await sleep(5);
+  }
+}
+
+// Sends the path as written; fetch would resolve its dot segments first.
+function rawStatus(origin: string, path: string) {
+  const { hostname, port } = new URL(origin);
+  return new Promise<number | undefined>((resolve, reject) => {
+    get({ hostname, port, path }, (response) => {
+      response.resume();
+      resolve(response.statusCode);
+    }).on("error", reject);
+  });
+}
+
 test("credential manifest and discovery remain read-only and keep transfer URLs private", async () => {
   const f = await fixture();
   try {
@@ -661,23 +686,179 @@ test("a stalled protocol response times out once and the server remains usable",
   }
 });
 
-test("liveness answers while stalled Engine requests fill capacity", async () => {
+test("liveness, HEAD and OPTIONS answer while stalled requests fill the process", async () => {
   const f = await fixture();
-  const catalog = () => fetch(`${f.base()}/catalog/movie/discover-movies.json`);
+  const catalog = (link: string) =>
+    fetch(`${f.base(link)}/catalog/movie/discover-movies.json`);
   const stalled: Promise<Response>[] = [];
   // Fake only the request deadline timers; sockets stay real.
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     f.state.stallMovies = true;
-    for (let i = 0; i < 64; i++) stalled.push(catalog());
-    while (f.calls.filter(({ method }) => method === "GetMovies").length < 64)
-      await sleep(5);
-    const refused = await catalog();
+    for (const link of [ownerCredential, otherCredential, ...spareCredentials])
+      for (let i = 0; i < 16; i++) stalled.push(catalog(link));
+    await until(
+      () =>
+        f.calls.filter(({ method }) => method === "GetMovies").length === 64,
+    );
+    const refused = await catalog(credential());
     assert.equal(refused.status, 503);
-    await refused.arrayBuffer();
+    assert.equal(refused.headers.get("retry-after"), "5");
+    assert.equal(refused.headers.get("access-control-allow-origin"), "*");
+    assert.deepEqual(await refused.json(), { error: "unavailable" });
     const health = await fetch(`${f.origin}/health`);
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), { status: "ok" });
+    const selected = `${f.base()}/play/movie/${encodeURIComponent(target)}/fixture-release.m3u8`;
+    const probe = await fetch(selected, { method: "HEAD" });
+    assert.equal(probe.status, 200);
+    assert.equal(
+      probe.headers.get("content-type"),
+      "application/vnd.apple.mpegurl",
+    );
+    assert.equal(
+      (await fetch(`${f.base()}/manifest.json`, { method: "OPTIONS" })).status,
+      204,
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    for (const response of await Promise.all(stalled)) {
+      assert.equal(response.status, 504);
+      await response.arrayBuffer();
+    }
+  } finally {
+    vi.useRealTimers();
+    const settled = Promise.allSettled(stalled);
+    await f.close();
+    await settled;
+  }
+});
+
+test("one add-on link holds at most 16 requests while other links and status clips answer", async () => {
+  const f = await fixture();
+  const catalog = () => fetch(`${f.base()}/catalog/movie/discover-movies.json`);
+  const movies = () =>
+    f.calls.filter(({ method }) => method === "GetMovies").length;
+  const sent: Promise<Response>[] = [];
+  const answered: Response[] = [];
+  // Fake only the request deadline timers; sockets stay real.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    f.state.stallMovies = true;
+    for (let i = 0; i < 64; i++) {
+      const response = catalog();
+      sent.push(response);
+      response.then(
+        (value) => answered.push(value),
+        () => undefined,
+      );
+    }
+    await until(() => movies() === 16 && answered.length === 48);
+    const refused = [...answered];
+    for (const response of refused) {
+      assert.equal(response.status, 429);
+      assert.equal(response.headers.get("retry-after"), "5");
+      assert.deepEqual(await response.json(), {
+        error: "resource_exhausted",
+      });
+    }
+    assert.equal(
+      await rawStatus(
+        f.origin,
+        `/x/../s/${ownerCredential}/catalog/movie/discover-movies.json`,
+      ),
+      429,
+    );
+    const selected = `${f.base()}/play/movie/${encodeURIComponent(target)}/fixture-release.m3u8`;
+    const media = await fetch(selected, { redirect: "manual" });
+    assert.equal(media.status, 503, "HLS players retry 5xx, never 4xx");
+    assert.equal(media.headers.get("retry-after"), "5");
+    assert.equal(media.headers.get("access-control-allow-origin"), "*");
+    assert.deepEqual(await media.json(), { error: "unavailable" });
+    assert.equal((await fetch(selected, { method: "HEAD" })).status, 200);
+    const clip = await fetch(`${f.base()}/notice/pending.m3u8`);
+    assert.equal(clip.status, 200);
+    await clip.arrayBuffer();
+    assert.equal(
+      (await fetch(`${f.base(otherCredential)}/catalog/movie/library.json`))
+        .status,
+      200,
+    );
+    assert.equal((await fetch(`${f.origin}/health`)).status, 200);
+    assert.equal(movies(), 16);
+    assert.equal(f.state.addCount, 0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const stalled = (await Promise.all(sent)).filter(
+      (response) => !refused.includes(response),
+    );
+    assert.equal(stalled.length, 16);
+    for (const response of stalled) {
+      assert.equal(response.status, 504);
+      await response.arrayBuffer();
+    }
+    f.state.stallMovies = false;
+    assert.equal((await catalog()).status, 200);
+  } finally {
+    vi.useRealTimers();
+    const settled = Promise.allSettled(sent);
+    await f.close();
+    await settled;
+  }
+});
+
+test("a selection keeps a unit of its link until its submission settles", async () => {
+  const f = await fixture();
+  const catalog = () => fetch(`${f.base()}/catalog/movie/discover-movies.json`);
+  const manifest = async () => {
+    const response = await fetch(`${f.base()}/manifest.json`);
+    await response.arrayBuffer();
+    return response.status;
+  };
+  // The link admits its manifest only while it holds fewer than 16 units.
+  const admitted = async (message: string) => {
+    const deadline = Date.now() + 2_000;
+    while ((await manifest()) !== 200) {
+      assert.ok(Date.now() < deadline, message);
+      await sleep(5);
+    }
+  };
+  const movies = () =>
+    f.calls.filter(({ method }) => method === "GetMovies").length;
+  const stalled: Promise<Response>[] = [];
+  try {
+    const url = await releaseSelection(f);
+    // Fake request deadlines and Engine latency; sockets stay real.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    f.state.engineDelayMs = 6_000;
+    const client = new AbortController();
+    const abandoned = fetch(url, {
+      redirect: "manual",
+      signal: client.signal,
+    }).catch(() => undefined);
+    await until(() => f.state.heldCalls === 1);
+    await vi.advanceTimersByTimeAsync(6_000);
+    await until(() => f.state.heldCalls === 2);
+    assert.equal(f.state.addCount, 1, "AddTransfer is answering");
+    client.abort();
+    await abandoned;
+    f.state.stallMovies = true;
+    const before = movies();
+    for (let i = 0; i < 14; i++) stalled.push(catalog());
+    await until(() => movies() === before + 14);
+    await admitted("the disconnected request kept its unit");
+    stalled.push(catalog());
+    await until(() => movies() === before + 15);
+    assert.equal(await manifest(), 429, "the submission holds the 16th unit");
+    await vi.advanceTimersByTimeAsync(6_000);
+    await admitted("the settled submission kept its unit");
+    const searches = f.searches.length;
+    const another = await fetch(url.replace("fixture-release", "other"), {
+      redirect: "manual",
+    });
+    assert.equal(another.status, 503, "a new selection needs two free units");
+    assert.equal(another.headers.get("retry-after"), "5");
+    assert.deepEqual(await another.json(), { error: "unavailable" });
+    assert.equal(f.searches.length, searches);
+    assert.equal(f.state.addCount, 1);
     await vi.advanceTimersByTimeAsync(10_000);
     for (const response of await Promise.all(stalled)) {
       assert.equal(response.status, 504);

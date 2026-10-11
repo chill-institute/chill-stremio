@@ -7,6 +7,7 @@ import sdk, {
   type MetaDetail,
 } from "stremio-addon-sdk";
 import { acquisitionEngineLayer } from "./acquisition-engine.ts";
+import { createAdmission, type Lease, type Refusal } from "./admission.ts";
 import { credentialPattern } from "./credential.ts";
 import {
   createDiscovery,
@@ -58,6 +59,16 @@ function json(response: ServerResponse, code: number, value?: unknown) {
   });
   response.end(value === undefined ? undefined : JSON.stringify(value));
 }
+function refuse(response: ServerResponse, refusal: Refusal, media: boolean) {
+  response.setHeader("Retry-After", "5");
+  // HLS players retry selected media after a 5xx but give up after any 4xx,
+  // and after a cross-origin response they may not read.
+  response.setHeader("Access-Control-Allow-Origin", "*");
+  const linkLimit = refusal === "link" && !media;
+  json(response, linkLimit ? 429 : 503, {
+    error: linkLimit ? "resource_exhausted" : "unavailable",
+  });
+}
 export async function startHostedAdapter(options: {
   statusMedia?: StatusMedia;
   /** How long a finished selection's submission is reused by identical requests. */
@@ -87,6 +98,11 @@ export async function startHostedAdapter(options: {
     throw new Error("Invalid hosted origin");
   const statusMedia = options.statusMedia ?? (await loadStatusMedia());
   const controllers = new Set<AbortController>();
+  // A unit is an open request or an unsettled submission. Stremio requests
+  // every visible catalog, a title's resources and the player's resources at
+  // once and cancels none on navigation; 16 covers one link on two synced
+  // devices while leaving most of the process to other links.
+  const admission = createAdmission({ total: 64, perLink: 16 });
   const shutdown = new AbortController();
   // Identical selections share one submission while any of their requests is
   // open and briefly afterwards: native players reopen the selected URL once
@@ -158,6 +174,23 @@ export async function startHostedAdapter(options: {
   const rejected = (error: unknown) =>
     error instanceof HttpFailure &&
     (error.code === "unauthenticated" || error.code === "permission_denied");
+  // Parsed as routing parses it, so dot segments cannot escape a link's limit.
+  const personalRoute = (target = "/") => {
+    const match = URL.canParse(target, origin)
+      ? /^\/s\/([^/]+)\/([a-z]*)/.exec(new URL(target, origin).pathname)
+      : null;
+    // Status clips never contact Engine, and HLS players give up on a 4xx.
+    if (
+      !match?.[1] ||
+      !credentialPattern.test(match[1]) ||
+      match[2] === "notice"
+    )
+      return { media: false };
+    return {
+      credential: match[1],
+      media: match[2] === "play" || match[2] === "status",
+    };
+  };
   const server = createServer((request, response) => {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Referrer-Policy", "no-referrer");
@@ -167,14 +200,22 @@ export async function startHostedAdapter(options: {
       "default-src 'none'; frame-ancestors 'none'",
     );
     const controller = new AbortController();
-    // Liveness never contacts Engine; refusing it at capacity would make
-    // ingress drop the backend and turn saturation into an outage.
+    let lease: Lease | undefined;
+    // None of these contacts Engine. Refusing liveness would make ingress drop
+    // the backend, and the Web player abandons playback when its HEAD probe of
+    // the selected media fails.
     if (
-      controllers.size >= 64 &&
+      request.method !== "HEAD" &&
+      request.method !== "OPTIONS" &&
       !(request.method === "GET" && request.url === "/health")
     ) {
-      json(response, 503, { error: "unavailable" });
-      return;
+      const route = personalRoute(request.url);
+      const admitted = admission.acquire(route.credential);
+      if (typeof admitted === "string") {
+        refuse(response, admitted, route.media);
+        return;
+      }
+      lease = admitted;
     }
     controllers.add(controller);
     const requestDeadlineAt = Date.now() + 10_000;
@@ -185,6 +226,7 @@ export async function startHostedAdapter(options: {
     response.once("close", () => {
       clearTimeout(deadline);
       controllers.delete(controller);
+      lease?.release();
       controller.abort();
     });
     request.once("aborted", () => controller.abort());
@@ -369,6 +411,13 @@ export async function startHostedAdapter(options: {
               .digest("hex");
             let shared = submissions.get(key);
             if (!shared) {
+              // The submission holds its own unit, so reconnecting clients
+              // cannot run more Engine work for a link than its limit.
+              const unit = admission.acquire(credential);
+              if (typeof unit === "string") {
+                refuse(response, unit, true);
+                return;
+              }
               for (const [stale, candidate] of submissions)
                 if (submissions.size >= 256 && candidate.users === 0)
                   forget(stale);
@@ -393,9 +442,13 @@ export async function startHostedAdapter(options: {
                 failed: false,
                 waitingSince: performance.now(),
               };
-              created.submission.catch(() => {
-                created.failed = true;
-              });
+              created.submission.then(
+                () => unit.release(),
+                () => {
+                  created.failed = true;
+                  unit.release();
+                },
+              );
               shared = created;
               submissions.set(key, shared);
             }
