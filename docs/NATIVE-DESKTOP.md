@@ -21,13 +21,27 @@ mise run native:desktop:setup
 ```
 
 On other distributions, install the equivalent packages before running the same
-mise task. Setup checks prerequisites and installs/verifies the exact client and
-GNOME runtime commits from [desktop-versions.ts](../harness/native/desktop-versions.ts).
+mise task. Setup checks prerequisites, installs the exact client commit from
+[desktop-versions.ts](../harness/native/desktop-versions.ts) and installs or
+updates the signed head of its GNOME runtime branch.
 The private Flatpak installation is `~/.local/share/chill-stremio/flatpak`; setup
 does not change the user's normal app installation. It is repeatable and does
-not require a desktop session. Verified pins cover Linux x86_64 and ARM64; setup
-selects the native architecture. Other architectures fail explicitly until they
-have their own verified pins.
+not require a desktop session. Verified client pins cover Linux x86_64 and
+ARM64; setup selects the native architecture. Other architectures fail
+explicitly until they have their own verified pins.
+
+Flathub serves signatures only for each ref's newest builds. On 2026-10-11 it
+signed the four newest `org.gnome.Platform//50` builds, from 19 September to
+3 October; the earlier runtime pin from 10 September had lost its signature, so
+`flatpak update --commit` failed GPG verification. The runtime rebuilds every
+few days, so an exact runtime pin stops being pullable within weeks. Setup
+prints the deployed runtime commit and every receipt records it in
+`versions.runtimeCommit`. The client rebuilds less often, and Flathub still
+signed its six newest builds back to July, so it stays pinned: setup moves the
+installed client to the pinned commit and verifies it, and the probe rejects
+any other client. When Flathub stops signing the client pin, setup fails with
+that reason; pin a newer signed commit only after all three desktop modes pass
+with it. Do not disable GPG verification to restore an older commit.
 
 The probe fixes the client locale to `C`, uses Cairo for GTK rendering, software
 GL for video and shared-memory WebKit composition, and keeps the client home
@@ -40,8 +54,8 @@ client binary and scaling settings; it is not an addon or Engine option.
 Remove it only after an updated client/runtime passes both fresh trials without
 it.
 
-It rejects mismatched pins. Linux sandbox support is required; do not
-disable the Flatpak sandbox to make a launch pass.
+Linux sandbox support is required; do not disable the Flatpak sandbox to make a
+launch pass.
 
 ## Probe and evidence
 
@@ -142,15 +156,17 @@ item holds:
   port; the transfer count stays one. The file's detail page plays it with intact
   advancing decoded frames, non-silent Pulse PCM, a resolved Engine playback and
   rendered English captions from the library subtitle resource.
-- A paced media response is cut mid-playback and the following reconnects are
-  refused for six seconds. Recovery returns to the source list, restarts the
-  owned client with the same profile and reselects the file; recovered decoded
-  pixels are required. `playbackContinuedAfterCut` records whether the frame
+- A paced media response, whose final byte is withheld so it stays open, is cut
+  mid-playback and the following reconnects are refused for six seconds.
+  Recovery returns to the source list, restarts the owned client with the same
+  profile and reselects the file; recovered decoded pixels are required. `playbackContinuedAfterCut` records whether the frame
   captured after the cut still showed decoded video.
-- Failed, unknown and multi-file releases each submit once and render their
-  status clip; reading the failed and multi-file status URLs does not submit.
-  The chosen second file of the multi-file download decodes as the episode
-  fixture from the library.
+- Failed, unknown and multi-file releases each submit once. Their selected HLS
+  URL answers HTTP 409, the player renders `Stream failed to load` without
+  decoded video, and the client requests no status clip. Reading the failed and
+  multi-file status URLs returns the same 409 JSON and does not submit. The
+  chosen second file of the multi-file download decodes as the episode fixture
+  from the library.
 - After the fixture Engine starts rejecting the credential with `401`, the
   client's put.io library shows the reconnect row.
 - The generated Engine saw exactly four transfers and rejected no requests.
@@ -159,81 +175,64 @@ Fresh state, owned instance cleanup, closed listeners and the shared cleanup
 gates apply as in the fixture lane. The generated media proxy serves HTTPS with
 a disposable self-signed certificate because the adapter only accepts secure
 playback URLs. Each hosted profile copies the runtime's existing trust anchors
-and adds that certificate. A process-scoped `FLATPAK_BWRAP` wrapper mounts those
-anchors read-only inside the app sandbox, allowing WebKit to fetch captions and
-artwork. The client, TLS verification, Flatpak isolation and host trust remain
-unchanged. Profile cleanup removes the certificate and wrapper.
+and p11-kit trust module, and adds that certificate. A process-scoped
+`FLATPAK_BWRAP` wrapper mounts both read-only inside the app sandbox, allowing
+WebKit to fetch captions and artwork. The module matters on hosts with
+`p11-kit`: there Flatpak's session helper replaces the runtime trust module
+with a client of the host trust store, which ignores the fixture anchors. The
+client, TLS verification, Flatpak isolation and host trust remain unchanged.
+Profile cleanup removes the certificate, module copy and wrapper.
 
 ## Focused hosted HLS trial
 
 `mise run native:desktop:probe hosted-hls` runs the generated hosted adapter
 with HLS movie and episode sources. It retains intact decoded-frame, PCM audio,
-library caption, one-transfer, reconnect and cleanup assertions. It does not establish
-interrupted-media recovery, terminal-state presentation or native audio switching;
-those remain explicitly unverified. The full `hosted` mode retains its original
-gates.
+library caption, one-transfer, reconnect and cleanup assertions. It does not
+establish interrupted-media recovery, terminal-state presentation or native
+audio switching; the full `hosted` mode covers the first two.
 
 ## Current Linux result
 
-Both fresh ARM64 fixture trials passed on 2026-09-21 with the
-architecture-specific pins: decoded advancing video, PCM audio, seeking, subtitles on/off, next episode,
-restart-assisted interruption recovery and cleanup. The matching source passed
-all 223 unit tests and static checks. This extends the credential-free fixture
-lane to ARM64; live-account playback on ARM64 remains untested.
+On 2026-10-11, manual CI on GitHub's x86_64 `ubuntu-26.04` runner used client
+1.2.0 (`7580e7db…`) and GNOME runtime 50.5 (`0bd50910…`).
+[Run 38136357528](https://github.com/chill-institute/chill-stremio/actions/runs/38136357528)
+recorded:
 
-Both fresh ARM64 hosted HLS trials of the credential-link adapter passed on
-2026-09-23 in `artifacts/desktop-hosted-hls-1790200018934/results.json`. They
-installed a wrapped add-on link with its URL block redacted, browsed movie and
-episode releases without submitting transfers, waited for a selected download
-and automatically played it with one transfer, then played the completed file
-from put.io library with intact advancing frames, English captions and PCM
-audio. Status reads and an adapter restart submitted nothing, a rejected
-credential showed the reconnect row, and every owned resource was cleaned up.
-The libmpv client requests the selected URL twice; the adapter's 60-second reuse
-window keeps that to one transfer.
+- Fixture mode passed both fresh trials, as in runs
+  [38133675903](https://github.com/chill-institute/chill-stremio/actions/runs/38133675903)
+  and [38134063422](https://github.com/chill-institute/chill-stremio/actions/runs/38134063422)
+  that day: decoded advancing video, PCM audio, seeking, subtitles on/off, next
+  episode, delayed readiness, restart-assisted interruption recovery and
+  cleanup.
+- Hosted HLS mode passed both fresh trials.
+- Hosted mode was blocked in both trials only by the three terminal-state
+  scenarios. Discovery, automatic playback, library playback with captions and
+  PCM audio, the paced cut with restart-assisted recovery, exact-file playback,
+  the reconnect row, four transfers and cleanup all passed. Each failed, unknown
+  and multi-file selection submitted once, its HLS URL answered 409 and no
+  status clip was requested, but the player stayed on its loading screen:
+  client 1.2.0 never reports libmpv load failures to the player.
 
-Earlier hosted results below predate credential links; they exercised the
-installation, Downloads and Acquired videos flow that no longer exists.
+Client 1.2.2 (`0496ce1d…`), Flathub's current build, shows
+`Stream failed to load` for those selections. Both hosted modes passed both
+fresh trials with it in
+[run 38136421172](https://github.com/chill-institute/chill-stremio/actions/runs/38136421172)
+and
+[run 38138963135](https://github.com/chill-institute/chill-stremio/actions/runs/38138963135).
+In three of those runs' four fixture trials, however, Next Video never loaded
+the next episode into libmpv. The lane stays on 1.2.0 until one client passes
+all three modes.
 
-The earlier loading failures occurred with the headless GL renderer. A property
-trace showed readiness events arriving 33–34 seconds into the 36-second clip;
-the cache-ready event was late, not absent. Cairo allowed both fresh trials to
-complete. Caption tracks were listed but their self-signed HTTPS source was
-untrusted by WebKit. The scoped fixture trust described above restored rendered
-captions and poster requests without changing client code or assertions.
+In every hosted trial the frame captured after the paced cut still decoded
+(`playbackContinuedAfterCut`); the recovery evidence is the restart-assisted
+reselection, not a visible mid-stream failure. The libmpv client requests the
+selected URL twice; the adapter's 60-second reuse window keeps that to one
+transfer.
 
-The focused HLS lane does not test interruption recovery, terminal-state clips
-or native audio-track switching. Web audio switching has separate proof.
-
-The broader `hosted` regression was last run before credential links and was
-blocked in
-`artifacts/desktop-hosted-1789913052317/results.json`. Both profiles proved
-automatic playback and captions. The first also proved acquired-file playback
-and restart-assisted recovery; the second did not reopen the MP4 fixture.
-Terminal scenarios still expect legacy status videos, while selected HLS URLs
-return HTTP 409. Those assertions and the later dependent scenarios failed.
-Both profiles, listeners and runtime cleaned up. This receipt does not extend
-the focused HLS pass to terminal-state UI or general recovery.
-
-Both fresh headless Linux trials passed on 2026-09-15 with the process-scoped
-allocation workaround and restart-assisted recovery described above. The
-aggregate requires intact advancing video, PCM audio, seeking, subtitles on/off,
-next episode, delayed readiness, a real interrupted response and complete
-cleanup. This establishes the configured fixture lane; same-process interruption
-recovery remains unreliable.
-
-Both fresh hosted trials passed on 2026-09-16 with the same pins and
-workaround: installation, read-only discovery and episode context, one
-selection per release, pending/failed/unknown/multi-file status clips,
-Downloads and Acquired videos, exact acquired-file and second-file decoded
-playback, PCM audio, adapter-restart deduplication, revocation and cleanup.
-In both trials the paced media cut plus the six-second refusal window did not
-produce a visible playback failure: the frame captured after the cut still
-decoded, and the documented restart-assisted reselection then passed. That is
-the hosted flow's recovery evidence; the persistent-cut failure that needs a
-restart remains a fixture-lane limitation.
-The earlier trials did not render HTTPS poster artwork. Scoped fixture trust
-permits those requests; product artwork acceptance remains unverified.
+ARM64 has no CI runner. Its client pin `3795122e…` (1.2.0) is still signed on
+Flathub. Both fresh ARM64 fixture trials passed on 2026-09-21 and both hosted
+HLS trials on 2026-09-23, with runtime `2b6d25cb…`; neither has been repeated
+on the current runtime, and live-account playback on ARM64 remains untested.
 
 Linux is the current desktop release target; macOS and Windows need separate
 compatibility evidence.
@@ -261,7 +260,11 @@ pairing and live put.io playback require separate evidence.
 ## CI
 
 [Linux desktop playback](../.github/workflows/native-desktop.yml) is a manual,
-read-only GitHub Actions lane using the same setup and probe commands on Ubuntu.
-It retains fixture evidence even when playback is blocked. It has no account
-secrets and is not a required merge gate. A workflow pass still requires every
-playback and cleanup assertion; setup success alone is insufficient.
+read-only GitHub Actions lane on x86_64 Ubuntu. After one setup it runs the
+fixture, `hosted` and `hosted-hls` modes in that order; each later mode still
+runs when an earlier one is blocked. Each mode keeps its own artifact,
+`linux-desktop-fixture-<run_id>`, `linux-desktop-hosted-<run_id>` and
+`linux-desktop-hosted-hls-<run_id>`, even when playback is blocked. It has no
+account secrets and is not a required merge gate. A workflow pass still
+requires every playback and cleanup assertion in all three modes; setup
+success alone is insufficient.

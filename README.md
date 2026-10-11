@@ -29,10 +29,12 @@ For a public listing, use the [public manifest](https://stremio.chill.institute/
   Selecting the same release again later starts another download.
 
 The add-on is in early access. Web HLS playback, subtitles and audio switching
-have been tested. Focused Linux HLS playback passes, but the broader desktop
-checks still fail on MP4 reopening and terminal states. macOS, Windows and
-Android TV playback remain unverified. See [desktop support](./docs/NATIVE-DESKTOP.md)
-and [Android TV support](./docs/NATIVE-ANDROID.md) before relying on those clients.
+have been tested. On Linux x86_64, the Flathub Stremio app 1.2.0 passes the
+desktop playback, caption and reconnect checks, but failed, unknown and
+multi-file downloads stay on its loading screen; app 1.2.2 shows an error for
+them, but its Next Video failed testing. macOS, Windows and Android TV playback
+remain unverified. See [desktop support](./docs/NATIVE-DESKTOP.md) and
+[Android TV support](./docs/NATIVE-ANDROID.md) before relying on those clients.
 
 ## Develop
 
