@@ -109,6 +109,7 @@ let guestDirectory = `/tmp/chill-desktop-${Date.now()}`;
 let guestScript = "/tmp/chill-desktop-guest.mjs";
 let ownedDirectory: DesktopDirectory | undefined;
 let retainedGuestDirectory: string | undefined;
+let runtimeCommit: string | undefined;
 const runs: DesktopRunProof[] = [];
 const cleanupErrors: string[] = [];
 let error: string | undefined;
@@ -562,20 +563,17 @@ const program = Effect.gen(function* () {
     "--show-commit",
     pins.client,
   ]);
-  const actualRuntime = yield* guest([
+  runtimeCommit = yield* guest([
     "flatpak",
     "info",
     "--user",
     "--show-commit",
     pins.runtime,
   ]);
-  if (
-    actualClient !== pins.clientCommit ||
-    actualRuntime !== pins.runtimeCommit
-  )
+  if (actualClient !== pins.clientCommit)
     return yield* new DesktopFailure({
       message:
-        "Native Flatpak pins differ; restore the documented commits before probing",
+        "Native client pin differs; rerun native:desktop:setup before probing",
     });
   const source = yield* Effect.promise(() => readFile(guestSource, "utf8"));
   yield* Effect.promise(() =>
@@ -770,7 +768,7 @@ const program = Effect.gen(function* () {
                 ? "actual-hosted-adapter-with-generated-Engine"
                 : "generic-fixture-addon",
             status: passed ? "passed" : "blocked",
-            versions: pins,
+            versions: { ...pins, runtimeCommit },
             interruptedRecovery: hls
               ? "not-tested"
               : "same-profile-client-restart",

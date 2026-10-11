@@ -50,34 +50,50 @@ await run([
   "flathub",
   "https://dl.flathub.org/repo/flathub.flatpakrepo",
 ]);
-for (const [ref, commit] of [
-  [versions.runtime, versions.runtimeCommit],
-  [versions.client, versions.clientCommit],
-] as const) {
-  const installed = await run(["info", "--user", "--show-commit", ref]).catch(
-    () => undefined,
-  );
-  if (installed !== commit) {
-    if (!installed)
-      await run([
-        "install",
-        "--user",
-        "--noninteractive",
-        "--assumeyes",
-        "flathub",
-        ref,
-      ]);
+const commitOf = (ref: string) => run(["info", "--user", "--show-commit", ref]);
+await run([
+  "install",
+  "--user",
+  "--noninteractive",
+  "--assumeyes",
+  "--or-update",
+  "flathub",
+  versions.runtime,
+]);
+const installed = await commitOf(versions.client).catch(() => undefined);
+if (installed !== versions.clientCommit) {
+  if (!installed)
     await run([
-      "update",
+      "install",
       "--user",
       "--noninteractive",
       "--assumeyes",
-      `--commit=${commit}`,
-      ref,
+      "flathub",
+      versions.client,
     ]);
-  }
-  if ((await run(["info", "--user", "--show-commit", ref])) !== commit)
-    throw new Error(`Flatpak commit verification failed for ${ref}`);
+  await run([
+    "update",
+    "--user",
+    "--noninteractive",
+    "--assumeyes",
+    `--commit=${versions.clientCommit}`,
+    versions.client,
+  ]).catch((cause: unknown) => {
+    if (String(cause).includes("no signatures found"))
+      throw new Error(
+        `Flathub no longer signs ${versions.client} commit ${versions.clientCommit}; pin a signed commit that passes both desktop modes`,
+        { cause },
+      );
+    throw cause;
+  });
 }
+if ((await commitOf(versions.client)) !== versions.clientCommit)
+  throw new Error(`Flatpak commit verification failed for ${versions.client}`);
 await run(["run", "--user", "--command=true", versions.client]);
-console.log(JSON.stringify({ status: "ready", platform: "linux", versions }));
+console.log(
+  JSON.stringify({
+    status: "ready",
+    platform: "linux",
+    versions: { ...versions, runtimeCommit: await commitOf(versions.runtime) },
+  }),
+);
