@@ -191,9 +191,23 @@ export async function createGuest(options: {
   const waitForInstallStage = async (
     name: string,
     expected: DesktopInstallStage,
+    options: { scrollDialog?: boolean } = {},
   ) => {
     const deadline = performance.now() + 20_000;
+    let attempts = 0;
     while (performance.now() < deadline) {
+      // A logo and a long wrapped URL can push the manifest dialog's buttons
+      // below its fold; the client scrolls the dialog body like a user would.
+      if (options.scrollDialog && ++attempts % 8 === 0)
+        run("xdotool", [
+          "mousemove",
+          "640",
+          "420",
+          "click",
+          "--repeat",
+          "3",
+          "5",
+        ]);
       screenshot(name);
       const rgb = execFileSync(
         "ffmpeg",
@@ -701,7 +715,7 @@ exec /usr/bin/bwrap "$@"
       throw new Error("Typed installation URL differs from expected URL");
     await click(747, 472);
     const install = desktopConfigurableInstall(
-      await waitForInstallStage("manifest", "manifest"),
+      await waitForInstallStage("manifest", "manifest", { scrollDialog: true }),
       1280,
       720,
     );
