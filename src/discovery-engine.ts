@@ -37,10 +37,14 @@ export function discoveryEngineLayer(configuration: EngineAuth) {
     DiscoveryEngine,
     Effect.gen(function* () {
       const rpc = yield* createEngineRpc(configuration);
+      // Hosted routes build this layer per request, so the catalog is reused
+      // only within one request.
+      const movies = yield* Effect.cached(
+        rpc.call((options) => rpc.client.getMovies({}, options)),
+      );
       return DiscoveryEngine.of({
         getMovieMetadata: (imdbId) => movieMetadata(imdbId),
-        getMovies: () =>
-          rpc.call((options) => rpc.client.getMovies({}, options)),
+        getMovies: () => movies,
         getTVShows: () =>
           rpc.call((options) => rpc.client.getTVShows({}, options)),
         getTVShowDetail: (imdbId) =>

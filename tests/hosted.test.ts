@@ -1081,6 +1081,21 @@ test("ordinary Stremio movie and episode cards offer read-only chill release sea
   }
 });
 
+test("a stream listing for a catalog IMDb movie reads the movie catalog once", async () => {
+  const f = await fixture();
+  try {
+    const response = await fetch(`${f.base()}/stream/movie/tt1234567.json`);
+    assert.equal(response.status, 200);
+    assert.equal((await decode(response, Streams)).streams.length, 1);
+    assert.deepEqual(
+      f.calls.map(({ method }) => method),
+      ["GetMovies", "Search"],
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("library subtitle resources return the file's tracks without starting downloads", async () => {
   const f = await fixture();
   try {

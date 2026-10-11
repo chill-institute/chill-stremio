@@ -31,6 +31,7 @@ existing Engine RPCs. Catalog IDs and episode metadata are translated in
 [discovery.ts](../src/discovery.ts), with validated generated responses in
 [discovery-engine.ts](../src/discovery-engine.ts). Movie/series search filters
 the current discovery catalog; the dedicated release catalog calls `Search`.
+A request reads the movie catalog with `GetMovies` at most once.
 Standard Stremio IMDb movie IDs resolve to the matching Engine catalog identity.
 Movies outside that catalog use validated title/year metadata from Cinemeta's
 fixed public endpoint before ordinary Engine release search; no account credentials
