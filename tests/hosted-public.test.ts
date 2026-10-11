@@ -12,7 +12,7 @@ import * as proto from "@chill-institute/contracts/chill/v4/api_pb";
 import { Schema } from "effect";
 import { test } from "vite-plus/test";
 import { startHostedAdapter } from "../src/hosted.ts";
-import { statusMessages, type StatusMediaKind } from "../src/status-media.ts";
+import { statusMediaKinds, statusPlaylist } from "../src/status-media.ts";
 
 const harness = new URL("../harness/live/public.ts", import.meta.url);
 const credential = `v4.local.${randomBytes(300).toString("base64url")}`;
@@ -151,9 +151,13 @@ async function adapter(engine: "accepting" | "rejecting" | "no-releases") {
   });
   const hosted = await startHostedAdapter({
     statusMedia: new Map(
-      (Object.keys(statusMessages) as StatusMediaKind[]).map((kind) => [
+      statusMediaKinds.map((kind) => [
         kind,
-        Buffer.from("fixture-status-video"),
+        {
+          mp4: Buffer.from("fixture-status-video"),
+          m3u8: Buffer.from(statusPlaylist(kind)),
+          ts: Buffer.alloc(188 * 2, 0x47),
+        },
       ]),
     ),
     engineBaseUrl: await listen(fake),
