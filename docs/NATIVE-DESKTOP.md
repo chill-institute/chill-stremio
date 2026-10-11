@@ -161,9 +161,10 @@ item holds:
   Recovery returns to the source list, restarts the owned client with the same
   profile and reselects the file; recovered decoded pixels are required. `playbackContinuedAfterCut` records whether the frame
   captured after the cut still showed decoded video.
-- Failed, unknown and multi-file releases each submit once. Their selected HLS
-  URL answers HTTP 409, the player renders `Stream failed to load` without
-  decoded video, and the client requests no status clip. Reading the failed and
+- Failed, unknown and multi-file releases each submit once. The player renders
+  `Stream failed to load` without decoded video, and the client requests no
+  status clip. The lane counts requests but not response codes; the Web smoke
+  checks that these selected HLS URLs answer 409. Reading the failed and
   multi-file status URLs returns the same 409 JSON and does not submit. The
   chosen second file of the multi-file download decodes as the episode fixture
   from the library.
@@ -211,9 +212,9 @@ each recorded:
   scenarios. Discovery, automatic playback, library playback with captions and
   PCM audio, the paced cut with restart-assisted recovery, exact-file playback,
   the reconnect row, four transfers and cleanup all passed. Each failed, unknown
-  and multi-file selection submitted once, its HLS URL answered 409 and no
-  status clip was requested, but the player stayed on its loading screen:
-  client 1.2.0 never reports libmpv load failures to the player.
+  and multi-file selection submitted once and no status clip was requested,
+  but the player stayed on its loading screen, where client 1.2.2 shows the
+  error.
 
 Between those runs,
 [run 38141014977](https://github.com/chill-institute/chill-stremio/actions/runs/38141014977)
@@ -233,9 +234,9 @@ all three modes.
 
 In every hosted trial the frame captured after the paced cut still decoded
 (`playbackContinuedAfterCut`); the recovery evidence is the restart-assisted
-reselection, not a visible mid-stream failure. The libmpv client requests the
-selected URL twice; the adapter's 60-second reuse window keeps that to one
-transfer.
+reselection, not a visible mid-stream failure. Hosted mode recorded one play
+request per selection; the adapter's 60-second reuse window would keep a
+reopen to one transfer.
 
 ARM64 has no CI runner. Its client pin `3795122e…` (1.2.0) is still signed on
 Flathub. Both fresh ARM64 fixture trials passed on 2026-09-21 and both hosted
