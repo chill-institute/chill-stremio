@@ -38,7 +38,8 @@ Ingress must also suppress access logs for this service: add-on paths contain
 the credential, and returned playback URLs are provider credentials. Disable
 request/response capture, analytics and third-party scripts on add-on and
 playback surfaces. `GET /health` reports process liveness without contacting
-Engine or providers.
+Engine or providers, and still answers when other requests fill the adapter's
+concurrency limit.
 
 ## Add-on links
 

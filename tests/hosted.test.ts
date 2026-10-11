@@ -612,6 +612,36 @@ test("a stalled protocol response times out once and the server remains usable",
   }
 });
 
+test("liveness answers while stalled Engine requests fill capacity", async () => {
+  const f = await fixture();
+  const catalog = () => fetch(`${f.base()}/catalog/movie/discover-movies.json`);
+  const stalled: Promise<Response>[] = [];
+  // Fake only the request deadline timers; sockets stay real.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    f.state.stallMovies = true;
+    for (let i = 0; i < 64; i++) stalled.push(catalog());
+    while (f.calls.filter(({ method }) => method === "GetMovies").length < 64)
+      await sleep(5);
+    const refused = await catalog();
+    assert.equal(refused.status, 503);
+    await refused.arrayBuffer();
+    const health = await fetch(`${f.origin}/health`);
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { status: "ok" });
+    await vi.advanceTimersByTimeAsync(10_000);
+    for (const response of await Promise.all(stalled)) {
+      assert.equal(response.status, 504);
+      await response.arrayBuffer();
+    }
+  } finally {
+    vi.useRealTimers();
+    const settled = Promise.allSettled(stalled);
+    await f.close();
+    await settled;
+  }
+});
+
 test("Stremio media selection waits for its download and plays without reselection", async () => {
   const f = await fixture();
   try {

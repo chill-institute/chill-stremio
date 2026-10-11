@@ -162,7 +162,12 @@ export async function startHostedAdapter(options: {
       "default-src 'none'; frame-ancestors 'none'",
     );
     const controller = new AbortController();
-    if (controllers.size >= 64) {
+    // Liveness never contacts Engine; refusing it at capacity would make
+    // ingress drop the backend and turn saturation into an outage.
+    if (
+      controllers.size >= 64 &&
+      !(request.method === "GET" && request.url === "/health")
+    ) {
       json(response, 503, { error: "unavailable" });
       return;
     }
