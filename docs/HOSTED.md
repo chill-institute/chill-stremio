@@ -56,8 +56,9 @@ media under `/play/` and `/status/`, which gets `503 unavailable` because HLS
 players retry a 5xx but not a 4xx. Every refusal carries `Retry-After: 5` and
 `Access-Control-Allow-Origin: *`. A new selection needs two free units on its
 link, one for the request and one for its submission; otherwise it returns that
-`503` and submits nothing. Stremio Web retries refused HLS media; Stremio for
-Linux does not, so select the source again there. `GET /health`, HEAD and
+`503` and submits nothing. The pinned Stremio Web client's hls.js settings
+retry a refused manifest and Stremio for Linux's do not, but no client run has
+been refused yet; select the source again if playback stops. `GET /health`, HEAD and
 OPTIONS never count, and status clips under `/notice/` count only toward the
 process limit. Each process keeps its own counts, keyed by a hash of the
 credential and dropped when a link's last unit ends.
