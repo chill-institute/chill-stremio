@@ -196,7 +196,9 @@ audio switching; the full `hosted` mode covers the first two.
 On 2026-10-11, manual CI on GitHub's x86_64 `ubuntu-26.04` runner used client
 1.2.0 (`7580e7db…`) and GNOME runtime 50.5 (`0bd50910…`).
 [Run 38136357528](https://github.com/chill-institute/chill-stremio/actions/runs/38136357528)
-recorded:
+and
+[run 38142170444](https://github.com/chill-institute/chill-stremio/actions/runs/38142170444)
+each recorded:
 
 - Fixture mode passed both fresh trials, as in runs
   [38133675903](https://github.com/chill-institute/chill-stremio/actions/runs/38133675903)
@@ -212,6 +214,12 @@ recorded:
   and multi-file selection submitted once, its HLS URL answered 409 and no
   status clip was requested, but the player stayed on its loading screen:
   client 1.2.0 never reports libmpv load failures to the player.
+
+Between those runs,
+[run 38141014977](https://github.com/chill-institute/chill-stremio/actions/runs/38141014977)
+of the same source was blocked in three trials because a client launch logged
+`Failed to open display`; a later launch in the same trial reached the Xvfb
+display.
 
 Client 1.2.2 (`0496ce1d…`), Flathub's current build, shows
 `Stream failed to load` for those selections. Both hosted modes passed both
