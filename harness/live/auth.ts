@@ -160,7 +160,7 @@ async function authorizeWithBrowser(
     stage = "login";
     await page.locator('input[name="username"]').fill(configuration.username);
     await page.locator('input[name="password"]').fill(configuration.password);
-    await page.getByRole("button", { name: "Log in", exact: true }).click();
+    await page.getByRole("button", { name: /^(log in|sign in)$/i }).click();
     try {
       await page.locator('input[name="code"]').waitFor();
     } catch {
@@ -178,7 +178,7 @@ async function authorizeWithBrowser(
     await page
       .locator('input[name="code"]')
       .fill(totp(configuration.otpSecret));
-    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await page.getByRole("button", { name: /^continue$/i }).click();
     stage = "oauth";
     for (let attempt = 0; attempt < 30; attempt++) {
       signal.throwIfAborted();
