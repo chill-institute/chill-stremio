@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
 import { Effect, Layer } from "effect";
-import sdk, { type ContentType, type Manifest } from "stremio-addon-sdk";
+import sdk, {
+  type ContentType,
+  type Manifest,
+  type MetaDetail,
+} from "stremio-addon-sdk";
 import { acquisitionEngineLayer } from "./acquisition-engine.ts";
 import { credentialPattern } from "./credential.ts";
 import {
@@ -457,7 +461,8 @@ export async function startHostedAdapter(options: {
           ? await run(library.meta(input).pipe(Effect.provide(layer)))
           : await run(discovery.meta(input).pipe(Effect.provide(layer)));
         if (!result.meta) return fail("not_found");
-        return { meta: result.meta };
+        // Undated discovery episodes omit `released`, which DefinitelyTyped requires.
+        return { meta: result.meta as MetaDetail };
       });
       builder.defineStreamHandler(async (input) => {
         if (input.id === "chill:reconnect")

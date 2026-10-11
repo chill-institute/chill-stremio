@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { Effect, Schema } from "effect";
-import type { Manifest, MetaDetail } from "stremio-addon-sdk";
+import type { Manifest, MetaDetail, MetaVideo } from "stremio-addon-sdk";
 import { DiscoveryEngine } from "./discovery-engine.ts";
 import { EngineError } from "./engine.ts";
 
@@ -290,6 +290,13 @@ const decodeResponse =
 const uniqueIds = (items: readonly { id: string }[]) =>
   new Set(items.map((item) => item.id)).size === items.length;
 
+// Stremio parses `released` as an optional date and rejects the whole meta
+// when it cannot; DefinitelyTyped marks it required.
+type EpisodeVideo = Omit<MetaVideo, "released"> & { released?: string };
+type DiscoveryMeta = Omit<MetaDetail, "videos"> & {
+  videos?: EpisodeVideo[];
+};
+
 function episodeVideo(
   imdbId: string,
   entry: {
@@ -300,7 +307,7 @@ function episodeVideo(
     stillUrl: string;
     airDate: string;
   },
-) {
+): EpisodeVideo {
   return {
     id: discoveryTargetId({
       kind: "episode",
@@ -313,9 +320,9 @@ function episodeVideo(
     episode: entry.episodeNumber,
     overview: entry.overview,
     thumbnail: entry.stillUrl || undefined,
-    released: /^\d{4}-\d{2}-\d{2}$/.test(entry.airDate)
-      ? `${entry.airDate}T00:00:00.000Z`
-      : "",
+    ...(/^\d{4}-\d{2}-\d{2}$/.test(entry.airDate) && {
+      released: `${entry.airDate}T00:00:00.000Z`,
+    }),
   };
 }
 
@@ -649,7 +656,7 @@ export function createDiscovery() {
         )).flat();
         if (episodes.length > 1000)
           return yield* new DiscoveryError({ code: "catalog_too_large" });
-        const meta: MetaDetail = {
+        const meta: DiscoveryMeta = {
           ...metadata(response.show, input.id, "series"),
           background: response.show.backdropUrl || undefined,
           genres: [...response.show.genres],

@@ -178,6 +178,25 @@ test("TV detail exposes verified season episodes and does not search or acquire"
   assert.deepEqual(f.calls, [`detail:${imdbId}`, `season:${imdbId}:1`]);
 });
 
+test("undated episodes omit their release date", async () => {
+  const f = fixture();
+  const episode = f.season.episodes[0];
+  assert.ok(episode);
+  episode.airDate = "";
+  for (const id of [
+    `chill:series:${imdbId}`,
+    discoveryTargetId({ kind: "episode", imdbId, season: 1, episode: 2 }),
+  ]) {
+    const result = await Effect.runPromise(
+      discovery.meta({ type: "series", id }).pipe(Effect.provide(f.layer)),
+    );
+    assert.ok(result.meta && "videos" in result.meta, id);
+    const video = result.meta.videos?.[0];
+    assert.ok(video, id);
+    assert.equal(Object.hasOwn(video, "released"), false, id);
+  }
+});
+
 test("release search remains release-shaped and keeps download credentials server-side", async () => {
   const f = fixture();
   const catalog = await Effect.runPromise(
