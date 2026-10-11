@@ -85,6 +85,11 @@ description = "Read the deployed adapter with the designated account's add-on cr
 # Node alone: the canary runs this next to the credential without installing packages.
 run = "node harness/live/public.ts"
 
+[tasks."hosted:credential"]
+description = "Mint the designated account's add-on credential to a pipe or an owner-only file"
+# Node alone: package-runner banners would corrupt the credential on stdout.
+run = "node harness/live/credential.ts"
+
 [tasks."native:android:account"]
 description = "Pair the designated Stremio account and probe fixture playback in an isolated TV emulator"
 run = "pnpm exec vp run native:android:account"
