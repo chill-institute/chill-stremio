@@ -12,7 +12,7 @@ concurrency:
 jobs:
   desktop:
     runs-on: ubuntu-26.04
-    timeout-minutes: 40
+    timeout-minutes: 95
     permissions:
       contents: read
     steps:
@@ -26,13 +26,37 @@ jobs:
           sudo apt-get install --no-install-recommends --yes flatpak pulseaudio pulseaudio-utils xdotool xclip xvfb xauth dbus ffmpeg fonts-dejavu-core tesseract-ocr
       - run: mise run setup
       - run: mise run native:desktop:setup
-      - run: mise run native:desktop:probe
-      - name: Retain native fixture evidence
+      - name: Probe fixture add-on
+        id: fixture
+        run: mise run native:desktop:probe
+      - name: Retain fixture evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: linux-desktop-${{ github.run_id }}
-          path: artifacts/
+          name: linux-desktop-fixture-${{ github.run_id }}
+          path: artifacts/desktop-[0-9]*
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Probe hosted adapter
+        if: ${{ !cancelled() && steps.fixture.outcome != 'skipped' }}
+        run: mise run native:desktop:probe hosted
+      - name: Retain hosted evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-desktop-hosted-${{ github.run_id }}
+          path: artifacts/desktop-hosted-[0-9]*
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Probe hosted adapter with HLS media
+        if: ${{ !cancelled() && steps.fixture.outcome != 'skipped' }}
+        run: mise run native:desktop:probe hosted-hls
+      - name: Retain hosted HLS evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-desktop-hosted-hls-${{ github.run_id }}
+          path: artifacts/desktop-hosted-hls-*
           retention-days: 7
           if-no-files-found: warn
       - name: Clean fixture media
