@@ -467,28 +467,33 @@ export async function createGuest(options: {
   };
   const trustFixtureCertificate = async () => {
     const anchors = `${profile}/anchors`;
-    run("flatpak", [
-      "run",
-      "--user",
-      "--die-with-parent",
-      `--filesystem=${profile}`,
-      "--command=cp",
-      "com.stremio.Stremio",
-      "-rL",
-      "/etc/pki/ca-trust/source/anchors",
-      anchors,
-    ]);
+    const modules = `${profile}/pkcs11-modules`;
+    const copyFromRuntime = (...args: string[]) =>
+      run("flatpak", [
+        "run",
+        "--user",
+        "--die-with-parent",
+        `--filesystem=${profile}`,
+        "--command=cp",
+        "com.stremio.Stremio",
+        ...args,
+      ]);
+    copyFromRuntime("-rL", "/etc/pki/ca-trust/source/anchors", anchors);
+    await mkdir(modules);
+    copyFromRuntime("/usr/share/p11-kit/modules/p11-kit-trust.module", modules);
     copyFileSync(`${directory}/fixture.pem`, `${anchors}/chill-fixture.pem`);
     sandboxWrapper = `${profile}/bwrap`;
     // GnuTLS uses system trust. Mount the fixture certificate only in the owned
     // app sandbox; its D-Bus proxy and the host keep their original settings.
+    // When the host has p11-kit, Flatpak's session helper swaps the runtime
+    // trust module for a client of the host store; restore the runtime module.
     await writeFile(
       sandboxWrapper,
       `#!/bin/sh
 if [ "$1" = --args ] && [ "$3" = -- ] && [ "$4" = env ]; then
   args_fd=$2
   shift 2
-  exec /usr/bin/bwrap --args "$args_fd" --ro-bind ${anchors} /etc/pki/ca-trust/source/anchors "$@"
+  exec /usr/bin/bwrap --args "$args_fd" --ro-bind ${anchors} /etc/pki/ca-trust/source/anchors --ro-bind ${modules} /etc/pkcs11/modules "$@"
 fi
 exec /usr/bin/bwrap "$@"
 `,
