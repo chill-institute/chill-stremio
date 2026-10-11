@@ -161,9 +161,11 @@ const mediaPaths = [
 ];
 const interruptionWindowMs = 6000;
 // The generated movie is small enough to download in one burst, which leaves
-// nothing to interrupt. The native lane paces the tail so a real response stays
-// open mid-playback while still delivering faster than the clip plays; the Web
-// smoke keeps burst delivery for its seek checks.
+// nothing to interrupt. The native lane paces the tail while still delivering
+// faster than the clip plays, then withholds the final byte: the response stays
+// open until the armed interruption cuts it or the client closes it, and no
+// native scenario plays the clip to its end. The Web smoke keeps burst delivery
+// for its seek checks.
 const pacedPath = "/media/movie.mp4";
 const burstBytes = 128 * 1024;
 const paceBytes = 12 * 1024;
@@ -174,13 +176,17 @@ const pace = async (
   open: () => boolean,
 ) => {
   let sent = 0;
+  let held = Buffer.alloc(0);
   for await (const chunk of source) {
+    const data = Buffer.concat([held, chunk]);
+    held = data.subarray(-1);
+    const ready = data.subarray(0, -1);
     let offset = 0;
-    while (offset < chunk.length) {
+    while (offset < ready.length) {
       if (!open()) return;
-      const slice = chunk.subarray(
+      const slice = ready.subarray(
         offset,
-        sent < burstBytes ? chunk.length : offset + paceBytes,
+        sent < burstBytes ? ready.length : offset + paceBytes,
       );
       if (!sink.write(slice))
         await new Promise<void>((resolve) => sink.once("drain", resolve));
@@ -192,7 +198,7 @@ const pace = async (
         );
     }
   }
-  sink.end();
+  while (open()) await new Promise<void>((resolve) => setTimeout(resolve, 250));
 };
 
 /** HTTPS front for the plain fixture media, as Engine only resolves secure playback URLs. */

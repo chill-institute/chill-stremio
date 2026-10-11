@@ -1,7 +1,18 @@
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { createServer, type IncomingMessage } from "node:http";
+import { get } from "node:https";
+import { setTimeout as sleep } from "node:timers/promises";
 import { Effect, Schema } from "effect";
-import { hostedFixture, movieTarget } from "../harness/hosted-fixture.ts";
+import {
+  close,
+  generateCertificates,
+  hostedFixture,
+  listen,
+  movieTarget,
+  startHostedMedia,
+} from "../harness/hosted-fixture.ts";
 import {
   hostedRequired,
   hostedRunPassed,
@@ -129,3 +140,43 @@ test("hosted desktop terminal stages accept the adapter's HLS 409 contract", asy
     }).pipe(Effect.scoped),
   );
 }, 60_000);
+
+test("paced hosted media stays open for the armed interruption", async () => {
+  const movie = randomBytes(64 * 1024);
+  const fixture = createServer((_, response) => {
+    response.writeHead(200, { "content-length": movie.length }).end(movie);
+  });
+  const fixtureOrigin = await listen(fixture);
+  try {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const certificates = yield* generateCertificates();
+        const { media } = yield* startHostedMedia(fixtureOrigin, certificates, {
+          paceMovie: true,
+        });
+        yield* Effect.promise(async () => {
+          const response = await new Promise<IncomingMessage>(
+            (resolve, reject) =>
+              get(
+                `${media.origin}/media/movie.mp4`,
+                { ca: certificates.cert },
+                resolve,
+              ).once("error", reject),
+          );
+          let received = 0;
+          let ended = false;
+          response.on("data", (chunk: Buffer) => (received += chunk.length));
+          response.once("end", () => (ended = true));
+          response.once("error", () => {});
+          while (!ended && received < movie.length - 1) await sleep(20);
+          media.interrupt();
+          assert.equal(media.cuts, 1, "Delivered media left nothing to cut");
+          assert.equal(received, movie.length - 1);
+          response.destroy();
+        });
+      }).pipe(Effect.scoped),
+    );
+  } finally {
+    await close(fixture);
+  }
+});
