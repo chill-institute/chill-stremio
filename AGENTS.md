@@ -33,9 +33,10 @@ or an HLS status URL's fifth redirect, redirect to status clips under `/notice/`
 which never call Engine. Engine `401`/`403` becomes the reconnect notice.
 `mise run hosted:smoke` is fake-only, including its recording. Status clips are
 generated at setup/build time; runtime only loads them. Redact credentials from
-logs, errors, receipts and recordings, and suppress sensitive paths at ingress. `mise run hosted:credential` writes the
-designated account's add-on credential only to a pipe or an owner-only file for
-the canary Environment; never echo or log it.
+logs, errors, receipts and recordings, and suppress sensitive paths at ingress.
+`mise run hosted:credential` writes the designated account's add-on credential
+only to a pipe or an owner-only file for the canary Environment; never echo or
+log it.
 
 ## Proof map
 
