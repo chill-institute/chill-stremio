@@ -71,6 +71,8 @@ async function fixture(options: { selectionReuseMs?: number } = {}) {
     rejection: undefined as { status: number; code: string } | undefined,
     // Wall-clock time a method takes, for tests that fake `Date`.
     elapsedMs: {} as Partial<Record<string, number>>,
+    releaseMissing: false,
+    indexerError: "",
   };
   const error = (response: ServerResponse, status: number, code: string) => {
     response.writeHead(status, { "content-type": "application/json" });
@@ -228,9 +230,14 @@ async function fixture(options: { selectionReuseMs?: number } = {}) {
               proto.SearchResponseSchema,
               create(proto.SearchResponseSchema, {
                 query,
+                indexerStats: state.indexerError
+                  ? [{ id: "slow", name: "Slow", error: state.indexerError }]
+                  : [],
                 results: [
                   {
-                    id: "fixture-release",
+                    id: state.releaseMissing
+                      ? "other-release"
+                      : "fixture-release",
                     title: "Independent.Film.1080p",
                     indexer: "Fixture",
                     link: "https://engine.fixture.test/download?token=fixture-release-secret",
@@ -801,6 +808,24 @@ test("invalid playback continuations never start a download", async () => {
         400,
       );
     }
+    assert.equal(f.state.addCount, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a release missing after an indexer failure is unavailable, not gone", async () => {
+  const f = await fixture();
+  try {
+    const url = await releaseSelection(f);
+    f.state.releaseMissing = true;
+    const gone = await fetch(url, { redirect: "manual" });
+    assert.equal(gone.status, 404);
+    assert.deepEqual(await gone.json(), { error: "not_found" });
+    f.state.indexerError = "request timed out";
+    const incomplete = await fetch(url, { redirect: "manual" });
+    assert.equal(incomplete.status, 503);
+    assert.deepEqual(await incomplete.json(), { error: "unavailable" });
     assert.equal(f.state.addCount, 0);
   } finally {
     await f.close();

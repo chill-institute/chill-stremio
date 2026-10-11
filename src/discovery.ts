@@ -413,12 +413,12 @@ export function createDiscovery() {
       }),
     )(yield* engine.search(query));
     if (response.query !== query) return yield* invalidResponse();
-    if (
-      response.results.length === 0 &&
-      response.indexerStats.some((stat) => stat.error.trim() !== "")
-    )
+    const incomplete = response.indexerStats.some(
+      (stat) => stat.error.trim() !== "",
+    );
+    if (response.results.length === 0 && incomplete)
       return yield* new EngineError({ code: "unavailable" });
-    return response.results;
+    return { results: response.results, incomplete };
   });
   const detail = Effect.fn("Discovery.detail")(function* (imdbId: string) {
     const engine = yield* DiscoveryEngine;
@@ -515,10 +515,10 @@ export function createDiscovery() {
         }
       : undefined;
   });
-  const releases = Effect.fn("Discovery.releases")(function* (
+  const candidates = Effect.fn("Discovery.candidates")(function* (
     input: DiscoveryTarget,
   ): Effect.fn.Return<
-    DiscoveryRelease[],
+    { releases: DiscoveryRelease[]; incomplete: boolean },
     DiscoveryError | import("./engine.ts").EngineError,
     DiscoveryEngine
   > {
@@ -533,35 +533,38 @@ export function createDiscovery() {
         matching.length === 1
           ? matching[0]
           : yield* engine.getMovieMetadata(target.imdbId);
-      if (!movie) return [];
+      if (!movie) return { releases: [], incomplete: false };
       query = `${movie.title}${movie.year ? ` ${movie.year}` : ""}`;
     } else if (target.kind === "movie") {
       const movie = (yield* movies()).find((movie) => movie.id === target.id);
-      if (!movie) return [];
+      if (!movie) return { releases: [], incomplete: false };
       query = `${movie.title}${movie.year ? ` ${movie.year}` : ""}`;
     } else if (target.kind === "episode") {
       const show = yield* detail(target.imdbId);
       if (!show.seasons.some((entry) => entry.seasonNumber === target.season))
-        return [];
+        return { releases: [], incomplete: false };
       if (
         !(yield* season(target.imdbId, target.season)).some(
           (entry) => entry.episodeNumber === target.episode,
         )
       )
-        return [];
+        return { releases: [], incomplete: false };
       query = `${show.show.title} S${String(target.season).padStart(2, "0")}E${String(target.episode).padStart(2, "0")}`;
     } else query = target.query;
-    const candidates = yield* search(query);
-    return candidates
-      .filter((entry) => target.kind !== "release" || entry.id === target.id)
-      .map((entry) => ({
-        id: entry.id,
-        title: entry.title,
-        url: entry.link,
-        indexer: entry.indexer,
-        size: entry.size,
-        seeders: entry.seeders,
-      }));
+    const { results, incomplete } = yield* search(query);
+    return {
+      releases: results
+        .filter((entry) => target.kind !== "release" || entry.id === target.id)
+        .map((entry) => ({
+          id: entry.id,
+          title: entry.title,
+          url: entry.link,
+          indexer: entry.indexer,
+          size: entry.size,
+          seeders: entry.seeders,
+        })),
+      incomplete,
+    };
   });
   const budgetMs = 10_000;
   const budget = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -577,7 +580,20 @@ export function createDiscovery() {
       }),
     );
   const methods = {
-    releases,
+    releases: (target: DiscoveryTarget) =>
+      Effect.map(candidates(target), ({ releases }) => releases),
+    release: Effect.fn("Discovery.release")(function* (
+      target: DiscoveryTarget,
+      id: string,
+    ) {
+      const { releases, incomplete } = yield* candidates(target);
+      const release = releases.find((entry) => entry.id === id);
+      if (release) return release;
+      // A failed indexer may still list it, so let the player retry.
+      return yield* new EngineError({
+        code: incomplete ? "unavailable" : "not_found",
+      });
+    }),
     catalog: Effect.fn("Discovery.catalog")(function* (input: {
       type: string;
       id: string;
@@ -593,7 +609,7 @@ export function createDiscovery() {
       let metas: MetaDetail[];
       if (request.id === "discover-releases") {
         if (!query) return { metas: [] };
-        const results = (yield* search(query)).slice(skip, skip + 100);
+        const results = (yield* search(query)).results.slice(skip, skip + 100);
         const catalog = moviesByImdb(
           results.some((entry) => Schema.is(ImdbId)(entry.imdbId))
             ? yield* movies().pipe(
@@ -688,7 +704,7 @@ export function createDiscovery() {
         };
       }
       if (target.kind === "release") {
-        const candidate = (yield* search(target.query)).find(
+        const candidate = (yield* search(target.query)).results.find(
           (entry) => entry.id === target.id,
         );
         const context = candidate
@@ -754,6 +770,8 @@ export function createDiscovery() {
     }, budget),
     releases: (target: DiscoveryTarget) =>
       methods.releases(target).pipe(budget),
+    release: (target: DiscoveryTarget, id: string) =>
+      methods.release(target, id).pipe(budget),
     catalog: (input: Parameters<typeof methods.catalog>[0]) =>
       methods.catalog(input).pipe(budget),
     meta: (input: Parameters<typeof methods.meta>[0]) =>

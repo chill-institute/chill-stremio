@@ -121,8 +121,10 @@ Catalog, metadata and stream listings, HEAD, OPTIONS and requests marked with
 prefetch hints are read-only. GET on a selected
 `/s/<credential>/play/<type>/<id>/<release>.m3u8` URL resolves the release through
 Engine `Search` and submits the returned link with `AddTransfer`; Engine chooses
-the destination folder. The adapter omits `bingeGroup`. These guards do not
-cryptographically prove a human click for every Stremio client.
+the destination folder. A release missing from that search returns `404`, or
+`503 unavailable` when an indexer reported an error, so the player can retry.
+The adapter omits `bingeGroup`. These guards do not cryptographically prove a
+human click for every Stremio client.
 
 Identical play requests share one submission while any of them is open and for
 60 seconds after the last one finishes, so a native player reopening the

@@ -9,7 +9,6 @@ import {
   discoveryTargetId,
   releaseDescription,
 } from "./discovery.ts";
-import { EngineError } from "./engine.ts";
 import { createLibrary } from "./library.ts";
 import type { PlaybackResult } from "./playback-wait.ts";
 
@@ -39,10 +38,7 @@ export function createSelection(options: { base: string }) {
     releaseId: string;
   }) {
     const target = yield* discovery.resolveTarget(input);
-    const release = (yield* discovery.releases(target)).find(
-      (entry) => entry.id === input.releaseId,
-    );
-    if (!release) return yield* new EngineError({ code: "not_found" });
+    const release = yield* discovery.release(target, input.releaseId);
     const engine = yield* AcquisitionEngine;
     return yield* engine.addTransfer(release.url).pipe(
       Effect.map((transfer): Submission => ({ transferId: transfer.id })),
