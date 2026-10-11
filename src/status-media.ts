@@ -29,6 +29,11 @@ export const statusMessages = {
     "Open put.io library in Stremio",
     "to try the video again.",
   ],
+  "release-unavailable": [
+    "Release unavailable",
+    "Choose another release",
+    "or try again later.",
+  ],
   reconnect: [
     "Reconnect chill.institute",
     "Open chill.institute/stremio",
@@ -36,36 +41,87 @@ export const statusMessages = {
   ],
 } as const;
 export type StatusMediaKind = keyof typeof statusMessages;
-export type StatusMedia = ReadonlyMap<StatusMediaKind, Buffer>;
-const maxFileBytes = 2 * 1024 * 1024;
+export const statusMediaKinds = Object.keys(
+  statusMessages,
+) as StatusMediaKind[];
+/** Legacy `.mp4` clips, and HLS clips: a VOD playlist with one MPEG-TS segment. */
+export type StatusMediaFormat = "mp4" | "m3u8" | "ts";
+export type StatusMedia = ReadonlyMap<
+  StatusMediaKind,
+  Readonly<Record<StatusMediaFormat, Buffer>>
+>;
+/** Players return to the stream list when a clip ends, so HLS clips stay short. */
+export const statusClipSeconds = 5;
+export const statusPlaylist = (kind: StatusMediaKind) =>
+  [
+    "#EXTM3U",
+    "#EXT-X-VERSION:3",
+    "#EXT-X-PLAYLIST-TYPE:VOD",
+    `#EXT-X-TARGETDURATION:${statusClipSeconds}`,
+    "#EXT-X-MEDIA-SEQUENCE:0",
+    `#EXTINF:${statusClipSeconds.toFixed(3)},`,
+    `${kind}.ts`,
+    "#EXT-X-ENDLIST",
+    "",
+  ].join("\n");
+const contentTypes = {
+  mp4: "video/mp4",
+  m3u8: "application/vnd.apple.mpegurl",
+  ts: "video/mp2t",
+} as const;
+const maxBytes = { mp4: 2 * 1024 * 1024, m3u8: 4096, ts: 512 * 1024 };
+const tsPacketBytes = 188;
+
+const wellFormed = (
+  kind: StatusMediaKind,
+  format: StatusMediaFormat,
+  bytes: Buffer,
+) => {
+  if (format === "mp4")
+    return bytes.length >= 12 && bytes.toString("ascii", 4, 8) === "ftyp";
+  if (format === "m3u8") return bytes.toString("utf8") === statusPlaylist(kind);
+  if (bytes.length === 0 || bytes.length % tsPacketBytes !== 0) return false;
+  for (let offset = 0; offset < bytes.length; offset += tsPacketBytes)
+    if (bytes[offset] !== 0x47) return false;
+  return true;
+};
+
+async function readStatusFile(
+  directory: string,
+  kind: StatusMediaKind,
+  format: StatusMediaFormat,
+) {
+  const file = await open(
+    resolve(directory, `${kind}.${format}`),
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const info = await file.stat();
+    if (!info.isFile() || info.size > maxBytes[format])
+      throw new Error(`Invalid status media: ${kind}.${format}`);
+    const bytes = Buffer.alloc(info.size);
+    const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+    if (bytesRead !== bytes.length || !wellFormed(kind, format, bytes))
+      throw new Error(`Invalid status media: ${kind}.${format}`);
+    return bytes;
+  } finally {
+    await file.close();
+  }
+}
 
 export async function loadStatusMedia(
   directory = resolve(".cache/status-media"),
 ): Promise<StatusMedia> {
-  const media = new Map<StatusMediaKind, Buffer>();
-  for (const status of Object.keys(statusMessages) as StatusMediaKind[]) {
-    const file = await open(
-      resolve(directory, `${status}.mp4`),
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
-    try {
-      const info = await file.stat();
-      if (!info.isFile() || info.size < 12 || info.size > maxFileBytes) {
-        throw new Error(`Invalid status media: ${status}`);
-      }
-      const bytes = Buffer.alloc(info.size);
-      const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
-      if (
-        bytesRead !== bytes.length ||
-        bytes.toString("ascii", 4, 8) !== "ftyp"
-      ) {
-        throw new Error(`Invalid status media: ${status}`);
-      }
-      media.set(status, bytes);
-    } finally {
-      await file.close();
-    }
-  }
+  const media = new Map<
+    StatusMediaKind,
+    Readonly<Record<StatusMediaFormat, Buffer>>
+  >();
+  for (const kind of statusMediaKinds)
+    media.set(kind, {
+      mp4: await readStatusFile(directory, kind, "mp4"),
+      m3u8: await readStatusFile(directory, kind, "m3u8"),
+      ts: await readStatusFile(directory, kind, "ts"),
+    });
   return media;
 }
 
@@ -74,6 +130,7 @@ export function sendStatusMedia(
   response: ServerResponse,
   media: StatusMedia,
   status: StatusMediaKind,
+  format: StatusMediaFormat,
 ): void {
   response.setHeader("Cache-Control", "no-store");
   response.setHeader("Referrer-Policy", "no-referrer");
@@ -82,13 +139,13 @@ export function sendStatusMedia(
     response.end();
     return;
   }
-  const bytes = media.get(status);
+  const bytes = media.get(status)?.[format];
   if (!bytes) {
     response.writeHead(503);
     response.end();
     return;
   }
-  response.setHeader("Content-Type", "video/mp4");
+  response.setHeader("Content-Type", contentTypes[format]);
   response.setHeader("Accept-Ranges", "bytes");
   response.setHeader("X-Content-Type-Options", "nosniff");
   let start = 0;

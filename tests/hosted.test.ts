@@ -9,7 +9,7 @@ import { Schema } from "effect";
 import { test, vi } from "vite-plus/test";
 import { redactCredentials } from "../src/credential.ts";
 import { startHostedAdapter } from "../src/hosted.ts";
-import { statusMessages, type StatusMediaKind } from "../src/status-media.ts";
+import { statusMediaKinds, statusPlaylist } from "../src/status-media.ts";
 import { discoveryTargetId } from "../src/discovery.ts";
 
 // Poll pending playback quickly; its window and continuation limits stay real.
@@ -18,10 +18,15 @@ vi.mock("../src/playback-wait.ts", async (original) => {
   return { ...actual, playbackWait: { ...actual.playbackWait, pollMs: 20 } };
 });
 
+const statusSegment = Buffer.alloc(188 * 2, 0x47);
 const statusMedia = new Map(
-  (Object.keys(statusMessages) as StatusMediaKind[]).map((kind) => [
+  statusMediaKinds.map((kind) => [
     kind,
-    Buffer.from("fixture-status-video"),
+    {
+      mp4: Buffer.from("fixture-status-video"),
+      m3u8: Buffer.from(statusPlaylist(kind)),
+      ts: statusSegment,
+    },
   ]),
 );
 const webOrigin = "http://127.0.0.1:3000";
@@ -50,7 +55,9 @@ async function decode<A, I>(
   return Schema.decodeUnknownSync(schema)(value);
 }
 
-async function fixture(options: { selectionReuseMs?: number } = {}) {
+async function fixture(
+  options: { selectionReuseMs?: number; selectionPendingMs?: number } = {},
+) {
   const calls: {
     method: string;
     owner: string;
@@ -364,6 +371,7 @@ async function fixture(options: { selectionReuseMs?: number } = {}) {
       engineBaseUrl: `http://127.0.0.1:${address.port}`,
       webOrigin,
       selectionReuseMs: options.selectionReuseMs,
+      selectionPendingMs: options.selectionPendingMs,
     });
   let hosted = await start();
   return {
@@ -549,8 +557,11 @@ test("Engine credential rejection shows reconnect rows, sources and notices", as
         { subtitles: [] },
       );
       const hls = await fetch(url, { redirect: "manual" });
-      assert.equal(hls.status, 409);
-      assert.deepEqual(await hls.json(), { error: "reconnect" });
+      assert.equal(hls.status, 302);
+      assert.equal(
+        hls.headers.get("location"),
+        `${f.base()}/notice/reconnect.m3u8`,
+      );
       const legacy = await fetch(url.replace(/\.m3u8$/, ".mp4"), {
         redirect: "manual",
       });
@@ -606,7 +617,15 @@ test("hosted protocol configuration and malformed routes stay within their crede
         404,
         id,
       );
-    assert.equal((await fetch(`${f.base()}/notice/other.mp4`)).status, 404);
+    for (const path of [
+      "/notice/other.mp4",
+      "/notice/other.m3u8",
+      "/notice/other.ts",
+      "/notice/pending.mp4x",
+      "/notice/pending.m3u8/x",
+      "/notice/pending",
+    ])
+      assert.equal((await fetch(`${f.base()}${path}`)).status, 404, path);
     assert.equal((await fetch(`${f.base()}/${"x".repeat(4096)}`)).status, 404);
     assert.equal(f.state.addCount, 0);
   } finally {
@@ -817,7 +836,7 @@ test("invalid playback continuations never start a download", async () => {
 test("a release missing after an indexer failure is unavailable, not gone", async () => {
   const f = await fixture();
   try {
-    const url = await releaseSelection(f);
+    const url = (await releaseSelection(f)).replace(/\.m3u8$/, ".mp4");
     f.state.releaseMissing = true;
     const gone = await fetch(url, { redirect: "manual" });
     assert.equal(gone.status, 404);
@@ -837,8 +856,11 @@ test("multi-file Stremio selection requires choosing a file and never guesses th
   try {
     const url = await releaseSelection(f);
     const selected = await fetch(url, { redirect: "manual" });
-    assert.equal(selected.status, 409);
-    assert.deepEqual(await selected.json(), { error: "select-file" });
+    assert.equal(selected.status, 302);
+    assert.equal(
+      selected.headers.get("location"),
+      `${f.base()}/notice/select-file.m3u8`,
+    );
     const legacy = await fetch(`${f.base()}/status/90.mp4`, {
       redirect: "manual",
     });
@@ -863,8 +885,11 @@ test("a lost submission response is reported as unknown and never retried", asyn
     const url = await releaseSelection(f);
     f.state.loseTransferResponse = true;
     const first = await fetch(url, { redirect: "manual" });
-    assert.equal(first.status, 409);
-    assert.deepEqual(await first.json(), { error: "unknown" });
+    assert.equal(first.status, 302);
+    assert.equal(
+      first.headers.get("location"),
+      `${f.base()}/notice/unknown.m3u8`,
+    );
     assert.equal(f.state.addCount, 1);
     const legacy = await fetch(url.replace(/\.m3u8$/, ".mp4"), {
       redirect: "manual",
@@ -878,6 +903,125 @@ test("a lost submission response is reported as unknown and never retried", asyn
       f.calls.filter(({ method }) => method === "GetTransfer").length,
       0,
     );
+  } finally {
+    await f.close();
+  }
+});
+
+test("status clips play from their credential path without reaching Engine", async () => {
+  const f = await fixture();
+  try {
+    for (const kind of statusMediaKinds) {
+      const playlist = await fetch(`${f.base()}/notice/${kind}.m3u8`);
+      assert.equal(playlist.status, 200);
+      assert.equal(
+        playlist.headers.get("content-type"),
+        "application/vnd.apple.mpegurl",
+      );
+      assert.equal(playlist.headers.get("cache-control"), "no-store");
+      assert.equal(playlist.headers.get("referrer-policy"), "no-referrer");
+      assert.equal(playlist.headers.get("access-control-allow-origin"), "*");
+      assert.equal(await playlist.text(), statusPlaylist(kind));
+      const segment = await fetch(`${f.base(credential())}/notice/${kind}.ts`);
+      assert.equal(segment.status, 200);
+      assert.equal(segment.headers.get("content-type"), "video/mp2t");
+      assert.deepEqual(Buffer.from(await segment.arrayBuffer()), statusSegment);
+    }
+    const head = await fetch(`${f.base()}/notice/failed.ts`, {
+      method: "HEAD",
+    });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "");
+    const range = await fetch(`${f.base()}/notice/failed.ts`, {
+      headers: { Range: "bytes=188-" },
+    });
+    assert.equal(range.status, 206);
+    assert.deepEqual(
+      Buffer.from(await range.arrayBuffer()),
+      statusSegment.subarray(188),
+    );
+    assert.equal(
+      (await fetch(`${f.origin}/s/v4.local.short/notice/failed.m3u8`)).status,
+      404,
+    );
+    assert.deepEqual(f.calls, []);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a long-pending HLS selection shows the pending clip and waits again when reselected", async () => {
+  const f = await fixture({ selectionPendingMs: 40_000 });
+  // Fake request windows and the pending clock; sockets stay real.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  try {
+    f.state.transferFinished = false;
+    f.state.singleFile = true;
+    const url = await releaseSelection(f);
+    const reads = () =>
+      f.calls.filter(({ method }) => method === "GetTransfer").length;
+    const wait = async (target: string, windowMs: number) => {
+      const before = reads();
+      const response = fetch(target, { redirect: "manual" });
+      while (reads() <= before) await sleep(5);
+      await vi.advanceTimersByTimeAsync(windowMs);
+      return (await response).headers.get("location");
+    };
+    const continued = `${f.base()}/status/90.m3u8?wait=1`;
+    const clip = `${f.base()}/notice/pending.m3u8`;
+    assert.equal(await wait(url, 25_000), continued);
+    assert.equal(
+      await wait(url, 25_000),
+      clip,
+      "The client's retry of the selected URL reaches the pending limit",
+    );
+    assert.equal(
+      await wait(url, 25_000),
+      continued,
+      "Reselecting after the clip waits again",
+    );
+    assert.equal(await wait(`${f.base()}/status/90.m3u8?wait=5`, 25_000), clip);
+    const legacy = url.replace(/\.m3u8$/, ".mp4");
+    assert.equal(
+      await wait(legacy, 45_000),
+      `${f.base()}/status/90.mp4?wait=1`,
+    );
+    const before = reads();
+    const exhausted = fetch(`${f.base()}/status/90.mp4?wait=5`, {
+      redirect: "manual",
+    });
+    while (reads() <= before) await sleep(5);
+    await vi.advanceTimersByTimeAsync(45_000);
+    const limit = await exhausted;
+    assert.equal(limit.status, 503);
+    assert.equal(limit.headers.get("retry-after"), "5");
+    assert.deepEqual(await limit.json(), { error: "download_pending" });
+    f.state.transferFinished = true;
+    const ready = await fetch(url, { redirect: "manual" });
+    assert.equal(
+      ready.headers.get("location"),
+      "https://media.fixture.test/video-21?token=fixture-playback-secret",
+    );
+    assert.equal(f.state.addCount, 1, "Waiting never resubmits");
+  } finally {
+    vi.useRealTimers();
+    await f.close();
+  }
+});
+
+test("HLS selections Search no longer resolves show the release clip without submitting", async () => {
+  const f = await fixture();
+  try {
+    const url = await releaseSelection(f);
+    const clip = `${f.base()}/notice/release-unavailable.m3u8`;
+    f.state.releaseMissing = true;
+    for (const indexerError of ["", "request timed out"]) {
+      f.state.indexerError = indexerError;
+      const selected = await fetch(url, { redirect: "manual" });
+      assert.equal(selected.status, 302);
+      assert.equal(selected.headers.get("location"), clip);
+    }
+    assert.equal(f.state.addCount, 0);
   } finally {
     await f.close();
   }
@@ -1217,7 +1361,10 @@ test("a finished selection is reused only within its window", async () => {
     f.state.loseTransferResponse = true;
     const select = async () => {
       const response = await fetch(url, { redirect: "manual" });
-      assert.deepEqual(await response.json(), { error: "unknown" });
+      assert.equal(
+        response.headers.get("location"),
+        `${f.base()}/notice/unknown.m3u8`,
+      );
     };
     await select();
     await select();

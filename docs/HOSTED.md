@@ -58,8 +58,8 @@ in its install dialog, so do not share screenshots of that dialog. Manage add-on
 `https://chill.institute/stremio`. When Engine rejects a credential
 with `401` or `403`, catalogs show a **Reconnect chill.institute** row, stream
 lists show a **Reconnect at https://chill.institute/stremio** source that opens
-that page, selected HLS media returns `409` with `reconnect`, and legacy `.mp4`
-media plays the reconnect status clip. Subtitle requests return no tracks.
+that page, and selected media plays the reconnect status clip, which names that
+page. Subtitle requests return no tracks.
 
 ## Public add-on listing
 
@@ -121,13 +121,14 @@ Catalog, metadata and stream listings, HEAD, OPTIONS and requests marked with
 prefetch hints are read-only. GET on a selected
 `/s/<credential>/play/<type>/<id>/<release>.m3u8` URL resolves the release through
 Engine `Search` and submits the returned link with `AddTransfer`; Engine chooses
-the destination folder. A release missing from that search returns `404`, or
-`503 unavailable` when an indexer reported an error, so the player can retry.
-The adapter omits `bingeGroup`. These guards do not cryptographically prove a
-human click for every Stremio client.
+the destination folder. A release missing from that search plays the
+`release-unavailable` clip below; a legacy `.mp4` selection returns `404`, or
+`503 unavailable` when an indexer reported an error. The adapter omits
+`bingeGroup`. These guards do not cryptographically prove a human click for
+every Stremio client.
 
 Identical play requests share one submission while any of them is open and for
-60 seconds after the last one finishes, so a native player reopening the
+60 seconds after the last one finishes, so a player reopening or retrying the
 selected URL does not submit again. That memory is per process and bounded;
 selecting the same release after the window or after a restart adds another
 transfer. Under capacity pressure the oldest idle entries may be dropped before
@@ -142,18 +143,33 @@ transfer ID is decimal. Status URLs only read; reopening one resumes waiting
 without submitting. HLS waits in 25-second windows and legacy `.mp4` URLs in
 45-second windows, with up to five redirects. Each window starts with the
 request and includes submission and status reads, so a still-pending download
-redirects before the request deadline. Client manifest timeouts can end
-waiting sooner. At the server limit it returns `503 download_pending`; selecting
-the source again within the reuse window resumes waiting, and later submits
-again. Downloads continue independently of the player.
+redirects before the request deadline. Stremio Web abandons each redirect chain
+after 30 seconds and requests the selected URL again, up to ten times, rejoining
+the same submission. Once an HLS selection has waited four minutes, or an HLS
+status URL reaches its fifth redirect, the adapter redirects to the pending
+status clip. Selecting the source again within the reuse window waits another
+four minutes on the same submission; later it submits again. Stremio for Linux
+follows the redirects itself and reaches the clip at the fifth status redirect,
+about 150 seconds in; the reuse window has ended by then, so selecting the
+source again submits again. Legacy `.mp4` URLs return `503 download_pending` at
+their fifth redirect. Downloads continue independently of the player.
 
-HLS terminal states return `409` with `failed`, `select-file`, `unavailable`,
-`unknown` or `reconnect`. Legacy `.mp4` URLs redirect to the matching status
-clip under `/s/<credential>/notice/`. A multi-file download returns
+HLS terminal states redirect to a five-second status clip,
+`/s/<credential>/notice/<state>.m3u8`, for `failed`, `select-file`,
+`unavailable`, `unknown` or `reconnect`. When Search no longer lists the selected
+release, or its indexers fail, HLS selection plays `release-unavailable` without
+submitting. Legacy `.mp4` URLs redirect to the matching `.mp4` clip. A
+multi-file download plays
 `select-file`; choose the file from **put.io library**. The adapter does not
-guess the first video. Personalized responses use `Cache-Control: no-store` and
-`Referrer-Policy: no-referrer`; request lines longer than 4,096 characters are
-rejected.
+guess the first video. Clip routes only check the credential's shape and never
+contact Engine.
+
+When a clip ends, the player returns to the stream list. Stremio Web counts a
+clip played past 70% as watched, and when an episode's clip ends it can move on
+to the next episode's sources. Stremio may also start a clip at the video's
+saved progress and skip it. Personalized responses use `Cache-Control: no-store`
+and `Referrer-Policy: no-referrer`; request lines longer than 4,096 characters
+are rejected.
 
 HLS is the default playback delivery. Engine verifies a put.io master playlist
 using a separate download grant; the player fetches media directly from put.io.
@@ -211,20 +227,27 @@ standard IMDb movie sources, movie and episode context, pending progress,
 automatic playback after completion, status reads across an adapter restart,
 the completed file in **put.io library**, rendered seeking and
 English/Spanish/off subtitle controls. Its failed, unknown and multi-file
-releases each submit once through the real adapter; the player must render the
-error without status clips, and the multi-file result plays its second file from
-the library. A rejected credential must show the reconnect row and source. The
-receipt is redacted and must not contain the credential; its recording is safe
-to share only because the entire lane is fake. Status videos come from
-[status-media.ts](../scripts/status-media.ts) at setup/image build time, with
-[runtime loading](../src/status-media.ts) requiring the generated assets.
+releases each submit once through the real adapter; the player must decode each
+HLS status clip without an error and return to the stream list, and the
+multi-file result plays its second file from the library. A pending release,
+with the limit shortened to 45 seconds, must keep the player waiting through a
+manifest timeout and retry, show the pending clip, and play after completion
+when selected again, without another transfer. A rejected credential must show
+the reconnect row and source, and its selected media must redirect to the
+reconnect clip. The receipt is redacted and must not contain the credential;
+its recording is safe to share only because the entire lane is fake. Status
+clips come from [status-media.ts](../scripts/status-media.ts) at setup/image
+build time, as legacy MP4 files and as HLS playlists with one MPEG-TS segment;
+[runtime loading](../src/status-media.ts) requires and validates every
+generated file.
 Require a passing smoke receipt for the in-Stremio interaction. Read each run's
 structured result before claiming installation, decoded playback or complete
 cleanup.
 
 `mise run hosted:container` runs the built image read-only, without
 capabilities or a volume, against a closed loopback Engine port. It checks the
-non-root user, health, a generated credential's manifest, removed routes,
+non-root user, health, a generated credential's manifest, a served HLS status
+clip, removed routes,
 sanitized Engine failures, clean SIGTERM, restart and that container logs never
 contain the credential.
 

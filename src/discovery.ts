@@ -589,7 +589,8 @@ export function createDiscovery() {
       const { releases, incomplete } = yield* candidates(target);
       const release = releases.find((entry) => entry.id === id);
       if (release) return release;
-      // A failed indexer may still list it, so let the player retry.
+      // A failed indexer may still list it: legacy players may retry, and HLS
+      // selection plays the release-unavailable clip.
       return yield* new EngineError({
         code: incomplete ? "unavailable" : "not_found",
       });

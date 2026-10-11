@@ -23,7 +23,7 @@ import {
   desktopTextMatches,
   desktopTextTarget,
 } from "../harness/native/desktop-ui.ts";
-import { statusMessages, type StatusMediaKind } from "../src/status-media.ts";
+import { statusMediaKinds, statusPlaylist } from "../src/status-media.ts";
 
 const Streams = Schema.Struct({
   streams: Schema.Array(Schema.Struct({ url: Schema.String })),
@@ -89,11 +89,15 @@ test("hosted desktop trials need every scenario plus adapter-side proof", () => 
   assert.ok(hostedRequired.includes("one-transfer-per-selection"));
 });
 
-test("hosted desktop terminal stages accept the adapter's HLS 409 contract", async () => {
+test("hosted desktop terminal stages require the client to load each status clip", async () => {
   const statusMedia = new Map(
-    (Object.keys(statusMessages) as StatusMediaKind[]).map((kind) => [
+    statusMediaKinds.map((kind) => [
       kind,
-      Buffer.from("fixture-status-video"),
+      {
+        mp4: Buffer.from("fixture-status-video"),
+        m3u8: Buffer.from(statusPlaylist(kind)),
+        ts: Buffer.alloc(188, 0x47),
+      },
     ]),
   );
   await Effect.runPromise(
@@ -122,9 +126,18 @@ test("hosted desktop terminal stages accept the adapter's HLS 409 contract", asy
             await listing.json(),
           ).streams;
           assert.ok(row);
-          const selected = await fetch(row.url);
-          assert.equal(selected.status, 409);
-          assert.deepEqual(await selected.json(), { error: kind });
+          const selected = await fetch(row.url, { redirect: "manual" });
+          assert.equal(selected.status, 302);
+          const playlist = selected.headers.get("location") ?? "";
+          assert.equal(playlist, `${base}/notice/${kind}.m3u8`);
+          await (await fetch(playlist)).arrayBuffer();
+          const unloaded = await stage("recovery-rendered", kind);
+          assert.equal(unloaded.ok, false);
+          assert.match(
+            unloaded.error ?? "",
+            /^Client did not load the status clip/,
+          );
+          await (await fetch(playlist.replace(/\.m3u8$/, ".ts"))).arrayBuffer();
           assert.deepEqual(await stage("recovery-selected", kind), {
             ok: true,
           });
@@ -132,10 +145,6 @@ test("hosted desktop terminal stages accept the adapter's HLS 409 contract", asy
             ok: true,
           });
         }
-        await (await fetch(`${base}/notice/failed.mp4`)).arrayBuffer();
-        const clip = await stage("recovery-rendered", "failed");
-        assert.equal(clip.ok, false);
-        assert.match(clip.error ?? "", /^Client requested a status clip/);
       });
     }).pipe(Effect.scoped),
   );

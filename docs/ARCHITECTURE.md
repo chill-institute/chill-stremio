@@ -73,8 +73,8 @@ unbounded account crawl is allowed.
 [credential.ts](../src/credential.ts) checks only the `v4.local.` shape and
 length; Engine decides whether the credential is valid and which account it
 belongs to. The adapter keeps no database, key or per-account memory beyond
-open requests. A `401` or `403` from Engine becomes a reconnect row, source,
-status clip or `409 reconnect`, pointing to `https://chill.institute/stremio`.
+open requests. A `401` or `403` from Engine becomes a reconnect row, source or
+status clip, pointing to `https://chill.institute/stremio`.
 
 The credential grants library/discovery access, playback and chosen-release
 downloads to put.io. Keep add-on links private. Personalized responses use
@@ -115,14 +115,15 @@ A selected download waits for one verified video, then redirects to its media
 URL. While it is pending, the adapter redirects to a read-only status URL that
 carries the decimal transfer ID. [Playback waiting](../src/playback-wait.ts)
 bounds polling; the [hosted routes](../src/hosted.ts) set HLS and legacy request
-windows. Client manifest timeouts may end a wait sooner. At the server limit it
-returns `503 download_pending`. Disconnects cancel polling.
+windows and the HLS pending limit, after which HLS plays the pending status
+clip; legacy `.mp4` returns `503 download_pending` at its redirect limit.
+Disconnects cancel polling.
 
-HLS terminal states return `409` with the acquisition state. Legacy `.mp4` URLs
-retain generated status clips. Completed files, including each file of a
-multi-file download, are chosen from the put.io library. Clips are
-[generated during setup or build](../scripts/status-media.ts) and
-[loaded at runtime](../src/status-media.ts).
+Terminal states redirect to generated status clips: a VOD playlist with one
+MPEG-TS segment for HLS, an MP4 file for legacy `.mp4` URLs. Completed files,
+including each file of a multi-file download, are chosen from the put.io
+library. Clips are [generated during setup or build](../scripts/status-media.ts)
+and [loaded at runtime](../src/status-media.ts); clip routes never call Engine.
 
 HLS URLs are offered to the client HLS player without claiming known codecs.
 Known MP4/H.264/AAC remains Web-ready for compatible older responses. A passing

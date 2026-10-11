@@ -239,12 +239,15 @@ test("media-selection proof issues read-only HEAD then GET without following cre
     destination = `${origin}/s/${credential}/notice/pending.mp4`;
     await requestSelectedMedia(origin, path, "HEAD");
     await requestSelectedMedia(origin, path, "GET");
+    destination = `${origin}/s/${credential}/notice/pending.m3u8`;
+    await requestSelectedMedia(origin, path, "GET");
     destination = `${origin}/s/${credential}/status/7.mp4?wait=1`;
     await requestSelectedMedia(origin, path, "GET");
     destination = "https://fixture.invalid/media?download-token=fake-only";
     await requestSelectedMedia(origin, path, "GET");
     assert.deepEqual(calls, [
       `HEAD ${path}`,
+      `GET ${path}`,
       `GET ${path}`,
       `GET ${path}`,
       `GET ${path}`,
@@ -260,12 +263,17 @@ test("media-selection proof issues read-only HEAD then GET without following cre
         code: "hosted_probe_failed",
       });
     }
-    assert.equal(calls.length, 4);
-    destination = `${origin}/unexpected-page`;
-    await assert.rejects(requestSelectedMedia(origin, path, "GET"), {
-      code: "hosted_probe_failed",
-    });
     assert.equal(calls.length, 5);
+    for (const unexpected of [
+      `${origin}/unexpected-page`,
+      `${origin}/s/${credential}/notice/pending.ts`,
+    ]) {
+      destination = unexpected;
+      await assert.rejects(requestSelectedMedia(origin, path, "GET"), {
+        code: "hosted_probe_failed",
+      });
+    }
+    assert.equal(calls.length, 7);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) =>

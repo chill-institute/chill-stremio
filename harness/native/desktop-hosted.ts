@@ -36,6 +36,7 @@ export interface ProxyMetrics {
   playGet: number;
   playOptions: number;
   prefetchHinted: number;
+  /** Status clip requests by file name, such as `failed.ts`. */
   notice: Record<string, number>;
   status: number;
   other: number;
@@ -69,10 +70,15 @@ const classify = (pathname: string) => {
   if (rest.startsWith("/subtitles/")) return "subtitles" as const;
   if (rest.startsWith("/play/")) return "play" as const;
   if (rest.startsWith("/status/")) return "status" as const;
-  const notice = /^\/notice\/([a-z-]+)\.mp4$/.exec(rest)?.[1];
+  const notice = /^\/notice\/([a-z-]+\.(?:mp4|m3u8|ts))$/.exec(rest)?.[1];
   if (notice) return { notice };
   return "other" as const;
 };
+/** Requests for any format of one status clip. */
+export const noticeRequests = (notice: Record<string, number>, kind: string) =>
+  Object.entries(notice)
+    .filter(([name]) => name.startsWith(`${kind}.`))
+    .reduce((total, [, count]) => total + count, 0);
 const pollUntil = async (
   predicate: () => boolean,
   timeoutMs: number,
@@ -237,17 +243,17 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
           metrics.playGet >= 1,
           "Selection did not consume the media URL",
         );
-        assert.equal(metrics.notice.pending ?? 0, 0);
+        assert.equal(noticeRequests(metrics.notice, "pending"), 0);
         assert.equal(engine.state.completed, false);
         return {};
       case "complete":
         assert.equal(calls.transfer, 1);
-        assert.equal(metrics.notice.pending ?? 0, 0);
+        assert.equal(noticeRequests(metrics.notice, "pending"), 0);
         engine.state.completed = true;
         return {};
       case "automatic-playing":
         assert.ok(calls.playback >= 1);
-        assert.equal(metrics.notice.pending ?? 0, 0);
+        assert.equal(noticeRequests(metrics.notice, "pending"), 0);
         assert.equal(calls.transfer, 1);
         return {};
       case "library": {
@@ -302,8 +308,10 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
         assert.ok(recovery);
         if (kind !== "unknown") {
           const again = await status(recovery.transferId);
-          assert.equal(again.status, 409);
-          assert.deepEqual(await again.json(), { error: kind });
+          assert.equal(again.status, 302);
+          assert.ok(
+            again.headers.get("location")?.endsWith(`/notice/${kind}.m3u8`),
+          );
         }
         assert.equal(calls.transfer, before + 1, "Status read submitted");
         return { fileId: `chill:file:${hostedFixture.multipleEpisodeId}` };
@@ -313,8 +321,13 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
         assert.ok(kind, "Recovery stage needs a kind");
         const before = transferBefore.get(kind);
         assert.ok(before !== undefined, "Recovery detail stage was skipped");
-        assert.deepEqual(metrics.notice, {}, "Client requested a status clip");
-        assert.equal(calls.transfer, before + 1, "Player error resubmitted");
+        assert.ok(
+          (metrics.notice[`${kind}.m3u8`] ?? 0) >= 1 &&
+            (metrics.notice[`${kind}.ts`] ?? 0) >= 1,
+          "Client did not load the status clip",
+        );
+        assert.equal(noticeRequests(metrics.notice, "pending"), 0);
+        assert.equal(calls.transfer, before + 1, "Status clip resubmitted");
         return {};
       }
       case "select-file-playing":

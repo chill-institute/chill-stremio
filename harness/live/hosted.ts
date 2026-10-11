@@ -102,7 +102,7 @@ export async function requestSelectedMedia(
         destination.protocol !== "https:" &&
         !(
           destination.origin === origin &&
-          (/^\/s\/v4\.local\.[A-Za-z0-9_-]+\/notice\/(pending|unknown|failed|select-file|unavailable|reconnect)\.mp4$/.test(
+          (/^\/s\/v4\.local\.[A-Za-z0-9_-]+\/notice\/(pending|unknown|failed|select-file|unavailable|release-unavailable|reconnect)\.(mp4|m3u8)$/.test(
             destination.pathname,
           ) ||
             /^\/s\/v4\.local\.[A-Za-z0-9_-]+\/status\/[1-9][0-9]{0,18}\.(mp4|m3u8)$/.test(

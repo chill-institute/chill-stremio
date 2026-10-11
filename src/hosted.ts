@@ -25,7 +25,7 @@ import {
 import {
   loadStatusMedia,
   sendStatusMedia,
-  type StatusMediaKind,
+  statusMediaKinds,
   type StatusMedia,
 } from "./status-media.ts";
 import { adapterManifest } from "./server.ts";
@@ -62,6 +62,8 @@ export async function startHostedAdapter(options: {
   statusMedia?: StatusMedia;
   /** How long a finished selection's submission is reused by identical requests. */
   selectionReuseMs?: number;
+  /** How long an HLS selection waits automatically before it shows the pending clip. */
+  selectionPendingMs?: number;
   engineBaseUrl: string;
   webOrigin: string;
   publicOrigin?: string;
@@ -90,12 +92,15 @@ export async function startHostedAdapter(options: {
   // open and briefly afterwards: native players reopen the selected URL once
   // the first request resolves. Nothing survives a restart.
   const reuseMs = options.selectionReuseMs ?? 60_000;
+  const pendingMs = options.selectionPendingMs ?? 240_000;
   const submissions = new Map<
     string,
     {
       submission: Promise<Submission>;
       users: number;
       failed: boolean;
+      /** When the current automatic wait began; the pending clip restarts it. */
+      waitingSince: number;
       expiry?: ReturnType<typeof setTimeout>;
     }
   >();
@@ -281,16 +286,20 @@ export async function startHostedAdapter(options: {
       const statusRoute = /^\/status\/([1-9][0-9]{0,18})\.(?:mp4|m3u8)$/.exec(
         path,
       );
-      const noticeRoute =
-        /^\/notice\/(pending|unknown|failed|select-file|unavailable|reconnect)\.mp4$/.exec(
-          path,
-        );
-      if (noticeRoute?.[1]) {
+      const noticeRoute = /^\/notice\/([a-z-]+)\.(mp4|m3u8|ts)$/.exec(path);
+      const noticeKind = statusMediaKinds.find(
+        (kind) => kind === noticeRoute?.[1],
+      );
+      const noticeFormat = (["mp4", "m3u8", "ts"] as const).find(
+        (format) => format === noticeRoute?.[2],
+      );
+      if (noticeKind && noticeFormat) {
         sendStatusMedia(
           request,
           response,
           statusMedia,
-          noticeRoute[1] as StatusMediaKind,
+          noticeKind,
+          noticeFormat,
         );
         return;
       }
@@ -298,6 +307,9 @@ export async function startHostedAdapter(options: {
         return fail("not_found");
       if (playRoute || statusRoute) {
         const hls = path.endsWith(".m3u8");
+        // The pinned Web client's manifest request times out after 30 seconds,
+        // redirects included, and then retries the selected URL, rejoining its
+        // selection until the pending limit. Each HLS window ends before that.
         const timing = hls
           ? { ...playbackWait, windowMs: 25_000 }
           : playbackWait;
@@ -338,6 +350,7 @@ export async function startHostedAdapter(options: {
         let transferId: bigint | undefined;
         let result: PlaybackResult;
         let release = () => {};
+        let selected: { waitingSince: number } | undefined;
         const inspect = (id: bigint) =>
           run(selection.status(id).pipe(Effect.provide(layer)), reading);
         try {
@@ -378,6 +391,7 @@ export async function startHostedAdapter(options: {
                 }),
                 users: 0,
                 failed: false,
+                waitingSince: performance.now(),
               };
               created.submission.catch(() => {
                 created.failed = true;
@@ -386,6 +400,7 @@ export async function startHostedAdapter(options: {
               submissions.set(key, shared);
             }
             const entry = shared;
+            selected = entry;
             clearTimeout(entry.expiry);
             entry.users++;
             release = () => {
@@ -415,6 +430,15 @@ export async function startHostedAdapter(options: {
             );
         } catch (error) {
           if (rejected(error)) result = { status: "reconnect" };
+          // Search no longer lists the release, or its indexers failed.
+          else if (
+            hls &&
+            playRoute &&
+            transferId === undefined &&
+            error instanceof HttpFailure &&
+            (error.code === "not_found" || error.code === "unavailable")
+          )
+            result = { status: "release-unavailable" };
           else if (
             transferId !== undefined &&
             waiting.signal.aborted &&
@@ -428,7 +452,18 @@ export async function startHostedAdapter(options: {
         }
         if (response.destroyed || response.writableEnded) return;
         if ("status" in result && result.status === "pending") {
-          if (Number(continuation) >= playbackWait.continuations) {
+          const exhausted = Number(continuation) >= playbackWait.continuations;
+          if (
+            hls &&
+            (exhausted ||
+              (selected !== undefined &&
+                performance.now() - selected.waitingSince >= pendingMs))
+          ) {
+            if (selected) selected.waitingSince = performance.now();
+            response
+              .writeHead(302, { Location: `${base}/notice/pending.m3u8` })
+              .end();
+          } else if (exhausted) {
             response.setHeader("Retry-After", "5");
             json(response, 503, { error: "download_pending" });
           } else {
@@ -440,12 +475,10 @@ export async function startHostedAdapter(options: {
           }
           return;
         }
-        if (hls && "status" in result) {
-          json(response, 409, { error: result.status });
-          return;
-        }
         const location =
-          "url" in result ? result.url : `${base}/notice/${result.status}.mp4`;
+          "url" in result
+            ? result.url
+            : `${base}/notice/${result.status}.${hls ? "m3u8" : "mp4"}`;
         response.writeHead(302, { Location: location }).end();
         return;
       }
