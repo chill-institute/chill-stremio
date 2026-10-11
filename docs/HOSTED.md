@@ -287,7 +287,9 @@ the credential. It needs only Node, not the installed packages.
 The post-deploy canary, [canary.yml](../.github/workflows/canary.yml), runs
 `hosted:public` in the `canary` GitHub Environment, which admits only `main` and
 holds `CHILL_STREMIO_CREDENTIAL`. Publish calls it at the published commit once
-the adapter deploy finishes; dispatch it from `main` for an ad hoc check,
+the adapter deploy finishes and passes it the caller's secrets, which a called
+job needs to read its own Environment; keep repository and organization secrets
+out of this repository, because the canary runs repository code; dispatch it from `main` for an ad hoc check,
 optionally with an older `main` commit as `ref`. It refuses commits outside
 `main`, checks out without persisted credentials, installs the pinned toolchain
 but no dependencies and keeps the redacted receipt as artifact

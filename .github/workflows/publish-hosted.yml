@@ -178,5 +178,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/canary.yml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects $/ calls
+    # A called job reads its own Environment's secrets only when the caller
+    # passes secrets; this repository keeps none outside its Environments.
+    secrets: inherit # zizmor: ignore[secrets-inherit]
     with:
       ref: ${{ needs.build.outputs.sha }}
