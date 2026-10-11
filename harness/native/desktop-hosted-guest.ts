@@ -271,10 +271,13 @@ try {
         },
         ["selected-download"],
       );
+      // Library playback needs the submitted multi-file transfer, not its error.
       if (kind === "select-file")
         await step(
           "exact-file-playback",
           async () => {
+            if (!fileId)
+              throw new Error("Multi-file release was not submitted");
             app = startApp(detailRoute("movie", fileId));
             try {
               await selectStream("select-file-sources", "Second");
@@ -284,7 +287,7 @@ try {
               await stopApp(app);
             }
           },
-          ["recovery-select-file"],
+          ["selected-download"],
         );
     }
   }
