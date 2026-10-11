@@ -233,6 +233,7 @@ export async function startHostedAdapter(options: {
         if (url.pathname === "/manifest.json") {
           json(response, 200, {
             ...manifest,
+            logo: `${origin}/configure-assets/logo.png`,
             description:
               "Early access. Connect your put.io account to discover movies and series, choose releases and play your videos inside Stremio. Requires a put.io account.",
             behaviorHints: { configurable: true, configurationRequired: true },
@@ -439,7 +440,7 @@ export async function startHostedAdapter(options: {
           ...manifest.behaviorHints,
           configurationRequired: false,
         },
-        logo: undefined,
+        logo: `${origin}/configure-assets/logo.png`,
       });
       builder.defineCatalogHandler(async ({ type, id, extra }) => {
         const input = {

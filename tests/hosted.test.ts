@@ -882,14 +882,22 @@ test("public catalog entry requires configuration and never accesses an account"
     const Manifest = Schema.Struct({
       id: Schema.String,
       name: Schema.String,
+      logo: Schema.optional(Schema.String),
+      contactEmail: Schema.optional(Schema.String),
       catalogs: Schema.Array(Schema.Struct({ id: Schema.String })),
       behaviorHints: Schema.Struct({
         configurable: Schema.Boolean,
         configurationRequired: Schema.Boolean,
       }),
     });
+    const listing = {
+      logo: `${f.origin}/configure-assets/logo.png`,
+      contactEmail: "chillardinho@chill.institute",
+    };
     const publicManifest = await decode(response, Manifest);
     assert.equal(publicManifest.name, "chill.institute");
+    assert.equal(publicManifest.logo, listing.logo);
+    assert.equal(publicManifest.contactEmail, listing.contactEmail);
     assert.deepEqual(publicManifest.behaviorHints, {
       configurable: true,
       configurationRequired: true,
@@ -962,6 +970,8 @@ test("public catalog entry requires configuration and never accesses an account"
       Manifest,
     );
     assert.equal(personal.id, publicManifest.id);
+    assert.equal(personal.logo, listing.logo);
+    assert.equal(personal.contactEmail, listing.contactEmail);
     assert.equal(personal.behaviorHints.configurationRequired, false);
     assert.deepEqual(personal.catalogs, publicManifest.catalogs);
   } finally {

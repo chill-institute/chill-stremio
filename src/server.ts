@@ -19,6 +19,7 @@ export const adapterManifest: Manifest = {
   version: adapterVersion,
   name: "chill.institute",
   description: "Videos from your selected chill.institute folder.",
+  contactEmail: "chillardinho@chill.institute",
   resources: ["catalog", "meta", "stream"],
   types: ["movie"],
   idPrefixes: ["chill:file:"],

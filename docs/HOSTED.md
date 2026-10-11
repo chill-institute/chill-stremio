@@ -64,8 +64,10 @@ media plays the reconnect status clip. Subtitle requests return no tracks.
 ## Public add-on listing
 
 `https://stremio.chill.institute/manifest.json` is the public catalog entry.
-It requires configuration and contains no account credential. Stremio's
-**Configure** action opens `/configure`, a public HTML page with a
+It requires configuration and contains no account credential. Public and
+personal manifests show the setup page logo from `/configure-assets/logo.png`
+and list the project contact email, which Stremio's Report action uses.
+Stremio's **Configure** action opens `/configure`, a public HTML page with a
 **connect your account** link to `https://chill.institute/stremio`.
 The page carries over chill-web’s `AuthPage`, `FullscreenCenter` and button
 styles and logo, using system fonts. It follows the system light/dark theme.
