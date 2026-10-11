@@ -186,9 +186,10 @@ put.io hooks do not identify that account.
 
 ## HLS playback
 
-`mise exec -- node harness/hls-smoke.ts` exercises the pinned Stremio Web UI
-with generated HLS media. It measures decoded English/Spanish audio frequencies,
-returns to the first track, seeks to a rendered frame and switches captions.
+`mise run hls:smoke` runs [hls-smoke.ts](../harness/hls-smoke.ts) in the
+pinned Stremio Web UI with generated HLS media. It measures decoded
+English/Spanish audio frequencies, returns to the first track, seeks to a
+rendered frame and switches captions.
 Its files are fake-only and may retain screenshots and recordings.
 
 The default fixture uses MPEG-TS segments with English audio in the video
@@ -205,7 +206,7 @@ Native clients need separate proof.
 The original separate-track fMP4 fixture remains available:
 
 ```sh
-mise exec -- node harness/hls-smoke.ts separate-fmp4
+mise run hls:smoke separate-fmp4
 ```
 
 That valid layout exposes a pinned-client worker defect: `ReferenceError: e is

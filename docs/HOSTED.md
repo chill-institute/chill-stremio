@@ -174,8 +174,9 @@ tracks.
 
 ## Verification and release
 
-The adapter runs in early access at `https://stremio.chill.institute`; the manifest
-description and the chill-web setup page label it work in progress. The earlier
+The adapter runs in early access at `https://stremio.chill.institute`. The
+public and personal manifest descriptions, `/configure` and the chill-web setup
+page say “Early access”; personal manifests add “work in progress”. The earlier
 Web direct-file download-to-playback flow passes. HLS audio switching passes a
 real put.io Web probe, and the generated hosted HLS flow passes with default
 audio bundled into its video variant. The original separate-track fixture
@@ -241,8 +242,9 @@ deploy with that digest and waits for it. The default verification and fixture
 workflows retain read-only permissions.
 
 Engine owns the adapter deployment and shared host-mutation lock; its manual
-dispatch remains the rollback path. Any v2.0.0 or later image can be a rollback
-target because the adapter keeps no state.
+dispatch remains the rollback path. Any v2.0.3 or later image can be a rollback
+target because the adapter keeps no state; v2.0.0 to v2.0.2 reject every issued
+link because they do not accept Engine's key-ID credential footer.
 The Engine deploy workflow reads the package with its own repository token, so
 the `chill-stremio` container package must grant `chill-engine` read access in
 its Actions access settings; GitHub exposes no API for that grant.

@@ -27,6 +27,9 @@ A successful fixture smoke reports `passed` for two fresh browser runs and
 writes `artifacts/<run timestamp>/results.json`. See
 [playback assertions](./docs/HARNESS.md#playback-proof) to interpret the evidence
 and [recovery](./docs/HARNESS.md#results-and-recovery) after a failure.
+`mise run hls:smoke` checks
+[HLS audio switching, seeking and captions](./docs/HARNESS.md#hls-playback) with
+generated media.
 
 Harness entrypoints run directly with Node's native TypeScript support. Vite+
 owns formatting, linting, type checks and tests in
@@ -64,7 +67,8 @@ when changing playback behavior.
 
 [Verification CI](./.github/workflows/verify.yml) runs on contributions and
 updates to `main`. The [Web playback workflow](./.github/workflows/playback.yml)
-is manually dispatched to bound runner cost.
+runs the fixture, HLS, adapter and hosted smokes only on manual dispatch to bound
+runner cost.
 [Renovate configuration](./renovate.json) identifies playback-sensitive
 dependencies that require review and fresh browser evidence.
 
