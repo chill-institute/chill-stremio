@@ -81,6 +81,72 @@ async function frame(page: Page, path?: string) {
   };
 }
 
+/** Waits for a decoded 1280×720 status clip and checks its rendered card. */
+export async function statusClip(page: Page, path: string, timeout = 15000) {
+  const video = page.locator("video");
+  const state = () =>
+    video.evaluate((v: HTMLVideoElement) => ({
+      width: v.videoWidth,
+      height: v.videoHeight,
+      time: v.currentTime,
+      decoded: v.getVideoPlaybackQuality().totalVideoFrames,
+      error: v.error?.code ?? null,
+    }));
+  await expect
+    .poll(
+      async () => {
+        const current = await state().catch(() => undefined);
+        return (
+          current?.width === 1280 &&
+          current.height === 720 &&
+          current.decoded > 0 &&
+          current.error === null
+        );
+      },
+      { timeout, message: "A decoded status clip was not shown" },
+    )
+    .toBe(true);
+  const evidence = await state();
+  const screenshot = await video.screenshot({ timeout: 5000 });
+  await writeFile(path, screenshot);
+  const metadata = await sharp(screenshot).metadata();
+  assert.ok(metadata.width && metadata.height);
+  const height = Math.round((metadata.width * 720) / 1280);
+  const { data, info } = await sharp(screenshot)
+    .extract({
+      left: 0,
+      top: Math.round((metadata.height - height) / 2),
+      width: metadata.width,
+      height,
+    })
+    .resize(1280, 720)
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const pixel = (x: number, y: number) => [
+    ...data.subarray(
+      (y * 1280 + x) * info.channels,
+      (y * 1280 + x) * info.channels + 3,
+    ),
+  ];
+  // Generated clips draw white text on #121827 (scripts/status-media.ts).
+  const background = [pixel(100, 360), pixel(1180, 360)];
+  assert.ok(
+    background.every((rgb) =>
+      rgb.every(
+        (value, index) => Math.abs(value - ([18, 24, 39][index] ?? 0)) <= 12,
+      ),
+    ),
+    "Status clip background was not rendered",
+  );
+  let headlinePixels = 0;
+  for (let y = 250; y < 330; y++)
+    for (let x = 200; x < 1080; x++)
+      if (pixel(x, y).every((value) => value > 200)) headlinePixels++;
+  assert.ok(headlinePixels > 500, "Status clip headline was not rendered");
+  return { ...evidence, background, headlinePixels };
+}
+
 export async function seekRenderedDestination(page: Page, directory: string) {
   await page.mouse.move(600, 400);
   const slider = page.locator(

@@ -56,6 +56,8 @@ export const hostedFixture = {
     { kind: "unknown", name: "Synthetic Unknown Release", transferId: 4n },
     { kind: "select-file", name: "Synthetic Multiple Files", transferId: 5n },
   ],
+  /** A download that stays pending until the smoke completes it. */
+  pendingCase: { name: "Synthetic Pending Release", transferId: 6n },
 } as const;
 export type RecoveryKind = (typeof hostedFixture.recoveryCases)[number]["kind"];
 export const movieTarget = (id: string) =>
@@ -71,6 +73,8 @@ export interface HostedEngineState {
   episodeSubmitted: boolean;
   completed: boolean;
   recoverySubmitted: Set<RecoveryKind>;
+  pendingSubmitted: boolean;
+  pendingCompleted: boolean;
   /** Answer every RPC as Engine does for a revoked or expired credential. */
   credentialRejected: boolean;
 }
@@ -339,6 +343,7 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
       multipleMovieName,
       multipleEpisodeName,
       recoveryCases,
+      pendingCase,
     } = hostedFixture;
     const media = options.mediaOrigin;
     const state: HostedEngineState = {
@@ -346,8 +351,18 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
       episodeSubmitted: false,
       completed: false,
       recoverySubmitted: new Set(),
+      pendingSubmitted: false,
+      pendingCompleted: false,
       credentialRejected: false,
     };
+    const pendingTransfer = (id: bigint) => ({
+      id,
+      status: state.pendingCompleted ? "COMPLETED" : "DOWNLOADING",
+      percentDone: state.pendingCompleted ? 100 : 12,
+      isFinished: state.pendingCompleted,
+      fileId: state.pendingCompleted ? fileId : undefined,
+      saveParentId: 0n,
+    });
     const calls: HostedEngineCalls = {
       folder: 0,
       playback: 0,
@@ -443,7 +458,8 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                                   },
                                 ]
                               : []),
-                            ...(state.submitted && state.completed
+                            ...((state.submitted && state.completed) ||
+                            state.pendingCompleted
                               ? [
                                   {
                                     id: fileId,
@@ -486,6 +502,12 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                       overview:
                         "A self-generated playback demo. No real account or provider transfer.",
                       rating: 8,
+                    },
+                    {
+                      id: "fixture-pending",
+                      title: pendingCase.name,
+                      year: 2026,
+                      posterUrl: `${media}/poster.svg`,
                     },
                   ],
                 }),
@@ -554,10 +576,12 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                 [
                   `${discoveryName} 2026`,
                   `${seriesName} S01E01`,
+                  `${pendingCase.name} 2026`,
                   ...recoveryCases.map(({ name }) => `${name} 2026`),
                 ].includes(query),
               );
               const isEpisode = query === `${seriesName} S01E01`;
+              const isPending = query === `${pendingCase.name} 2026`;
               const recovery = recoveryCases.find(
                 ({ name }) => query === `${name} 2026`,
               );
@@ -570,28 +594,35 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                     {
                       id: recovery
                         ? `fixture-${recovery.kind}-release`
-                        : isEpisode
-                          ? "fixture-episode-release"
-                          : "fixture-release",
+                        : isPending
+                          ? "fixture-pending-release"
+                          : isEpisode
+                            ? "fixture-episode-release"
+                            : "fixture-release",
                       title: recovery
                         ? recovery.name
-                        : isEpisode
-                          ? `${seriesName} S01E01 1080p`
-                          : `${discoveryName} 1080p`,
-                      imdbId: recovery
-                        ? ""
-                        : isEpisode
-                          ? seriesImdbId
-                          : fixtureImdbId,
+                        : isPending
+                          ? pendingCase.name
+                          : isEpisode
+                            ? `${seriesName} S01E01 1080p`
+                            : `${discoveryName} 1080p`,
+                      imdbId:
+                        recovery || isPending
+                          ? ""
+                          : isEpisode
+                            ? seriesImdbId
+                            : fixtureImdbId,
                       releaseInfo: isEpisode
                         ? { season: 1, episode: 1 }
                         : undefined,
                       indexer: "fixture",
                       link: recovery
                         ? `https://fixture.invalid/${recovery.kind}.torrent`
-                        : isEpisode
-                          ? "https://fixture.invalid/episode.torrent"
-                          : "https://fixture.invalid/movie.torrent",
+                        : isPending
+                          ? "https://fixture.invalid/pending.torrent"
+                          : isEpisode
+                            ? "https://fixture.invalid/episode.torrent"
+                            : "https://fixture.invalid/movie.torrent",
                       size: 1048576n,
                       seeders: 24n,
                     },
@@ -604,6 +635,7 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                 [
                   "https://fixture.invalid/movie.torrent",
                   "https://fixture.invalid/episode.torrent",
+                  "https://fixture.invalid/pending.torrent",
                   ...recoveryCases.map(
                     ({ kind }) => `https://fixture.invalid/${kind}.torrent`,
                   ),
@@ -630,40 +662,50 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                   return;
                 }
               }
-              if (isEpisode) state.episodeSubmitted = true;
+              const isPending =
+                url === "https://fixture.invalid/pending.torrent";
+              if (isPending) {
+                assert.ok(
+                  !state.pendingSubmitted,
+                  "Pending release submitted twice",
+                );
+                state.pendingSubmitted = true;
+              } else if (isEpisode) state.episodeSubmitted = true;
               else if (!recovery) state.submitted = true;
               response = toJsonString(
                 AddTransferResponseSchema,
                 create(AddTransferResponseSchema, {
-                  transfer: recovery
-                    ? {
-                        id: recovery.transferId,
-                        status:
-                          recovery.kind === "failed" ? "ERROR" : "COMPLETED",
-                        percentDone: recovery.kind === "failed" ? 0 : 100,
-                        isFinished: true,
-                        errorMessage:
-                          recovery.kind === "failed"
-                            ? "Generated transfer failure"
-                            : "",
-                        fileId:
-                          recovery.kind === "select-file"
-                            ? multipleFolderId
+                  transfer: isPending
+                    ? pendingTransfer(pendingCase.transferId)
+                    : recovery
+                      ? {
+                          id: recovery.transferId,
+                          status:
+                            recovery.kind === "failed" ? "ERROR" : "COMPLETED",
+                          percentDone: recovery.kind === "failed" ? 0 : 100,
+                          isFinished: true,
+                          errorMessage:
+                            recovery.kind === "failed"
+                              ? "Generated transfer failure"
+                              : "",
+                          fileId:
+                            recovery.kind === "select-file"
+                              ? multipleFolderId
+                              : undefined,
+                          saveParentId: 0n,
+                        }
+                      : {
+                          id: isEpisode ? 2n : 1n,
+                          status: state.completed ? "COMPLETED" : "DOWNLOADING",
+                          percentDone: state.completed ? 100 : 37,
+                          isFinished: state.completed,
+                          fileId: state.completed
+                            ? isEpisode
+                              ? episodeFileId
+                              : fileId
                             : undefined,
-                        saveParentId: 0n,
-                      }
-                    : {
-                        id: isEpisode ? 2n : 1n,
-                        status: state.completed ? "COMPLETED" : "DOWNLOADING",
-                        percentDone: state.completed ? 100 : 37,
-                        isFinished: state.completed,
-                        fileId: state.completed
-                          ? isEpisode
-                            ? episodeFileId
-                            : fileId
-                          : undefined,
-                        saveParentId: 0n,
-                      },
+                          saveParentId: 0n,
+                        },
                 }),
               );
             } else if (req.url === "/chill.v4.UserService/GetTransfer") {
@@ -673,43 +715,48 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                   entry.transferId === id &&
                   state.recoverySubmitted.has(entry.kind),
               );
+              const isPending =
+                id === pendingCase.transferId && state.pendingSubmitted;
               assert.ok(
                 id === 1n ||
                   (id === 2n && state.episodeSubmitted) ||
+                  isPending ||
                   (recovery && recovery.kind !== "unknown"),
               );
               response = toJsonString(
                 GetTransferResponseSchema,
                 create(GetTransferResponseSchema, {
-                  transfer: recovery
-                    ? {
-                        id,
-                        status:
-                          recovery.kind === "failed" ? "ERROR" : "COMPLETED",
-                        percentDone: recovery.kind === "failed" ? 0 : 100,
-                        isFinished: true,
-                        errorMessage:
-                          recovery.kind === "failed"
-                            ? "Generated transfer failure"
-                            : "",
-                        fileId:
-                          recovery.kind === "select-file"
-                            ? multipleFolderId
+                  transfer: isPending
+                    ? pendingTransfer(id)
+                    : recovery
+                      ? {
+                          id,
+                          status:
+                            recovery.kind === "failed" ? "ERROR" : "COMPLETED",
+                          percentDone: recovery.kind === "failed" ? 0 : 100,
+                          isFinished: true,
+                          errorMessage:
+                            recovery.kind === "failed"
+                              ? "Generated transfer failure"
+                              : "",
+                          fileId:
+                            recovery.kind === "select-file"
+                              ? multipleFolderId
+                              : undefined,
+                          saveParentId: 0n,
+                        }
+                      : {
+                          id,
+                          status: state.completed ? "COMPLETED" : "DOWNLOADING",
+                          percentDone: state.completed ? 100 : 37,
+                          isFinished: state.completed,
+                          fileId: state.completed
+                            ? id === 2n
+                              ? episodeFileId
+                              : fileId
                             : undefined,
-                        saveParentId: 0n,
-                      }
-                    : {
-                        id,
-                        status: state.completed ? "COMPLETED" : "DOWNLOADING",
-                        percentDone: state.completed ? 100 : 37,
-                        isFinished: state.completed,
-                        fileId: state.completed
-                          ? id === 2n
-                            ? episodeFileId
-                            : fileId
-                          : undefined,
-                        saveParentId: 0n,
-                      },
+                          saveParentId: 0n,
+                        },
                 }),
               );
             } else {

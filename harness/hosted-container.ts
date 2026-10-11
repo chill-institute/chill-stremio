@@ -53,6 +53,7 @@ const checks = {
   noStateDirectory: false,
   health: false,
   credentialManifest: false,
+  statusClipServed: false,
   removedRoutesAbsent: false,
   engineFailureSanitized: false,
   credentialAbsentFromLogs: false,
@@ -91,6 +92,14 @@ try {
     const r=await fetch(base+"/manifest.json");
     if(r.status!==200 || (await r.json()).id!=="institute.chill.library")process.exit(1);`);
   checks.credentialManifest = true;
+  // Engine is unreachable, so this also shows clips never depend on it.
+  await inside(`
+    const base="http://127.0.0.1:7000/s/"+process.env.CHILL_FAKE_CREDENTIAL+"/notice/pending";
+    const playlist=await fetch(base+".m3u8");
+    const segment=await fetch(base+".ts");
+    const bytes=new Uint8Array(await segment.arrayBuffer());
+    if(playlist.status!==200 || !(await playlist.text()).includes("#EXT-X-ENDLIST") || segment.status!==200 || segment.headers.get("content-type")!=="video/mp2t" || bytes.length===0 || bytes.length%188!==0 || bytes[0]!==0x47)process.exit(1);`);
+  checks.statusClipServed = true;
   await inside(`
     for (const path of ["/i/${"x".repeat(43)}/manifest.json","/api/installations","/s/not-a-credential/manifest.json"]) {
       if((await fetch("http://127.0.0.1:7000"+path)).status!==404)process.exit(1);

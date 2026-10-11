@@ -11,6 +11,7 @@ import {
   decoded,
   redact,
   seekRenderedDestination,
+  statusClip,
   verifySubtitleControls,
 } from "./browser.ts";
 import { startFixture } from "./fixture.ts";
@@ -21,6 +22,7 @@ import {
   hostedFixture,
   type HostedEngineCalls,
   listen,
+  movieTarget,
   startHostedEngine,
   startHostedMedia,
 } from "./hosted-fixture.ts";
@@ -38,12 +40,17 @@ const {
   recoveryCases,
   multipleMovieName,
   multipleEpisodeName,
+  pendingCase,
 } = hostedFixture;
+// Shortened from the production limit so the smoke still crosses one client
+// manifest timeout and retry before the pending clip.
+const pendingLimitMs = 45_000;
 const publicAdapterOrigin = "https://stremio.chill.institute";
 const manifestUrl = `${publicAdapterOrigin}/s/${credential}/manifest.json`;
 let videos: string[] = [];
 const endpoints: string[] = [];
 const cleanupErrors: string[] = [];
+const proxyFailures: string[] = [];
 const runs: {
   run: number;
   status: string;
@@ -79,6 +86,34 @@ const maskAddonUrl = (page: Page) =>
     content:
       'input[placeholder="Paste addon URL"] { -webkit-text-security: disc; }',
   });
+
+/** Opens a discovery title's detail page and returns its visible release row. */
+async function openRelease(page: Page, name: string, target: string) {
+  await page
+    .getByText(name, { exact: true })
+    .filter({ visible: true })
+    .first()
+    .click();
+  const release = page
+    .getByText("Download to put.io", { exact: true })
+    .filter({ visible: true });
+  const previewShow = page
+    .getByRole("link")
+    .and(
+      page.locator(
+        `a[href^="#/detail/"][href*="${encodeURIComponent(target)}"]`,
+      ),
+    )
+    .filter({ visible: true })
+    .last();
+  await expect(previewShow.or(release).first()).toBeVisible();
+  if (await previewShow.isVisible())
+    await previewShow.click({ timeout: 1000 }).catch(async () => {
+      await expect(release).toBeVisible();
+    });
+  await expect(release).toBeVisible();
+  return release;
+}
 
 /** Opens a put.io library video from the current discover view and plays it. */
 async function openLibraryFile(page: Page, name: string, fileId: bigint) {
@@ -139,6 +174,7 @@ const program = Effect.gen(function* () {
       current: await startHostedAdapter({
         engineBaseUrl: engine.origin,
         webOrigin: setupServer.origin,
+        selectionPendingMs: pendingLimitMs,
       }),
     })),
     (server) => Effect.promise(() => server.current.close()),
@@ -146,7 +182,16 @@ const program = Effect.gen(function* () {
   endpoints.push(adapter.current.origin);
   const browser = yield* Effect.acquireRelease(
     Effect.tryPromise(() =>
-      chromium.launch({ channel: "chromium", headless: true, timeout: 20000 }),
+      chromium.launch({
+        channel: "chromium",
+        headless: true,
+        timeout: 20000,
+        // The browser follows a fulfilled redirect without routing it again;
+        // the public adapter host must stay unreachable outside the proxy.
+        args: [
+          `--host-resolver-rules=MAP ${new URL(publicAdapterOrigin).hostname} ~NOTFOUND`,
+        ],
+      }),
     ),
     (instance) =>
       Effect.tryPromise(async () => {
@@ -173,7 +218,9 @@ const program = Effect.gen(function* () {
           size: { width: 1280, height: 800 },
         },
       });
+      let closing = false;
       const abort = () => {
+        closing = true;
         void context.close().catch(() => {});
       };
       signal.addEventListener("abort", abort, { once: true });
@@ -185,27 +232,31 @@ const program = Effect.gen(function* () {
           );
       });
       let credentialLeak = false;
-      let pendingMediaRequested = false;
       let episodeMediaRequested = false;
       const noticeRequests = new Set<string>();
       const playlistRequests = new Set<string>();
+      const playRequests = new Map<string, number>();
       context.on("request", (request) => {
-        const pathname = new URL(request.url()).pathname;
+        const { origin, pathname } = new URL(request.url());
+        if (
+          request.url().includes(credential) &&
+          ![publicAdapterOrigin, adapter.current.origin].includes(origin)
+        )
+          credentialLeak = true;
         if (request.method() === "GET" && pathname.endsWith(".m3u8"))
           playlistRequests.add(pathname);
         if (request.method() === "GET" && pathname.includes("/notice/"))
           noticeRequests.add(pathname.split("/").at(-1) ?? "");
+        if (request.method() === "GET" && pathname.includes("/play/"))
+          playRequests.set(pathname, (playRequests.get(pathname) ?? 0) + 1);
         if (
           request.url() === `${media.origin}/hls/episode1/master.m3u8` &&
           request.method() === "GET"
         )
           episodeMediaRequested = true;
-        if (
-          new URL(request.url()).pathname.endsWith("/notice/pending.mp4") &&
-          request.method() === "GET"
-        )
-          pendingMediaRequested = true;
       });
+      const pendingNoticeRequested = () =>
+        [...noticeRequests].some((name) => name.startsWith("pending."));
       // Stremio prints the add-on URL in its install dialog; hide any element
       // showing a credential so screenshots and the recording never contain it.
       await context.addInitScript(() => {
@@ -241,16 +292,11 @@ const program = Effect.gen(function* () {
         const url = new URL(req.url());
         const headers = await req.allHeaders();
         if (
-          url.origin !== publicAdapterOrigin &&
+          ![publicAdapterOrigin, adapter.current.origin].includes(url.origin) &&
           (url.href.includes(credential) ||
             JSON.stringify(headers).includes(credential))
         )
           credentialLeak = true;
-        if (
-          url.pathname.endsWith("/notice/pending.mp4") &&
-          req.method() === "GET"
-        )
-          pendingMediaRequested = true;
         if (
           url.origin === "https://v3-cinemeta.strem.io" &&
           url.pathname === `/meta/movie/${hostedFixture.fixtureImdbId}.json`
@@ -285,41 +331,54 @@ const program = Effect.gen(function* () {
           const forwarded: Record<string, string> = {};
           for (const name of ["range"])
             if (headers[name]) forwarded[name] = headers[name];
-          const response = await fetch(
-            `${adapter.current.origin}${url.pathname}${url.search}`,
-            {
-              method: req.method(),
-              headers: forwarded,
-              body: req.postData() ?? undefined,
-              redirect: "manual",
-              signal: AbortSignal.timeout(10000),
-            },
-          );
-          const contentType =
-            response.headers.get("content-type") ?? "application/octet-stream";
-          const body = Buffer.from(await response.arrayBuffer());
-          const responseHeaders: Record<string, string> = {
-            "content-type": contentType,
-            "access-control-allow-origin": "*",
-          };
-          for (const name of [
-            "location",
-            "cache-control",
-            "content-range",
-            "accept-ranges",
-            "referrer-policy",
-          ])
-            if (response.headers.has(name))
-              responseHeaders[name] = response.headers.get(name) ?? "";
-          return route.fulfill({
-            status: response.status,
-            headers: responseHeaders,
-            body: contentType.includes("application/json")
-              ? body
-                  .toString("utf8")
-                  .replaceAll(adapter.current.origin, publicAdapterOrigin)
-              : body,
-          });
+          // Selected media waits up to one 25-second HLS window.
+          const waits = /\/(play|status)\//.test(url.pathname);
+          try {
+            const response = await fetch(
+              `${adapter.current.origin}${url.pathname}${url.search}`,
+              {
+                method: req.method(),
+                headers: forwarded,
+                body: req.postData() ?? undefined,
+                redirect: "manual",
+                signal: AbortSignal.timeout(waits ? 35000 : 10000),
+              },
+            );
+            const contentType =
+              response.headers.get("content-type") ??
+              "application/octet-stream";
+            const body = Buffer.from(await response.arrayBuffer());
+            const responseHeaders: Record<string, string> = {
+              "content-type": contentType,
+              "access-control-allow-origin": "*",
+            };
+            for (const name of [
+              "location",
+              "cache-control",
+              "content-range",
+              "accept-ranges",
+              "referrer-policy",
+            ])
+              if (response.headers.has(name))
+                responseHeaders[name] = response.headers.get(name) ?? "";
+            return await route.fulfill({
+              status: response.status,
+              headers: responseHeaders,
+              body: contentType.includes("application/json")
+                ? body
+                    .toString("utf8")
+                    .replaceAll(adapter.current.origin, publicAdapterOrigin)
+                : body,
+            });
+          } catch (error) {
+            // Closing the page abandons requests still in flight; fulfilling
+            // one the client already cancelled does not throw.
+            if (!closing)
+              proxyFailures.push(
+                safeError(`${req.method()} ${url.pathname}: ${String(error)}`),
+              );
+            return route.abort().catch(() => {});
+          }
         }
         return [
           web.origin,
@@ -631,7 +690,7 @@ const program = Effect.gen(function* () {
         await release.click();
         await expect.poll(() => engine.calls.transfer).toBe(1);
         await page.waitForTimeout(2500);
-        assert.equal(pendingMediaRequested, false);
+        assert.equal(pendingNoticeRequested(), false);
         assert.equal(
           await page
             .locator("video")
@@ -666,9 +725,9 @@ const program = Effect.gen(function* () {
         );
         assert.ok(playlistRequests.has(playPath));
         assert.equal(
-          pendingMediaRequested,
+          pendingNoticeRequested(),
           false,
-          "Pending status clips must never be requested",
+          "A download finishing within the limit must not show the pending clip",
         );
         assert.equal(
           engine.calls.transfer,
@@ -692,6 +751,7 @@ const program = Effect.gen(function* () {
         adapter.current = await startHostedAdapter({
           engineBaseUrl: engine.origin,
           webOrigin: setupServer.origin,
+          selectionPendingMs: pendingLimitMs,
           port: Number(new URL(originalOrigin).port),
         });
         assert.equal(adapter.current.origin, originalOrigin);
@@ -767,35 +827,22 @@ const program = Effect.gen(function* () {
           "Generated Engine request contract failed",
         );
         const recoveryEvidence = [];
+        const errorLayer = page
+          .getByText(
+            /Video is not supported|Failed to fetch|error occurred|Could not play/i,
+          )
+          .filter({ visible: true });
         for (const recovery of recoveryCases) {
           const before: number = engine.calls.transfer;
           await page.goto(
             `${web.origin}/#/discover/${encodeURIComponent(manifestUrl)}/movie/discover-movies`,
           );
-          await page
-            .getByText(recovery.name, { exact: true })
-            .filter({ visible: true })
-            .first()
-            .click();
-          const recoveryRelease = page
-            .getByText("Download to put.io", { exact: true })
-            .filter({ visible: true });
-          const recoveryTarget = `chill:movie:${Buffer.from(`fixture-${recovery.kind}`).toString("base64url")}`;
-          const previewShow = page
-            .getByRole("link")
-            .and(
-              page.locator(
-                `a[href^="#/detail/"][href*="${encodeURIComponent(recoveryTarget)}"]`,
-              ),
-            )
-            .filter({ visible: true })
-            .last();
-          await expect(previewShow.or(recoveryRelease).first()).toBeVisible();
-          if (await previewShow.isVisible())
-            await previewShow.click({ timeout: 1000 }).catch(async () => {
-              await expect(recoveryRelease).toBeVisible();
-            });
-          await expect(recoveryRelease).toBeVisible();
+          const recoveryTarget = movieTarget(`fixture-${recovery.kind}`);
+          const recoveryRelease = await openRelease(
+            page,
+            recovery.name,
+            recoveryTarget,
+          );
           const recoveryPath: string = `${base}/play/movie/${encodeURIComponent(recoveryTarget)}/fixture-${recovery.kind}-release.m3u8`;
           for (const method of ["HEAD", "OPTIONS"]) {
             const probe: Response = await fetch(
@@ -814,41 +861,96 @@ const program = Effect.gen(function* () {
             "Recovery browse, metadata, streams, HEAD and OPTIONS must remain read-only",
           );
           await recoveryRelease.click();
-          await expect.poll(() => engine.calls.transfer).toBe(before + 1);
-          await expect(
-            page
-              .getByText(
-                /Video is not supported|Failed to fetch|error occurred|Could not play/i,
-              )
-              .filter({ visible: true })
-              .first(),
-          ).toBeVisible({ timeout: 15000 });
-          assert.equal(
-            noticeRequests.size,
-            0,
-            "HLS errors must never play status videos",
+          const clip = await statusClip(
+            page,
+            `${directory}/${recovery.kind}-clip.png`,
           );
-          await page.screenshot({
-            path: `${directory}/${recovery.kind}-error.png`,
-          });
+          assert.equal(await errorLayer.count(), 0, "Player rendered an error");
+          assert.ok(
+            noticeRequests.has(`${recovery.kind}.m3u8`) &&
+              noticeRequests.has(`${recovery.kind}.ts`),
+            `The ${recovery.kind} status clip was not loaded`,
+          );
+          assert.equal(
+            engine.calls.transfer,
+            before + 1,
+            "Selection must submit exactly once",
+          );
+          await expect(page).toHaveURL(/#\/detail\//, { timeout: 20000 });
+          await expect(recoveryRelease).toBeVisible();
           if (recovery.kind !== "unknown") {
             const replay = await statusReplay(recovery.transferId);
-            assert.equal(replay.status, 409);
-            assert.deepEqual(await replay.json(), { error: recovery.kind });
+            assert.equal(replay.status, 302);
+            assert.equal(
+              replay.headers.get("location"),
+              `${adapter.current.origin}${base}/notice/${recovery.kind}.m3u8`,
+            );
           }
           assert.equal(
             engine.calls.transfer,
             before + 1,
-            "Status reads must not duplicate a transfer",
+            "Status reads and the ended clip must not duplicate a transfer",
           );
           recoveryEvidence.push({
             state: recovery.kind,
-            playerErrorRendered: true,
-            statusVideoRequested: false,
+            statusClipRequested: true,
+            statusClipDecoded: clip,
+            returnedToStreams: true,
             statusReadOnly: true,
             readOnlyProbes: ["HEAD", "OPTIONS"],
           });
         }
+        const pendingBefore: number = engine.calls.transfer;
+        await page.goto(
+          `${web.origin}/#/discover/${encodeURIComponent(manifestUrl)}/movie/discover-movies`,
+        );
+        const pendingTarget = movieTarget("fixture-pending");
+        const pendingPath = `${base}/play/movie/${encodeURIComponent(pendingTarget)}/fixture-pending-release.m3u8`;
+        const pendingRelease = await openRelease(
+          page,
+          pendingCase.name,
+          pendingTarget,
+        );
+        await pendingRelease.click();
+        await expect.poll(() => engine.calls.transfer).toBe(pendingBefore + 1);
+        await page.waitForTimeout(2500);
+        assert.equal(pendingNoticeRequested(), false);
+        // The player keeps waiting through manifest timeouts until the limit.
+        const pendingClip = await statusClip(
+          page,
+          `${directory}/pending-clip.png`,
+          pendingLimitMs + 45000,
+        );
+        assert.ok(
+          noticeRequests.has("pending.m3u8") &&
+            noticeRequests.has("pending.ts"),
+          "The pending status clip was not loaded",
+        );
+        const pendingSelections = playRequests.get(pendingPath) ?? 0;
+        assert.ok(
+          pendingSelections >= 2,
+          "The client did not retry the selected URL while waiting",
+        );
+        await expect(page).toHaveURL(/#\/detail\//, { timeout: 20000 });
+        engine.state.pendingCompleted = true;
+        await pendingRelease.click();
+        const pendingPlayback = await decoded(
+          page,
+          { ...fixture, origin: web.origin },
+          "movie",
+          `${directory}/pending-decoded.png`,
+        );
+        assert.equal(
+          engine.calls.transfer,
+          pendingBefore + 1,
+          "Reselecting a pending release must not submit again",
+        );
+        const pendingStatus = await statusReplay(pendingCase.transferId);
+        assert.equal(pendingStatus.status, 302);
+        assert.equal(
+          pendingStatus.headers.get("location"),
+          `${media.origin}/hls/movie/master.m3u8`,
+        );
         await page.goto(
           `${web.origin}/#/discover/${encodeURIComponent(manifestUrl)}/movie/library`,
         );
@@ -869,7 +971,7 @@ const program = Effect.gen(function* () {
         assert.ok(playlistRequests.has("/hls/episode1/master.m3u8"));
         assert.equal(
           engine.calls.transfer,
-          5,
+          6,
           "Choosing a file from the library must not submit",
         );
         await page.goto(`${web.origin}/#/`);
@@ -905,10 +1007,30 @@ const program = Effect.gen(function* () {
             signal: AbortSignal.timeout(10000),
           },
         );
-        assert.equal(rejectedPlay.status, 409);
-        assert.deepEqual(await rejectedPlay.json(), { error: "reconnect" });
-        assert.ok(engine.calls.unauthenticated > 0);
-        assert.equal(engine.calls.transfer, 5);
+        assert.equal(rejectedPlay.status, 302);
+        const reconnectClip = rejectedPlay.headers.get("location") ?? "";
+        assert.equal(
+          reconnectClip,
+          `${adapter.current.origin}${base}/notice/reconnect.m3u8`,
+        );
+        const rejectedReads = engine.calls.unauthenticated;
+        for (const clipUrl of [
+          reconnectClip,
+          reconnectClip.replace(/\.m3u8$/, ".ts"),
+        ]) {
+          const clipResponse = await fetch(clipUrl, {
+            signal: AbortSignal.timeout(10000),
+          });
+          assert.equal(clipResponse.status, 200);
+          await clipResponse.arrayBuffer();
+        }
+        assert.ok(rejectedReads > 0);
+        assert.equal(
+          engine.calls.unauthenticated,
+          rejectedReads,
+          "Status clips must not contact Engine",
+        );
+        assert.equal(engine.calls.transfer, 6);
         assert.equal(
           engine.calls.rejected,
           0,
@@ -919,6 +1041,7 @@ const program = Effect.gen(function* () {
           false,
           "Recovery leaked the generated credential",
         );
+        assert.deepEqual(proxyFailures, [], "Adapter proxy requests failed");
         runs.push({
           run,
           status: "passed",
@@ -947,11 +1070,20 @@ const program = Effect.gen(function* () {
             pendingPlayerLoading: true,
             pendingNoticeRequested: false,
             automaticPlayback,
+            pendingLimit: {
+              limitMs: pendingLimitMs,
+              selectedUrlRequests: pendingSelections,
+              statusClipDecoded: pendingClip,
+              returnedToStreams: true,
+              reselectedWithoutSubmission: true,
+              decoded: pendingPlayback,
+            },
             statusReadAcrossRestart: true,
             stayedInStremio: true,
             exactlyOneTransferPerSelection: true,
             completedDownloadInLibrary: true,
             rejectedCredentialReconnect: true,
+            reconnectClipServedWithoutEngine: true,
             credentialConfinedToAdapter: true,
             hlsPlaylistsRequested: [...playlistRequests].filter((path) =>
               path.startsWith("/hls/"),
@@ -997,14 +1129,15 @@ const program = Effect.gen(function* () {
       } finally {
         signal.removeEventListener("abort", abort);
         const recording = page.video();
+        closing = true;
         await context.close();
         if (recording) videos.push(await recording.path());
       }
-    }).pipe(Effect.timeout("5 minutes"));
+    }).pipe(Effect.timeout("7 minutes"));
   }
 }).pipe(
   Effect.scoped,
-  Effect.timeout("8 minutes"),
+  Effect.timeout("10 minutes"),
   Effect.catch((error) =>
     Effect.sync(() => {
       failure = safeError(error);
@@ -1037,6 +1170,7 @@ const program = Effect.gen(function* () {
             browserClosed,
             videos,
             cleanupErrors,
+            proxyFailures,
             calls,
             runs,
           },
