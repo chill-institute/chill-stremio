@@ -28,11 +28,12 @@ never as `Authorization`. It keeps no database, key, installation registry or
 management API; chill-web issues links. Catalog, metadata, stream listing, HEAD
 and OPTIONS stay read-only; consuming a selected media URL with GET submits one
 transfer, reused in memory for 60 seconds, and a lost submission response is
-never retried. Engine `401`/`403`
-becomes the reconnect notice. `mise run hosted:smoke` is fake-only, including its
-recording. Status clips are generated at setup/build time; runtime only loads
-them. Redact credentials from logs, errors, receipts and recordings, and
-suppress sensitive paths at ingress.
+never retried. HLS terminal states, and waits past the four-minute pending limit
+or an HLS status URL's fifth redirect, redirect to status clips under `/notice/`,
+which never call Engine. Engine `401`/`403` becomes the reconnect notice.
+`mise run hosted:smoke` is fake-only, including its recording. Status clips are
+generated at setup/build time; runtime only loads them. Redact credentials from
+logs, errors, receipts and recordings, and suppress sensitive paths at ingress.
 
 ## Proof map
 
@@ -55,7 +56,9 @@ Gaps:
 - Android TV lanes have no CI or declared remote runner. Owner: operator.
 - Playback lanes run in CI only on manual dispatch, so none gates PRs or `main`;
   `hosted:smoke` gates only image publication. Owner: chill-institute/chill-stremio.
-- Hosted desktop terminal states are unproven: Linux client 1.2.0 never shows load failures, and 1.2.2 fails Next Video ([result](./docs/NATIVE-DESKTOP.md#current-linux-result)). Owner: chill-institute/chill-stremio.
+- The desktop lane stays on Linux client 1.2.0 because 1.2.2 fails Next Video ([result](./docs/NATIVE-DESKTOP.md#current-linux-result)); status clips are unproven on 1.2.2. Owner: chill-institute/chill-stremio.
+- The Web smoke proves the pending clip with a 45-second limit; the four-minute production limit has no browser run. Owner: chill-institute/chill-stremio.
+- The desktop lane never reaches the pending clip, which libmpv gets at an HLS status URL's fifth redirect, about 150 seconds in; selecting the release again there submits another transfer. Owner: chill-institute/chill-stremio.
 - ARM64 desktop lanes have no CI runner, and their last evidence predates the current GNOME runtime. Owner: operator.
 - No macOS or Windows native lane. Owner: chill-institute/chill-stremio.
 - `hosted:live` fakes Engine's credential check; only `hosted:public` with an

@@ -150,7 +150,9 @@ item holds:
   GETs and at least one stream listing: browsing stays read-only.
 - Selecting the row consumes the media URL and submits exactly one transfer.
   The player stays loading without a status clip; completing the fixture transfer
-  must decode the real movie in that same player without another selection.
+  must decode the real movie in that same player without another selection. The
+  transfer completes before libmpv would reach the pending clip, so that clip is
+  untested here.
 - put.io library lists the completed file. The harness replays HEAD and reads the
   transfer's status URL before and after restarting the adapter on the same
   port; the transfer count stays one. The file's detail page plays it with intact
@@ -161,13 +163,13 @@ item holds:
   Recovery returns to the source list, restarts the owned client with the same
   profile and reselects the file; recovered decoded pixels are required. `playbackContinuedAfterCut` records whether the frame
   captured after the cut still showed decoded video.
-- Failed, unknown and multi-file releases each submit once. The player renders
-  `Stream failed to load` without decoded video, and the client requests no
-  status clip. The lane counts requests but not response codes; the Web smoke
-  checks that these selected HLS URLs answer 409. Reading the failed and
-  multi-file status URLs returns the same 409 JSON and does not submit. The
-  chosen second file of the multi-file download decodes as the episode fixture
-  from the library.
+- Failed, unknown and multi-file releases each submit once. The client loads
+  the matching HLS status clip's playlist and segment, libmpv logs a 1280×720
+  video output, the guest reads `Download` and `failed`, `unknown` or `ready` in
+  the clip's headline band on a frame without fixture video, and the source list
+  returns when the clip ends. Reading the failed and multi-file status URLs
+  redirects to the same clip and does not submit. The chosen second file of the
+  multi-file download decodes as the episode fixture from the library.
 - After the fixture Engine starts rejecting the credential with `401`, the
   client's put.io library shows the reconnect row.
 - The generated Engine saw exactly four transfers and rejected no requests.
@@ -196,47 +198,42 @@ audio switching; the full `hosted` mode covers the first two.
 
 On 2026-10-11, manual CI on GitHub's x86_64 `ubuntu-26.04` runner used client
 1.2.0 (`7580e7db…`) and GNOME runtime 50.5 (`0bd50910…`).
-[Run 38136357528](https://github.com/chill-institute/chill-stremio/actions/runs/38136357528)
-and
-[run 38142170444](https://github.com/chill-institute/chill-stremio/actions/runs/38142170444)
-each recorded:
+[Run 38160488734](https://github.com/chill-institute/chill-stremio/actions/runs/38160488734)
+passed all three modes in both fresh trials, as did
+[run 38156337283](https://github.com/chill-institute/chill-stremio/actions/runs/38156337283)
+before the clip check also required the `Download` headline word:
 
-- Fixture mode passed both fresh trials, as in runs
-  [38133675903](https://github.com/chill-institute/chill-stremio/actions/runs/38133675903)
-  and [38134063422](https://github.com/chill-institute/chill-stremio/actions/runs/38134063422)
-  that day: decoded advancing video, PCM audio, seeking, subtitles on/off, next
-  episode, delayed readiness, restart-assisted interruption recovery and
+- Fixture mode: decoded advancing video, PCM audio, seeking, subtitles on/off,
+  next episode, delayed readiness, restart-assisted interruption recovery and
   cleanup.
-- Hosted HLS mode passed both fresh trials.
-- Hosted mode was blocked in both trials only by the three terminal-state
-  scenarios. Discovery, automatic playback, library playback with captions and
-  PCM audio, the paced cut with restart-assisted recovery, exact-file playback,
-  the reconnect row, four transfers and cleanup all passed. Each failed, unknown
-  and multi-file selection submitted once and no status clip was requested,
-  but the player stayed on its loading screen, where client 1.2.2 shows the
-  error.
+- Hosted mode: discovery, automatic playback, library playback with captions
+  and PCM audio, the paced cut with restart-assisted recovery, the failed,
+  unknown and multi-file status clips decoded in libmpv with a return to the
+  source list, exact-file playback, the reconnect row, four transfers and
+  cleanup.
+- Hosted HLS mode.
 
-Between those runs,
-[run 38141014977](https://github.com/chill-institute/chill-stremio/actions/runs/38141014977)
-of the same source was blocked in three trials because a client launch logged
+Before status clips, client 1.2.0 stayed on its loading screen when those
+selections answered `409`.
+[Run 38141014977](https://github.com/chill-institute/chill-stremio/actions/runs/38141014977)
+was blocked in three trials because a client launch logged
 `Failed to open display`; a later launch in the same trial reached the Xvfb
 display.
 
-Client 1.2.2 (`0496ce1d…`), Flathub's current build, shows
-`Stream failed to load` for those selections. Both hosted modes passed both
-fresh trials with it in
+Client 1.2.2 (`0496ce1d…`), Flathub's current build, passed both hosted modes in
 [run 38136421172](https://github.com/chill-institute/chill-stremio/actions/runs/38136421172)
 and
-[run 38138963135](https://github.com/chill-institute/chill-stremio/actions/runs/38138963135).
-In three of those runs' four fixture trials, however, Next Video never loaded
-the next episode into libmpv. The lane stays on 1.2.0 until one client passes
-all three modes.
+[run 38138963135](https://github.com/chill-institute/chill-stremio/actions/runs/38138963135),
+before status clips. In three of those runs' four fixture trials, however, Next
+Video never loaded the next episode into libmpv. The lane stays on 1.2.0 until
+one client passes all three modes.
 
 In every hosted trial the frame captured after the paced cut still decoded
 (`playbackContinuedAfterCut`); the recovery evidence is the restart-assisted
 reselection, not a visible mid-stream failure. Hosted mode recorded one play
-request per selection; the adapter's 60-second reuse window would keep a
-reopen to one transfer.
+request for the movie selection and two for each terminal selection, which
+loads its clip playlist twice; the adapter's reuse window kept each selection
+to one transfer.
 
 ARM64 has no CI runner. Its client pin `3795122e…` (1.2.0) is still signed on
 Flathub. Both fresh ARM64 fixture trials passed on 2026-09-21 and both hosted

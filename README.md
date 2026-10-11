@@ -24,15 +24,16 @@ For a public listing, use the [public manifest](https://stremio.chill.institute/
 - Browse movies and shows, search **Releases**, or open a movie or episode to
   see chill release results.
 - Select **Download to put.io** on a release. Playback waits for the download
-  and starts when a single video is ready. Completed downloads appear in
+  and starts when a single video is ready. If the download fails, needs a file
+  choice or is still running after a few minutes, the player shows a short
+  clip that says what to do next. Completed downloads appear in
   **put.io library**, where you can choose files from multi-file downloads.
   Selecting the same release again later starts another download.
 
 The add-on is in early access. Web HLS playback, subtitles and audio switching
 have been tested. On Linux x86_64, the Flathub Stremio app 1.2.0 passes the
-desktop playback, caption and reconnect checks, but failed, unknown and
-multi-file downloads stay on its loading screen; app 1.2.2 shows an error for
-them, but its Next Video failed testing. macOS, Windows and Android TV playback
+desktop playback, caption, status clip and reconnect checks; app 1.2.2 failed
+Next Video testing. macOS, Windows and Android TV playback
 remain unverified. See [desktop support](./docs/NATIVE-DESKTOP.md) and
 [Android TV support](./docs/NATIVE-ANDROID.md) before relying on those clients.
 
