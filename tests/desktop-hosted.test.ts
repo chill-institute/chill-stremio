@@ -1,14 +1,26 @@
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
+import { Effect, Schema } from "effect";
+import { hostedFixture, movieTarget } from "../harness/hosted-fixture.ts";
 import {
   hostedRequired,
   hostedRunPassed,
   type HostedRunProof,
 } from "../harness/native/desktop-hosted-contract.ts";
+import { startHostedDesktop } from "../harness/native/desktop-hosted.ts";
 import {
   desktopTextMatches,
   desktopTextTarget,
 } from "../harness/native/desktop-ui.ts";
+import { statusMessages, type StatusMediaKind } from "../src/status-media.ts";
+
+const Streams = Schema.Struct({
+  streams: Schema.Array(Schema.Struct({ url: Schema.String })),
+});
+const StageReply = Schema.Struct({
+  ok: Schema.Boolean,
+  error: Schema.optional(Schema.String),
+});
 
 const word = (text: string, x: string, confidence = "96") =>
   `5\t1\t3\t1\t1\t1\t${x}\t377\t66\t13\t${confidence}\t${text}`;
@@ -65,3 +77,55 @@ test("hosted desktop trials need every scenario plus adapter-side proof", () => 
   assert.ok(hostedRequired.includes("exact-file-playback"));
   assert.ok(hostedRequired.includes("one-transfer-per-selection"));
 });
+
+test("hosted desktop terminal stages accept the adapter's HLS 409 contract", async () => {
+  const statusMedia = new Map(
+    (Object.keys(statusMessages) as StatusMediaKind[]).map((kind) => [
+      kind,
+      Buffer.from("fixture-status-video"),
+    ]),
+  );
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const hosted = yield* startHostedDesktop(
+        "http://127.0.0.1:9",
+        "http://127.0.0.1:3000",
+        false,
+        statusMedia,
+      );
+      const base = hosted.manifestUrl.replace(/\/manifest\.json$/, "");
+      const stage = async (name: string, kind: string) => {
+        const response = await fetch(`${hosted.controlUrl}/stage`, {
+          method: "POST",
+          body: JSON.stringify({ stage: name, kind }),
+        });
+        return Schema.decodeUnknownSync(StageReply)(await response.json());
+      };
+      yield* Effect.promise(async () => {
+        for (const { kind } of hostedFixture.recoveryCases) {
+          assert.deepEqual(await stage("recovery-detail", kind), { ok: true });
+          const listing = await fetch(
+            `${base}/stream/movie/${encodeURIComponent(movieTarget(`fixture-${kind}`))}.json`,
+          );
+          const [row] = Schema.decodeUnknownSync(Streams)(
+            await listing.json(),
+          ).streams;
+          assert.ok(row);
+          const selected = await fetch(row.url);
+          assert.equal(selected.status, 409);
+          assert.deepEqual(await selected.json(), { error: kind });
+          assert.deepEqual(await stage("recovery-selected", kind), {
+            ok: true,
+          });
+          assert.deepEqual(await stage("recovery-rendered", kind), {
+            ok: true,
+          });
+        }
+        await (await fetch(`${base}/notice/failed.mp4`)).arrayBuffer();
+        const clip = await stage("recovery-rendered", "failed");
+        assert.equal(clip.ok, false);
+        assert.match(clip.error ?? "", /^Client requested a status clip/);
+      });
+    }).pipe(Effect.scoped),
+  );
+}, 60_000);

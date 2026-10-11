@@ -476,6 +476,25 @@ const evaluateHosted = async (
       "failed",
       "Interrupted cut or recovered library-file pixels were not observed",
     );
+  const statusClips =
+    Object.keys(hosted.proxy.notice).length > 0 || log.noticeVo;
+  for (const kind of ["failed", "unknown", "select-file"]) {
+    const error = await frameOf(`${runDirectory}/${kind}-error.png`);
+    if (
+      !hls &&
+      (!error ||
+        (error.kind && error.intact) ||
+        !stage("recovery-selected", kind) ||
+        !stage("recovery-rendered", kind) ||
+        statusClips)
+    )
+      setScenario(
+        scenarios,
+        `recovery-${kind}`,
+        "failed",
+        "Terminal selection did not show a player error after one submission without a status clip",
+      );
+  }
   if (
     !hls &&
     (!decoded(secondFile, "episode1") || !stage("select-file-playing"))

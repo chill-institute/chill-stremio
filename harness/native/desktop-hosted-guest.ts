@@ -71,21 +71,24 @@ const requireString = (reply: StageReply, key: string) => {
     throw new Error(`Harness stage reply lacks ${key}`);
   return value;
 };
-/** The generated status clip shows its headline in white at 1280×720. */
-const waitForNotice = async (name: string, word: string) => {
+/** The player's error layer centres the client's "Stream failed to load". */
+const waitForPlayerError = async (name: string) => {
   for (let attempt = 0; attempt < 8; attempt++) {
     run("xdotool", ["mousemove", "640", "300"]);
     await wait(2500);
-    const matches = desktopTextMatches(guest.visibleText(name), word, {
-      left: 200,
-      top: 200,
-      right: 1080,
-      bottom: 520,
-    });
-    if (matches.length > 0 && !guest.sampleKind(`${directory}/${name}.png`))
-      return;
+    const text = guest.visibleText(name);
+    const rendered = ["failed", "load"].every(
+      (word) =>
+        desktopTextMatches(text, word, {
+          left: 200,
+          top: 200,
+          right: 1080,
+          bottom: 520,
+        }).length > 0,
+    );
+    if (rendered && !guest.sampleKind(`${directory}/${name}.png`)) return;
   }
-  throw new Error(`Status clip with ${word} was not rendered`);
+  throw new Error("Player did not render a load failure");
 };
 const previewBounds = { left: 880, top: 90, right: 1270, bottom: 700 };
 const routes = {
@@ -243,8 +246,8 @@ try {
       ["library-playback"],
     );
     await stopApp(app);
+    // Selected HLS rows answer terminal states with HTTP 409, never a status clip.
     for (const kind of ["failed", "unknown", "select-file"] as const) {
-      const word = kind === "select-file" ? "ready" : kind;
       let fileId = "";
       await step(
         `recovery-${kind}`,
@@ -254,13 +257,17 @@ try {
             "movieId",
           );
           app = startApp(detailRoute("movie", target));
-          await selectStream(`${kind}-sources`, "Download");
-          fileId = requireString(
-            await stage("recovery-selected", { kind }),
-            "fileId",
-          );
-          await waitForNotice(`${kind}-notice`, word);
-          await stopApp(app);
+          try {
+            await selectStream(`${kind}-sources`, "Download");
+            fileId = requireString(
+              await stage("recovery-selected", { kind }),
+              "fileId",
+            );
+            await waitForPlayerError(`${kind}-error`);
+            await stage("recovery-rendered", { kind });
+          } finally {
+            await stopApp(app);
+          }
         },
         ["selected-download"],
       );
@@ -269,10 +276,13 @@ try {
           "exact-file-playback",
           async () => {
             app = startApp(detailRoute("movie", fileId));
-            await selectStream("select-file-sources", "Second");
-            await waitForKind("multiple-file-decoded", "episode1");
-            await stage("select-file-playing");
-            await stopApp(app);
+            try {
+              await selectStream("select-file-sources", "Second");
+              await waitForKind("multiple-file-decoded", "episode1");
+              await stage("select-file-playing");
+            } finally {
+              await stopApp(app);
+            }
           },
           ["recovery-select-file"],
         );

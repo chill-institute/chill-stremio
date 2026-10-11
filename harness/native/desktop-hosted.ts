@@ -6,6 +6,7 @@ import { Effect, Schema } from "effect";
 import { isCredential, redactCredentials } from "../../src/credential.ts";
 import { startHostedAdapter } from "../../src/hosted.ts";
 import { playbackWait } from "../../src/playback-wait.ts";
+import type { StatusMedia } from "../../src/status-media.ts";
 import {
   close,
   episodeTarget,
@@ -88,6 +89,7 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
   fixtureOrigin: string,
   webOrigin: string,
   hls = false,
+  statusMedia?: StatusMedia,
 ) {
   const certificates = yield* generateCertificates();
   const { media } = yield* startHostedMedia(fixtureOrigin, certificates, {
@@ -159,6 +161,7 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
   );
   const startAdapter = (port?: number) =>
     startHostedAdapter({
+      statusMedia,
       engineBaseUrl: engine.origin,
       webOrigin,
       publicOrigin: proxy.origin,
@@ -179,9 +182,9 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
   };
   const manifestUrl = `${proxy.origin}/s/${credential}/manifest.json`;
   const base = `${proxy.origin}/s/${credential}`;
-  const extension = hls ? "m3u8" : "mp4";
+  // Release rows always list HLS URLs, whichever media the fixture serves.
   const playPath = (type: string, target: string, releaseId: string) =>
-    `${base}/play/${type}/${encodeURIComponent(target)}/${encodeURIComponent(releaseId)}.${extension}`;
+    `${base}/play/${type}/${encodeURIComponent(target)}/${encodeURIComponent(releaseId)}.m3u8`;
   const replay = async (
     type: string,
     target: string,
@@ -194,7 +197,7 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
       signal: AbortSignal.timeout(10_000),
     });
   const status = async (transferId: bigint) =>
-    fetch(`${base}/status/${transferId}.${extension}`, {
+    fetch(`${base}/status/${transferId}.m3u8`, {
       redirect: "manual",
       signal: AbortSignal.timeout(10_000),
     });
@@ -288,25 +291,31 @@ export const startHostedDesktop = Effect.fn("startHostedDesktop")(function* (
         const before = transferBefore.get(kind);
         assert.ok(before !== undefined, "Recovery detail stage was skipped");
         await pollUntil(
-          () =>
-            calls.transfer >= before + 1 && (metrics.notice[kind] ?? 0) >= 1,
+          () => calls.transfer >= before + 1,
           30_000,
-          `Selection did not submit ${kind} and load its status clip`,
+          `Selection did not submit ${kind}`,
         );
-        assert.equal(calls.transfer, before + 1);
+        assert.equal(calls.transfer, before + 1, "Selection submitted twice");
         const recovery = hostedFixture.recoveryCases.find(
           (entry) => entry.kind === kind,
         );
         assert.ok(recovery);
         if (kind !== "unknown") {
           const again = await status(recovery.transferId);
-          assert.equal(again.status, 302);
-          assert.ok(
-            again.headers.get("location")?.endsWith(`/notice/${kind}.mp4`),
-          );
+          assert.equal(again.status, 409);
+          assert.deepEqual(await again.json(), { error: kind });
         }
         assert.equal(calls.transfer, before + 1, "Status read submitted");
         return { fileId: `chill:file:${hostedFixture.multipleEpisodeId}` };
+      }
+      case "recovery-rendered": {
+        const kind = input.kind;
+        assert.ok(kind, "Recovery stage needs a kind");
+        const before = transferBefore.get(kind);
+        assert.ok(before !== undefined, "Recovery detail stage was skipped");
+        assert.deepEqual(metrics.notice, {}, "Client requested a status clip");
+        assert.equal(calls.transfer, before + 1, "Player error resubmitted");
+        return {};
       }
       case "select-file-playing":
         assert.equal(
