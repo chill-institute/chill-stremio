@@ -138,7 +138,9 @@ After submission the adapter polls `GetTransfer`, finds the downloaded video wit
 redirects to `/s/<credential>/status/<transferId>.m3u8?wait=<n>`, where the
 transfer ID is decimal. Status URLs only read; reopening one resumes waiting
 without submitting. HLS waits in 25-second windows and legacy `.mp4` URLs in
-45-second windows, with up to five redirects. Client manifest timeouts can end
+45-second windows, with up to five redirects. Each window starts with the
+request and includes submission and status reads, so a still-pending download
+redirects before the request deadline. Client manifest timeouts can end
 waiting sooner. At the server limit it returns `503 download_pending`; selecting
 the source again within the reuse window resumes waiting, and later submits
 again. Downloads continue independently of the player.

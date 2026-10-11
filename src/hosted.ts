@@ -323,15 +323,20 @@ export async function startHostedAdapter(options: {
         )
           return fail("invalid_request");
         clearTimeout(deadline);
+        // Status reads and polling stop when this window ends, as a new
+        // submission does; the later deadline leaves room to redirect.
+        const waiting = new AbortController();
+        const windowEnd = setTimeout(() => waiting.abort(), timing.windowMs);
         deadline = setTimeout(() => {
           controller.abort();
           json(response, 504, { error: "deadline_exceeded" });
         }, timing.windowMs + 10_000);
+        const reading = AbortSignal.any([controller.signal, waiting.signal]);
         let transferId: bigint | undefined;
         let result: PlaybackResult;
         let release = () => {};
         const inspect = (id: bigint) =>
-          run(selection.status(id).pipe(Effect.provide(layer)));
+          run(selection.status(id).pipe(Effect.provide(layer)), reading);
         try {
           if (playRoute?.[1] && playRoute[2] && playRoute[3]) {
             const type = playRoute[1];
@@ -401,13 +406,20 @@ export async function startHostedAdapter(options: {
             result = await waitForPlayback(
               result,
               () => inspect(polled),
-              controller.signal,
+              reading,
               timing,
             );
         } catch (error) {
-          if (!rejected(error)) throw error;
-          result = { status: "reconnect" };
+          if (rejected(error)) result = { status: "reconnect" };
+          else if (
+            transferId !== undefined &&
+            waiting.signal.aborted &&
+            !controller.signal.aborted
+          )
+            result = { status: "pending" };
+          else throw error;
         } finally {
+          clearTimeout(windowEnd);
           release();
         }
         if (response.destroyed || response.writableEnded) return;

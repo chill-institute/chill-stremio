@@ -58,6 +58,8 @@ async function fixture(options: { selectionReuseMs?: number } = {}) {
     stallMovies: false,
     addCount: 0,
     addDelayMs: 0,
+    engineDelayMs: 0,
+    heldCalls: 0,
     addCredentials: [] as (string | string[] | undefined)[],
     transferFinished: true,
     singleFile: false,
@@ -67,6 +69,12 @@ async function fixture(options: { selectionReuseMs?: number } = {}) {
   const error = (response: ServerResponse, status: number, code: string) => {
     response.writeHead(status, { "content-type": "application/json" });
     response.end(JSON.stringify({ code, message: "fixture error" }));
+  };
+  // Global timers, so a test's fake clock decides this Engine latency.
+  const hold = async () => {
+    if (!state.engineDelayMs) return;
+    state.heldCalls++;
+    await new Promise((resolve) => setTimeout(resolve, state.engineDelayMs));
   };
   const engine = createServer((request, response) => {
     void (async () => {
@@ -202,6 +210,7 @@ async function fixture(options: { selectionReuseMs?: number } = {}) {
         case "Search": {
           const { query } = fromJsonString(proto.UserSearchRequestSchema, json);
           searches.push(query);
+          await hold();
           response.end(
             toJsonString(
               proto.SearchResponseSchema,
@@ -231,6 +240,7 @@ async function fixture(options: { selectionReuseMs?: number } = {}) {
           state.addCount++;
           state.addCredentials.push(presented);
           await sleep(state.addDelayMs);
+          await hold();
           if (state.loseTransferResponse) {
             response.destroy();
             return;
@@ -255,6 +265,7 @@ async function fixture(options: { selectionReuseMs?: number } = {}) {
         }
         case "GetTransfer": {
           const { id } = fromJsonString(proto.GetTransferRequestSchema, json);
+          await hold();
           if (id !== 90n) {
             error(response, 404, "not_found");
             return;
@@ -731,6 +742,39 @@ test("Stremio media selection waits for its download and plays without reselecti
     });
     assert.equal(foreign.status, 404);
   } finally {
+    await f.close();
+  }
+});
+
+test("a slow submission still redirects its pending download before the request deadline", async () => {
+  const f = await fixture();
+  try {
+    f.state.transferFinished = false;
+    const url = await releaseSelection(f);
+    // Fake request deadlines and Engine latency; sockets stay real.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    f.state.engineDelayMs = 6_000;
+    let responded = false;
+    const selected = fetch(url, { redirect: "manual" }).then((response) => {
+      responded = true;
+      return response;
+    });
+    // Search, AddTransfer and each GetTransfer take one step; the 25-second
+    // HLS window ends during the fifth, the response deadline during the sixth.
+    for (let step = 1; ; step++) {
+      while (f.state.heldCalls < step && !responded) await sleep(5);
+      if (responded) break;
+      await vi.advanceTimersByTimeAsync(6_000);
+    }
+    const response = await selected;
+    assert.equal(response.status, 302);
+    assert.equal(
+      response.headers.get("location"),
+      `${f.base()}/status/90.m3u8?wait=1`,
+    );
+    assert.equal(f.state.addCount, 1);
+  } finally {
+    vi.useRealTimers();
     await f.close();
   }
 });
