@@ -254,17 +254,18 @@ contain the credential.
 Every `feat`, `fix`, `perf`, `refactor`, `revert` or breaking change on `main`
 cuts a semantic-release version and GitHub release as `chill-ci`; see the
 [release rules](../CONTRIBUTING.md). [Publish hosted adapter](../.github/workflows/publish-hosted.yml) is
-a manual, main-only workflow in two jobs. The `build` job has no Environment
+a manual, main-only workflow in three jobs. The `build` job has no Environment
 and only `contents: read` and `packages: write`: it resolves the latest
 published release (or a chosen tag), installs, verifies that exact commit,
 builds one image, tests it, pushes it to GHCR as `X.Y.Z`, `X.Y`, `X`, `latest`
-and `sha-<commit>`, and outputs the tag and pushed digest. The `publish` job
-runs in the `publish` Environment with no `GITHUB_TOKEN` permissions and no
-checkout, so dependency, verify and test code never runs next to the `chill-ci`
-key. It validates the build outputs, mints scoped `chill-ci` tokens, records
-the digest on the release, then dispatches the hosting repository's adapter
-deploy with that digest and waits for it. The default verification and fixture
-workflows retain read-only permissions.
+and `sha-<commit>`, and outputs the tag, its commit and the pushed digest. The
+`publish` job runs in the `publish` Environment with no `GITHUB_TOKEN`
+permissions and no checkout, so dependency, verify and test code never runs
+next to the `chill-ci` key. It validates the build outputs, mints scoped
+`chill-ci` tokens, records the digest on the release, then dispatches the
+hosting repository's adapter deploy with that digest and waits for it. The
+`canary` job then runs the post-deploy canary at the published commit. The
+default verification, fixture and canary workflows retain read-only permissions.
 
 Engine owns the adapter deployment and shared host-mutation lock; its manual
 dispatch remains the rollback path. Any v2.0.3 or later image can be a rollback
@@ -275,12 +276,47 @@ the `chill-stremio` container package must grant `chill-engine` read access in
 its Actions access settings; GitHub exposes no API for that grant.
 
 `mise run hosted:public` checks the deployed endpoint with the designated
-account's add-on credential, issued by chill-web and supplied privately as
+account's Engine-issued add-on credential, supplied privately as
 `CHILL_STREMIO_CREDENTIAL`. It reads the public manifest, the personal manifest,
 the whole-library catalog and release results for a standard IMDb movie, and
 fails if Engine rejects the credential. It consumes no stream, so it creates no
-transfer. `CHILL_PUBLIC_STREMIO_ORIGIN` overrides the endpoint. Results go to
-`artifacts/public-<timestamp>/results.json` without the credential.
+transfer and does not prove playback. `CHILL_PUBLIC_STREMIO_ORIGIN` overrides
+the endpoint. Results go to `artifacts/public-<timestamp>/results.json` without
+the credential. It needs only Node, not the installed packages.
+
+The post-deploy canary, [canary.yml](../.github/workflows/canary.yml), runs
+`hosted:public` in the `canary` GitHub Environment, which admits only `main` and
+holds `CHILL_STREMIO_CREDENTIAL`. Publish calls it at the published commit once
+the adapter deploy finishes; dispatch it from `main` for an ad hoc check,
+optionally with an older `main` commit as `ref`. It refuses commits outside
+`main`, checks out without persisted credentials, installs the pinned toolchain
+but no dependencies and keeps the redacted receipt as artifact
+`hosted-public-<run_id>` for 7 days. A missing secret or any failed step fails
+the run. Releases cut before the canary existed start `hosted:public` through
+the installed packages, which the canary omits, so republishing one fails its
+canary job; dispatch the canary from `main` to check such a rollback.
+
+Mint the credential with the designated account's [environment](./LIVE.md#setup)
+and store it in the Environment:
+
+```sh
+credential="$(mktemp)"
+mise run hosted:credential > "$credential" &&
+  gh secret set CHILL_STREMIO_CREDENTIAL --env canary -R chill-institute/chill-stremio < "$credential"
+rm -f "$credential"
+```
+
+`gh secret set` stores whatever arrives on stdin, even nothing, so the
+owner-only temporary file keeps a failed mint from replacing a working secret.
+The task signs in through the shared [session cache](./LIVE.md#session-reuse),
+asks Engine for a credential for the account's download folder and writes it
+only to a pipe or a `0600` file; it refuses a terminal. Engine answers
+`409 download_folder_missing` until the account has a download folder. To
+rotate, sign in to `https://chill.institute/stremio` as the designated account,
+choose **disconnect Stremio** and confirm, which revokes every add-on link of
+that account, then mint again. Mint again after any exposure, before Engine
+retires the key that signed the credential, and whenever the canary reports
+`Engine rejected the credential`.
 
 `mise run hosted:live` separately tests one self-generated clip through real
 Engine acquisition. It uses normal OAuth with the designated put.io test

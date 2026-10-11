@@ -33,7 +33,9 @@ or an HLS status URL's fifth redirect, redirect to status clips under `/notice/`
 which never call Engine. Engine `401`/`403` becomes the reconnect notice.
 `mise run hosted:smoke` is fake-only, including its recording. Status clips are
 generated at setup/build time; runtime only loads them. Redact credentials from
-logs, errors, receipts and recordings, and suppress sensitive paths at ingress.
+logs, errors, receipts and recordings, and suppress sensitive paths at ingress. `mise run hosted:credential` writes the
+designated account's add-on credential only to a pipe or an owner-only file for
+the canary Environment; never echo or log it.
 
 ## Proof map
 
@@ -47,6 +49,7 @@ logs, errors, receipts and recordings, and suppress sensitive paths at ingress.
 | Native desktop playback                                | `mise run native:desktop:probe` (client only), `native:desktop:probe hosted` (hosted adapter), `native:desktop:probe hosted-hls` (hosted adapter, HLS media) ([scope](./docs/NATIVE-DESKTOP.md))                                                                  | Linux host, [manual CI](./.github/workflows/native-desktop.yml) runs all three on x86_64 | `artifacts/desktop-<timestamp>/`, `desktop-hosted-<timestamp>/` or `desktop-hosted-hls-<timestamp>/results.json`; CI artifacts `linux-desktop-{fixture,hosted,hosted-hls}-<run_id>` |
 | Android TV playback                                    | `mise run native:android:probe`; `native:android:account` with the designated Stremio account ([scope](./docs/NATIVE-ANDROID.md))                                                                                                                                 | Linux host with an accelerated Android TV emulator                                       | `artifacts/android-<timestamp>/results.json` and sanitized `emulator.log`; `artifacts/android-account-<timestamp>/results.json`                                                     |
 | Live put.io and production Engine                      | `mise run live:probe`, `adapter:live`, `hosted:live`; deployed endpoint: `hosted:public` with `CHILL_STREMIO_CREDENTIAL` ([LIVE](./docs/LIVE.md), [ADAPTER](./docs/ADAPTER.md#authenticated-playback-probe), [HOSTED](./docs/HOSTED.md#verification-and-release)) | designated accounts; shared allowance                                                    | `artifacts/{live,live-adapter,live-hosted,public}-<timestamp>/results.json`                                                                                                         |
+| Deployed adapter after publish                         | [canary](./.github/workflows/canary.yml): `mise run hosted:public` with the `canary` Environment's `CHILL_STREMIO_CREDENTIAL` ([HOSTED](./docs/HOSTED.md#verification-and-release))                                                                               | CI: publish `canary` job at the published commit; manual dispatch from `main`            | CI artifact `hosted-public-<run_id>`                                                                                                                                                |
 | Release rules, locked semantic-release                 | `npm ci --prefix .github/release --ignore-scripts`, then `node .github/release/smoke.mjs`                                                                                                                                                                         | local, PR [CI](./.github/workflows/verify.yml)                                           | exit status                                                                                                                                                                         |
 | Release and deploy                                     | `main` push tags a release ([`release`](./.github/workflows/verify.yml)); [publish](./.github/workflows/publish-hosted.yml) `build` tests and pushes the image; its `publish` Environment job records the digest and dispatches the Engine deploy                 | CI, publish is manual                                                                    | GitHub release, GHCR digest in release notes, Engine `deploy-stremio.yml` run                                                                                                       |
 
@@ -61,10 +64,11 @@ Gaps:
 - The desktop lane never reaches the pending clip, which libmpv gets at an HLS status URL's fifth redirect, about 150 seconds in; selecting the release again there submits another transfer. Owner: chill-institute/chill-stremio.
 - ARM64 desktop lanes have no CI runner, and their last evidence predates the current GNOME runtime. Owner: operator.
 - No macOS or Windows native lane. Owner: chill-institute/chill-stremio.
-- `hosted:live` fakes Engine's credential check; only `hosted:public` with an
-  issued credential proves production Engine accepts it. Owner: chill-institute/chill-stremio.
+- `hosted:live` fakes Engine's credential check. The canary proves production
+  Engine accepts an issued credential only after a publish or a manual dispatch,
+  so Engine deploys between adapter releases go unchecked until the next run. Owner: operator.
 - No real-account playback proof through the deployed adapter: `hosted:public`
-  consumes no stream, and `hosted:live`'s Stremio Web step has no recorded pass
+  and its canary consume no stream, and `hosted:live`'s Stremio Web step has no recorded pass
   since v2.0.0. Owner: chill-institute/chill-stremio.
 - CI artifacts expire after 7 days; archive evidence needed longer. Owner: chill-institute/chill-stremio.
 
