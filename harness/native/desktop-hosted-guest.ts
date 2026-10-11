@@ -71,24 +71,22 @@ const requireString = (reply: StageReply, key: string) => {
     throw new Error(`Harness stage reply lacks ${key}`);
   return value;
 };
-/** The player's error layer centres the client's "Stream failed to load". */
-const waitForPlayerError = async (name: string) => {
-  for (let attempt = 0; attempt < 8; attempt++) {
-    run("xdotool", ["mousemove", "640", "300"]);
-    await wait(2500);
+/**
+ * The generated status clip shows a white "Download …" headline at 1280×720
+ * for five seconds; the player's error layer says "Stream failed to load" lower.
+ */
+const headlineBounds = { left: 200, top: 230, right: 1080, bottom: 340 };
+const waitForNotice = async (name: string, word: string) => {
+  const deadline = performance.now() + 20_000;
+  while (performance.now() < deadline) {
     const text = guest.visibleText(name);
-    const rendered = ["failed", "load"].every(
-      (word) =>
-        desktopTextMatches(text, word, {
-          left: 200,
-          top: 200,
-          right: 1080,
-          bottom: 520,
-        }).length > 0,
+    const shown = ["Download", word].every(
+      (label) => desktopTextMatches(text, label, headlineBounds).length > 0,
     );
-    if (rendered && !guest.sampleKind(`${directory}/${name}.png`)) return;
+    if (shown && !guest.sampleKind(`${directory}/${name}.png`)) return;
+    await wait(300);
   }
-  throw new Error("Player did not render a load failure");
+  throw new Error(`Status clip headline with ${word} was not rendered`);
 };
 const previewBounds = { left: 880, top: 90, right: 1270, bottom: 700 };
 const routes = {
@@ -246,8 +244,10 @@ try {
       ["library-playback"],
     );
     await stopApp(app);
-    // Selected HLS rows answer terminal states with HTTP 409, never a status clip.
+    // Selected HLS rows redirect terminal states to a short status clip; the
+    // player returns to the stream list when it ends.
     for (const kind of ["failed", "unknown", "select-file"] as const) {
+      const word = kind === "select-file" ? "ready" : kind;
       let fileId = "";
       await step(
         `recovery-${kind}`,
@@ -259,11 +259,23 @@ try {
           app = startApp(detailRoute("movie", target));
           try {
             await selectStream(`${kind}-sources`, "Download");
+            // Sample the five-second clip first; the submission check still
+            // runs, and frees exact-file playback, when the clip is missing.
+            const missing = await waitForNotice(`${kind}-notice`, word).then(
+              () => undefined,
+              (error: unknown) => error,
+            );
             fileId = requireString(
               await stage("recovery-selected", { kind }),
               "fileId",
             );
-            await waitForPlayerError(`${kind}-error`);
+            if (missing) throw missing;
+            await textTarget(
+              `${kind}-returned`,
+              "Download",
+              streamListBounds,
+              30_000,
+            );
             await stage("recovery-rendered", { kind });
           } finally {
             await stopApp(app);
@@ -271,7 +283,7 @@ try {
         },
         ["selected-download"],
       );
-      // Library playback needs the submitted multi-file transfer, not its error.
+      // Library playback needs the submitted multi-file transfer, not its clip.
       if (kind === "select-file")
         await step(
           "exact-file-playback",

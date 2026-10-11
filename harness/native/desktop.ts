@@ -47,7 +47,11 @@ import {
   hostedHlsRequired,
   hostedHlsRunPassed,
 } from "./desktop-hosted-contract.ts";
-import { startHostedDesktop, type HostedSnapshot } from "./desktop-hosted.ts";
+import {
+  noticeRequests,
+  startHostedDesktop,
+  type HostedSnapshot,
+} from "./desktop-hosted.ts";
 
 class DesktopFailure extends Schema.TaggedError<DesktopFailure>()(
   "DesktopFailure",
@@ -436,7 +440,7 @@ const evaluateHosted = async (
     (pendingLoading.kind && pendingLoading.intact) ||
     !decoded(automaticPlayback, "movie") ||
     !stage("automatic-playing") ||
-    (hosted.proxy.notice.pending ?? 0) !== 0
+    noticeRequests(hosted.proxy.notice, "pending") !== 0
   )
     setScenario(
       scenarios,
@@ -476,23 +480,22 @@ const evaluateHosted = async (
       "failed",
       "Interrupted cut or recovered library-file pixels were not observed",
     );
-  const statusClips =
-    Object.keys(hosted.proxy.notice).length > 0 || log.noticeVo;
   for (const kind of ["failed", "unknown", "select-file"]) {
-    const error = await frameOf(`${runDirectory}/${kind}-error.png`);
+    const notice = await frameOf(`${runDirectory}/${kind}-notice.png`);
     if (
       !hls &&
-      (!error ||
-        (error.kind && error.intact) ||
+      (!notice ||
+        (notice.kind && notice.intact) ||
         !stage("recovery-selected", kind) ||
         !stage("recovery-rendered", kind) ||
-        statusClips)
+        (hosted.proxy.notice[`${kind}.ts`] ?? 0) < 1 ||
+        !log.noticeVo)
     )
       setScenario(
         scenarios,
         `recovery-${kind}`,
         "failed",
-        "Terminal selection did not show a player error after one submission without a status clip",
+        "Terminal selection did not decode its status clip in libmpv after one submission",
       );
   }
   if (
