@@ -22,6 +22,10 @@ Engine in the pinned Web client; preserve fake-only capture and cleanup proof.
 
 `mise run hosted:serve` runs the stateless multi-user adapter. Read
 [HOSTED.md](./docs/HOSTED.md) before changing credentials, routes or rollout.
+Supported clients are Stremio Web and Stremio for Linux; keep the README,
+`/configure` and both manifest descriptions in
+[manifest-descriptions.ts](./src/manifest-descriptions.ts) in step. That module
+stays package-free: `hosted:public` imports it and requires an exact match.
 Personal routes live under `/s/<credential>/`; the adapter checks only the
 credential's shape and forwards it to Engine in `X-Chill-Stremio-Credential`,
 never as `Authorization`. It keeps no database, key, installation registry or
@@ -67,6 +71,8 @@ Gaps:
 - The desktop lane never reaches the pending clip, which libmpv gets at an HLS status URL's fifth redirect, about 150 seconds in; selecting the release again there submits another transfer. Owner: chill-institute/chill-stremio.
 - ARM64 desktop lanes have no CI runner, and their last evidence predates the current GNOME runtime. Owner: operator.
 - No macOS or Windows native lane. Owner: chill-institute/chill-stremio.
+- Stremio Web proof covers only the pinned revision in Chromium; Firefox, Safari
+  and the current web.stremio.com build are unverified. Owner: chill-institute/chill-stremio.
 - `hosted:live` fakes Engine's credential check. The canary proves production
   Engine accepts an issued credential only after a publish or a manual dispatch,
   so Engine deploys between adapter releases go unchecked until the next run. Owner: operator.

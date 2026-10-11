@@ -12,6 +12,7 @@ import * as proto from "@chill-institute/contracts/chill/v4/api_pb";
 import { Schema } from "effect";
 import { test } from "vite-plus/test";
 import { startHostedAdapter } from "../src/hosted.ts";
+import { manifestDescriptions } from "../src/manifest-descriptions.ts";
 import { statusMediaKinds, statusPlaylist } from "../src/status-media.ts";
 
 const harness = new URL("../harness/live/public.ts", import.meta.url);
@@ -217,7 +218,12 @@ test("public check fails at configuration without a credential", async () => {
 test("public check redacts credential material an endpoint echoes back", async () => {
   const echo = createServer((request, response) => {
     if (request.url === "/manifest.json") {
-      response.end('{"behaviorHints":{"configurationRequired":true}}');
+      response.end(
+        JSON.stringify({
+          behaviorHints: { configurationRequired: true },
+          description: manifestDescriptions.public,
+        }),
+      );
       return;
     }
     // A non-JSON personal manifest puts the echoed credential into the parse error.
@@ -232,6 +238,40 @@ test("public check redacts credential material an endpoint echoes back", async (
       assert.ok(!text.includes("v4.local."));
   } finally {
     await close(echo);
+  }
+});
+
+test("public check fails when a deployed manifest carries other copy", async () => {
+  for (const [stale, failedStep] of [
+    ["public", "public-manifest"],
+    ["personal", "manifest"],
+  ] as const) {
+    const copy = { ...manifestDescriptions, [stale]: "Early access." };
+    const deployed = createServer((request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify(
+          request.url === "/manifest.json"
+            ? {
+                behaviorHints: { configurationRequired: true },
+                description: copy.public,
+              }
+            : { description: copy.personal },
+        ),
+      );
+    });
+    const origin = await listen(deployed);
+    try {
+      const run = await runPublic(origin, credential);
+      assert.equal(run.code, 1);
+      assert.deepEqual(run.receipt.steps.at(-1), {
+        name: failedStep,
+        passed: false,
+        detail: "description differs from this checkout",
+      });
+    } finally {
+      await close(deployed);
+    }
   }
 });
 

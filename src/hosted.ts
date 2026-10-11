@@ -9,6 +9,7 @@ import sdk, {
 import { acquisitionEngineLayer } from "./acquisition-engine.ts";
 import { createAdmission, type Lease, type Refusal } from "./admission.ts";
 import { credentialPattern } from "./credential.ts";
+import { manifestDescriptions } from "./manifest-descriptions.ts";
 import {
   createDiscovery,
   discoveryCatalogs,
@@ -134,8 +135,7 @@ export async function startHostedAdapter(options: {
   ];
   const manifest: Manifest = {
     ...adapterManifest,
-    description:
-      "Early access, work in progress. Discover movies and series, choose releases and play your put.io videos through chill.institute.",
+    description: manifestDescriptions.personal,
     types: ["movie", "series"],
     idPrefixes,
     resources: [
@@ -284,8 +284,7 @@ export async function startHostedAdapter(options: {
           json(response, 200, {
             ...manifest,
             logo: `${origin}/configure-assets/logo.png`,
-            description:
-              "Early access. Connect your put.io account to discover movies and series, choose releases and play your videos inside Stremio. Requires a put.io account.",
+            description: manifestDescriptions.public,
             behaviorHints: { configurable: true, configurationRequired: true },
           });
         } else if (url.pathname === "/configure") {

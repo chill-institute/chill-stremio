@@ -213,13 +213,13 @@ tracks.
 
 ## Verification and release
 
-The adapter runs in early access at `https://stremio.chill.institute`. The
-public and personal manifest descriptions, `/configure` and the chill-web setup
-page say “Early access”; personal manifests add “work in progress”. The earlier
-Web direct-file download-to-playback flow passes. HLS audio switching passes a
-real put.io Web probe, and the generated hosted HLS flow passes with default
-audio bundled into its video variant. The original separate-track fixture
-retains the [client-worker regression](./HARNESS.md#hls-playback).
+The adapter runs at `https://stremio.chill.institute`. Stremio Web and Stremio
+for Linux are supported; both manifest descriptions and `/configure` say so and
+call other Stremio apps unverified. The earlier Web direct-file
+download-to-playback flow passes. HLS audio switching passes a real put.io Web
+probe, and the generated hosted HLS flow passes with default audio bundled into
+its video variant. The original separate-track fixture retains the
+[client-worker regression](./HARNESS.md#hls-playback).
 [Android TV](./NATIVE-ANDROID.md) acceptance remains incomplete. Passing a
 generic native fixture add-on does not establish hosted support; the
 [hosted desktop trial](./NATIVE-DESKTOP.md#hosted-adapter-trial) drives this
@@ -300,10 +300,12 @@ its Actions access settings; GitHub exposes no API for that grant.
 account's Engine-issued add-on credential, supplied privately as
 `CHILL_STREMIO_CREDENTIAL`. It reads the public manifest, the personal manifest,
 the whole-library catalog and release results for a standard IMDb movie, and
-fails if Engine rejects the credential. It consumes no stream, so it creates no
-transfer and does not prove playback. `CHILL_PUBLIC_STREMIO_ORIGIN` overrides
-the endpoint. Results go to `artifacts/public-<timestamp>/results.json` without
-the credential. It needs only Node, not the installed packages.
+fails if Engine rejects the credential or either manifest description differs
+from this checkout's [copy](../src/manifest-descriptions.ts), so run it at the
+deployed commit. It consumes no stream, so it creates no transfer and does not
+prove playback. `CHILL_PUBLIC_STREMIO_ORIGIN` overrides the endpoint. Results
+go to `artifacts/public-<timestamp>/results.json` without the credential. It
+needs only Node, not the installed packages.
 
 The post-deploy canary, [canary.yml](../.github/workflows/canary.yml), runs
 `hosted:public` in the `canary` GitHub Environment, which admits only `main` and

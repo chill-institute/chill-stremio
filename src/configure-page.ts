@@ -159,8 +159,9 @@ export function configurePage(webOrigin: string) {
 </div>
 <div class="page-body">
 <p class="copy">Sign in with put.io, then select “install chill”.</p>
+<p class="copy">Tested in Stremio Web and Stremio for Linux. Other Stremio apps are unverified.</p>
 <p class="action"><a class="button" href="${setupUrl}"><span class="touch-target" aria-hidden="true"></span>connect your account</a></p>
-<div class="meta"><p>Requires a put.io account. Early access.</p><p><a href="${setupUrl}">manage connection</a></p></div>
+<div class="meta"><p>Requires a put.io account.</p><p><a href="${setupUrl}">manage connection</a></p></div>
 </div>
 </section>
 </div>

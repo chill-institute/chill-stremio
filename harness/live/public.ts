@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { isCredential, redactCredentials } from "../../src/credential.ts";
+import { manifestDescriptions } from "../../src/manifest-descriptions.ts";
 import { redactLive } from "./redact.ts";
 
 // Read-only proof that the deployed adapter serves the designated account
@@ -36,20 +37,25 @@ try {
   if (health.status !== 200) fail("health", `status ${health.status}`);
   pass("health");
   const publicManifest = await read("/manifest.json");
-  const hints = asRecord(asRecord(await publicManifest.json())?.behaviorHints);
-  if (publicManifest.status !== 200 || hints?.configurationRequired !== true)
+  const listing = asRecord(await publicManifest.json());
+  if (
+    publicManifest.status !== 200 ||
+    asRecord(listing?.behaviorHints)?.configurationRequired !== true
+  )
     fail("public-manifest", `status ${publicManifest.status}`);
-  pass("public-manifest", "configuration required");
+  // The canary runs at the published commit, so the copy must match exactly.
+  if (listing?.description !== manifestDescriptions.public)
+    fail("public-manifest", "description differs from this checkout");
+  pass("public-manifest", "configuration required; current description");
   const base = `/s/${credential}`;
   const manifest = await read(`${base}/manifest.json`);
   if (manifest.status !== 200) fail("manifest", `status ${manifest.status}`);
-  const description = asRecord(await manifest.json())?.description;
   if (
-    typeof description !== "string" ||
-    !description.startsWith("Early access")
+    asRecord(await manifest.json())?.description !==
+    manifestDescriptions.personal
   )
-    fail("manifest", "missing early-access description");
-  pass("manifest", "early-access description");
+    fail("manifest", "description differs from this checkout");
+  pass("manifest", "current description");
   const library = await read(`${base}/catalog/movie/library.json`);
   if (library.status !== 200) fail("library", `status ${library.status}`);
   const videos = asRecord(await library.json())?.metas;
