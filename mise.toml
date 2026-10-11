@@ -82,7 +82,8 @@ run = "pnpm exec vp run hosted:live"
 
 [tasks."hosted:public"]
 description = "Read the deployed adapter with the designated account's add-on credential"
-run = "pnpm exec vp run hosted:public"
+# Node alone: the canary runs this next to the credential without installing packages.
+run = "node harness/live/public.ts"
 
 [tasks."native:android:account"]
 description = "Pair the designated Stremio account and probe fixture playback in an isolated TV emulator"

@@ -25,6 +25,7 @@ jobs:
       packages: write
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      sha: ${{ steps.tag.outputs.sha }}
       image-ref: ${{ steps.publish.outputs.ref }}
     env:
       IMAGE_NAME: ghcr.io/chill-institute/chill-stremio
@@ -170,3 +171,12 @@ jobs:
           [ -n "$run_id" ] || { echo "::error::could not find the dispatched deploy run $dispatch_id"; exit 1; }
           echo "Deploy run: https://github.com/chill-institute/chill-engine/actions/runs/$run_id" >> "$GITHUB_STEP_SUMMARY"
           gh run watch "$run_id" -R chill-institute/chill-engine --exit-status
+
+  canary:
+    needs: [build, publish]
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/canary.yml # zizmor: ignore[self-repository] actionlint 1.7.12 rejects $/ calls
+    with:
+      ref: ${{ needs.build.outputs.sha }}

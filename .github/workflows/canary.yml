@@ -1,0 +1,57 @@
+name: Canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit on main whose harness runs (defaults to the dispatched commit)
+        required: false
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit on main whose harness runs (defaults to the calling commit)
+        required: false
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  canary:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    environment:
+      name: canary
+      deployment: false
+    permissions:
+      contents: read
+    steps:
+      - name: Require the canary credential
+        env:
+          CHILL_STREMIO_CREDENTIAL: ${{ secrets.CHILL_STREMIO_CREDENTIAL }}
+        run: |
+          [ -n "$CHILL_STREMIO_CREDENTIAL" ] || { echo "::error::CHILL_STREMIO_CREDENTIAL is not set in the canary Environment"; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      # The Environment admits only main; keep an input ref from bypassing that.
+      - name: Require a commit on main
+        run: |
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main || { echo "::error::the canary runs only commits on main"; exit 1; }
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - name: Read the deployed adapter
+        env:
+          CHILL_STREMIO_CREDENTIAL: ${{ secrets.CHILL_STREMIO_CREDENTIAL }}
+        run: mise run hosted:public
+      - name: Retain the redacted receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hosted-public-${{ github.run_id }}
+          path: artifacts/public-*/results.json
+          retention-days: 7
+          if-no-files-found: warn
