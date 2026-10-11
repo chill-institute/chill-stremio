@@ -11,6 +11,7 @@
     "verify": "vp check && vp test",
     "fixture:smoke": "node harness/run.ts",
     "fixture:serve": "node harness/serve.ts",
+    "hls:smoke": "node harness/hls-smoke.ts",
     "cleanup": "node harness/cleanup.ts",
     "format": "vp fmt",
     "format:check": "vp fmt --check",

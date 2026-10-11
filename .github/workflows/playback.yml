@@ -25,8 +25,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends --yes ffmpeg fonts-dejavu-core
       - run: mise run setup
-      - run: pnpm exec playwright install-deps chromium
+      - id: deps
+        run: pnpm exec playwright install-deps chromium
       - run: mise run fixture:smoke
+      # Each lane owns its listeners and artifact directory; run all after one failure.
+      - if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: mise run hls:smoke
+      - if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: mise run adapter:smoke
+      - if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: mise run hosted:smoke
       - name: Retain fixture evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -16,6 +16,10 @@ run = ["pnpm exec vp run verify", "actionlint", "zizmor .github/workflows"]
 description = "Run real Stremio Web playback twice from fresh state"
 run = "pnpm exec vp run fixture:smoke"
 
+[tasks."hls:smoke"]
+description = "Prove HLS audio switching, seek and captions in Stremio Web; append `separate-fmp4` for the separate-track fixture"
+run = "pnpm exec vp run hls:smoke"
+
 [tasks."fixture:serve"]
 description = "Serve local fixtures in the foreground"
 run = "pnpm exec vp run fixture:serve"
