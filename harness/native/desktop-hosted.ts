@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { createServer, request } from "node:http";
 import { setTimeout as wait } from "node:timers/promises";
 import { Effect, Schema } from "effect";
-import { redactCredentials } from "../../src/credential.ts";
+import { isCredential, redactCredentials } from "../../src/credential.ts";
 import { startHostedAdapter } from "../../src/hosted.ts";
 import { playbackWait } from "../../src/playback-wait.ts";
 import {
@@ -58,8 +58,9 @@ const StageInput = Schema.Struct({
   kind: Schema.optional(Schema.Literals(["failed", "unknown", "select-file"])),
 });
 const classify = (pathname: string) => {
-  const rest = /^\/s\/v4\.local\.[A-Za-z0-9_-]+(\/.*)$/.exec(pathname)?.[1];
-  if (!rest) return "other" as const;
+  const [, credential, rest] = /^\/s\/([^/]+)(\/.*)$/.exec(pathname) ?? [];
+  if (!credential || !rest || !isCredential(credential))
+    return "other" as const;
   if (rest === "/manifest.json") return "manifest" as const;
   if (rest.startsWith("/catalog/")) return "catalog" as const;
   if (rest.startsWith("/meta/")) return "meta" as const;

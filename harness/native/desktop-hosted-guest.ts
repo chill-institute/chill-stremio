@@ -19,9 +19,11 @@ const hls = delivery === "hls";
 const web = requireLoopback(webText);
 const manifest = requireLoopback(manifestText);
 const control = requireLoopback(controlText);
-const credential = /^\/s\/(v4\.local\.[A-Za-z0-9_-]+)\/manifest\.json$/.exec(
-  manifest.pathname,
-)?.[1];
+// Engine credentials carry a key-ID footer: v4.local.<payload>.<footer>.
+const credential =
+  /^\/s\/(v4\.local\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?)\/manifest\.json$/.exec(
+    manifest.pathname,
+  )?.[1];
 if (!credential) throw new Error("Expected a hosted manifest URL");
 const guest = await createGuest({ web, directory, secrets: [credential] });
 const {
