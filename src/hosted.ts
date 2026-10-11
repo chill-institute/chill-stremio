@@ -13,7 +13,7 @@ import {
   discoveryCatalogs,
   discoveryIdPrefixes,
 } from "./discovery.ts";
-import { discoveryEngineLayer } from "./discovery-engine.ts";
+import { DiscoveryDeadline, discoveryEngineLayer } from "./discovery-engine.ts";
 import { engineLayer } from "./engine.ts";
 import { createLibrary } from "./library.ts";
 import { createSelection, type Submission } from "./selection.ts";
@@ -172,6 +172,7 @@ export async function startHostedAdapter(options: {
       return;
     }
     controllers.add(controller);
+    const requestDeadlineAt = Date.now() + 10_000;
     let deadline = setTimeout(() => {
       controller.abort();
       json(response, 504, { error: "deadline_exceeded" });
@@ -185,9 +186,11 @@ export async function startHostedAdapter(options: {
     const run = async <A, E extends { code: string }>(
       effect: Effect.Effect<A, E>,
       signal = controller.signal,
+      deadlineAt = requestDeadlineAt,
     ) => {
       const result = await Effect.runPromise(
         effect.pipe(
+          Effect.provideService(DiscoveryDeadline, deadlineAt),
           Effect.match({
             onSuccess: (value) => ({ ok: true as const, value }),
             onFailure: (error) => ({ ok: false as const, code: error.code }),
@@ -368,6 +371,7 @@ export async function startHostedAdapter(options: {
                     .submit({ type, id, releaseId })
                     .pipe(Effect.provide(layer)),
                   signal,
+                  Date.now() + timing.windowMs,
                 ).catch((error: unknown): Submission => {
                   if (signal.aborted) return { status: "unknown" };
                   throw error;

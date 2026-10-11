@@ -51,7 +51,11 @@ async function decode<A, I>(
 }
 
 async function fixture(options: { selectionReuseMs?: number } = {}) {
-  const calls: { method: string; owner: string }[] = [];
+  const calls: {
+    method: string;
+    owner: string;
+    timeout: string | string[] | undefined;
+  }[] = [];
   const searches: string[] = [];
   const state = {
     loseTransferResponse: false,
@@ -65,6 +69,8 @@ async function fixture(options: { selectionReuseMs?: number } = {}) {
     singleFile: false,
     playbackPending: false,
     rejection: undefined as { status: number; code: string } | undefined,
+    // Wall-clock time a method takes, for tests that fake `Date`.
+    elapsedMs: {} as Partial<Record<string, number>>,
   };
   const error = (response: ServerResponse, status: number, code: string) => {
     response.writeHead(status, { "content-type": "application/json" });
@@ -90,7 +96,13 @@ async function fixture(options: { selectionReuseMs?: number } = {}) {
         return;
       }
       const method = request.url?.split("/").at(-1) ?? "";
-      calls.push({ method, owner });
+      calls.push({
+        method,
+        owner,
+        timeout: request.headers["connect-timeout-ms"],
+      });
+      const elapsed = state.elapsedMs[method];
+      if (elapsed) vi.setSystemTime(Date.now() + elapsed);
       assert.equal(request.method, "POST");
       if (state.rejection) {
         error(response, state.rejection.status, state.rejection.code);
@@ -1092,6 +1104,46 @@ test("a stream listing for a catalog IMDb movie reads the movie catalog once", a
       ["GetMovies", "Search"],
     );
   } finally {
+    await f.close();
+  }
+});
+
+test("release searches tell Engine the time left before their route's deadline", async () => {
+  const f = await fixture();
+  // Freeze the wall clock so Engine time is exact; sockets and timers stay real.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const searchTimeout = async (path: string, slowMethod: string) => {
+      f.calls.length = 0;
+      f.state.elapsedMs = { [slowMethod]: 1_000 };
+      await (
+        await fetch(`${f.base()}${path}`, { redirect: "manual" })
+      ).arrayBuffer();
+      return f.calls.find(({ method }) => method === "Search")?.timeout;
+    };
+    // A listing searches within the request's ten seconds.
+    assert.equal(
+      await searchTimeout("/stream/movie/tt1234567.json", "GetMovies"),
+      "8500",
+    );
+    // A selection searches within its own window, not the request's ...
+    assert.equal(
+      await searchTimeout(
+        "/play/movie/tt1234567/fixture-release.m3u8",
+        "GetMovies",
+      ),
+      "9500",
+    );
+    // ... and within the ten seconds allowed for finding its release.
+    assert.equal(
+      await searchTimeout(
+        `/play/series/${encodeURIComponent("chill:episode:tt7654321:1:2")}/fixture-release.m3u8`,
+        "GetTVShowDetail",
+      ),
+      "8500",
+    );
+  } finally {
+    vi.useRealTimers();
     await f.close();
   }
 });

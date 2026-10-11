@@ -76,6 +76,8 @@ export type EngineAuth =
   | { baseUrl: string; credential: string };
 
 const maxResponseBytes = 1024 * 1024;
+/** No Engine RPC waits longer than this. */
+export const engineTimeoutMs = 10_000;
 
 const boundedFetch: typeof globalThis.fetch = async (input, init) => {
   const response = await fetch(input, {
@@ -159,7 +161,7 @@ export const createEngineRpc = Effect.fn("Engine.createRpc")(function* (
       baseUrl: config.baseUrl,
       useBinaryFormat: false,
       useHttpGet: false,
-      defaultTimeoutMs: 10_000,
+      defaultTimeoutMs: engineTimeoutMs,
       fetch: boundedFetch,
     }),
   );

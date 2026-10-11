@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 import type { Manifest, MetaDetail, MetaVideo } from "stremio-addon-sdk";
-import { DiscoveryEngine } from "./discovery-engine.ts";
+import { DiscoveryDeadline, DiscoveryEngine } from "./discovery-engine.ts";
 import { EngineError } from "./engine.ts";
 
 export class DiscoveryError extends Schema.TaggedError<DiscoveryError>()(
@@ -563,10 +563,19 @@ export function createDiscovery() {
         seeders: entry.seeders,
       }));
   });
-  const budget = Effect.timeoutOrElse({
-    duration: "10 seconds",
-    orElse: () => Effect.fail(new EngineError({ code: "deadline_exceeded" })),
-  });
+  const budgetMs = 10_000;
+  const budget = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.flatMap(Clock.currentTimeMillis, (now) =>
+      Effect.updateService(effect, DiscoveryDeadline, (deadline) =>
+        Math.min(deadline, now + budgetMs),
+      ),
+    ).pipe(
+      Effect.timeoutOrElse({
+        duration: budgetMs,
+        orElse: () =>
+          Effect.fail(new EngineError({ code: "deadline_exceeded" })),
+      }),
+    );
   const methods = {
     releases,
     catalog: Effect.fn("Discovery.catalog")(function* (input: {
