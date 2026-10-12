@@ -31,7 +31,7 @@ jobs:
         run: mise run native:desktop:probe
       - name: Retain fixture evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-desktop-fixture-${{ github.run_id }}
           path: artifacts/desktop-[0-9]*
@@ -42,7 +42,7 @@ jobs:
         run: mise run native:desktop:probe hosted
       - name: Retain hosted evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-desktop-hosted-${{ github.run_id }}
           path: artifacts/desktop-hosted-[0-9]*
@@ -53,7 +53,7 @@ jobs:
         run: mise run native:desktop:probe hosted-hls
       - name: Retain hosted HLS evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux-desktop-hosted-hls-${{ github.run_id }}
           path: artifacts/desktop-hosted-hls-*
