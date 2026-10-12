@@ -91,3 +91,45 @@ export const liveSubtitleName = (stamp: string) =>
 
 export const fixtureSrt = () =>
   `1\n00:00:00,000 --> 00:00:35,900\n${liveVersions.fixtureSubtitle}\n`;
+
+/** BitTorrent v1 info hash of a single-file torrent. */
+export function singleFileInfoHash(
+  name: string,
+  payload: Uint8Array,
+  pieceLength = 16_384,
+) {
+  const pieces: Buffer[] = [];
+  for (let offset = 0; offset < payload.length; offset += pieceLength)
+    pieces.push(
+      createHash("sha1")
+        .update(payload.subarray(offset, offset + pieceLength))
+        .digest(),
+    );
+  const string = (bytes: Uint8Array) =>
+    Buffer.concat([Buffer.from(`${bytes.length}:`), bytes]);
+  // Bencoded dictionary keys must appear in raw byte order.
+  const info = Buffer.concat([
+    Buffer.from(`d6:lengthi${payload.length}e4:name`),
+    string(Buffer.from(name)),
+    Buffer.from(`12:piece lengthi${pieceLength}e6:pieces`),
+    string(Buffer.concat(pieces)),
+    Buffer.from("e"),
+  ]);
+  return createHash("sha1").update(info).digest("hex");
+}
+
+/**
+ * A magnet for the generated English captions under a per-run name. Nobody
+ * holds that torrent, so a transfer for it never downloads.
+ */
+export const reuseSource = (nonce: string) => {
+  const name = `${liveVersions.folderPrefix}-reuse-${nonce}.srt`;
+  const payload = Buffer.from(fixtureSrt());
+  const infoHash = singleFileInfoHash(name, payload);
+  return {
+    name,
+    bytes: payload.length,
+    infoHash,
+    magnet: `magnet:?xt=urn:btih:${infoHash}&dn=${encodeURIComponent(name)}`,
+  };
+};

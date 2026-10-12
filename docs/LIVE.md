@@ -158,6 +158,37 @@ resources only, never account-wide cleanup. Force kill cannot guarantee
 finalizers; filesystem failure can prevent publication and must be resolved
 before retrying. A reported artifact path is emitted only after writing it.
 
+## Transfer reuse probe
+
+`mise run hosted:reuse` checks that production Engine answers repeated add-on
+requests for one source with the account's existing put.io transfer. Supply
+`CHILL_STREMIO_CREDENTIAL` as for
+[`hosted:public`](./HOSTED.md#verification-and-release), plus `PUTIO_USERNAME`
+and `PUTIO_TEST_TOKEN` from [setup](#setup). `CHILL_ENGINE_BASE_URL` overrides
+the Engine endpoint. Engine reuses transfers only for add-on credentials, so
+`hosted:live`, which adds with the account bearer, does not cover this.
+
+The source is a magnet for a single-file torrent of the generated English
+captions under a random per-run name. No peer holds it, so put.io never
+downloads it. Before any provider mutation the probe requires the credential
+and the token to list the same put.io root folder and no existing transfer to
+carry the run's info hash, then reserves five creations and their payload
+bytes. It calls Engine `AddTransfer` with the credential once, again in
+sequence, then three times concurrently. It passes only when every call returns
+the same transfer and put.io lists exactly one transfer for that info hash, not
+in error.
+
+A returned ID counts only once put.io lists it under the run's info hash.
+Cleanup cancels only such transfers and never touches earlier ones; a reported
+ID without the hash, or a lost response, leaves cleanup `uncertain`. The private
+`.cache/live/recovery/reuse-<timestamp>.json` journal keeps the info hash, the
+torrent name and every Engine-reported ID for reconciliation. The receipt at
+`artifacts/live-reuse-<timestamp>/results.json` labels transfers `t1`, `t2` and
+so on, and holds no credential, token, magnet, info hash or provider ID.
+
+A pass covers magnets only; Engine download links, finished or errored
+transfers and actual downloads are not exercised.
+
 ## HLS audio probe
 
 Under the same maintainer-only test environment, run

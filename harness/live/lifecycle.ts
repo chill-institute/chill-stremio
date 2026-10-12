@@ -16,6 +16,8 @@ export interface LiveAttempt {
   pending: { sequence: number; kind: ResourceKind }[];
   nextSequence: number;
   evidence: Record<string, unknown>;
+  /** Private reconciliation hints; written only to the recovery journal. */
+  recovery?: Record<string, unknown>;
   outcome?: LiveOutcome;
 }
 
@@ -61,6 +63,7 @@ export const writeRecoveryJournal = Effect.fn("live.writeRecoveryJournal")(
             files: attempt.files,
             transfers: attempt.transfers,
             pending: attempt.pending,
+            ...(attempt.recovery ? { recovery: attempt.recovery } : {}),
             cleanup: attempt.outcome?.cleanup,
           },
           null,
@@ -90,7 +93,8 @@ export const trackAcquisition = Effect.fn("live.trackAcquisition")(function* <
       attempt.pending.push(pending);
       yield* checkpoint;
       const resource = yield* restore(acquire);
-      (kind === "file" ? attempt.files : attempt.transfers).push(resource.id);
+      const owned = kind === "file" ? attempt.files : attempt.transfers;
+      if (!owned.includes(resource.id)) owned.push(resource.id);
       attempt.pending = attempt.pending.filter((item) => item !== pending);
       yield* checkpoint;
       return resource;

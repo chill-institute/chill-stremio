@@ -362,6 +362,11 @@ context and Web listener cleanup and absence of the Engine bearer from browser
 requests. This uses the same devbox and direct provider HTTPS; it does not
 establish playback from another device or network.
 
+`mise run hosted:reuse` sends one unseeded magnet to production Engine five
+times with the designated add-on credential, sequentially and concurrently, and
+requires every call to return the same put.io transfer; see the
+[transfer reuse probe](./LIVE.md#transfer-reuse-probe).
+
 The shared live ledger reserves the source upload and copied bytes plus
 three creations before any provider mutation. An explicitly approved one-attempt
 extension is available through `--approved-extra`; it preserves existing usage

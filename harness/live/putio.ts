@@ -74,6 +74,23 @@ export const Transfer = Schema.Struct({
   file_id: Schema.optional(Schema.NullOr(Schema.Number)),
   type: Schema.optional(Schema.NullOr(Schema.String)),
   percent_done: Schema.optional(Schema.NullOr(Schema.Number)),
+  hash: Schema.optional(Schema.NullOr(Schema.String)),
+  source: Schema.optional(Schema.NullOr(Schema.String)),
+  magneturi: Schema.optional(Schema.NullOr(Schema.String)),
+});
+
+const Cursor = Schema.optional(Schema.NullOr(Schema.String));
+
+export const FolderListEnvelope = Schema.Struct({
+  status: Schema.Literal("OK"),
+  files: Schema.Array(PutioFile),
+  cursor: Cursor,
+});
+
+export const TransferListEnvelope = Schema.Struct({
+  status: Schema.optional(Schema.Literal("OK")),
+  transfers: Schema.Array(Transfer),
+  cursor: Cursor,
 });
 
 export const TransferEnvelope = Schema.Struct({
@@ -540,3 +557,68 @@ export const deleteFiles = Effect.fn("live.putio.deleteFiles")(function* (
     ),
   );
 }, Effect.timeout("20 seconds"));
+
+export const listFolderIds = Effect.fn("live.putio.listFolderIds")(function* (
+  parentId: number,
+) {
+  const parsed = yield* requestJson(
+    `${liveVersions.apiBase}/v2/files/list?parent_id=${parentId}&per_page=1000`,
+    {},
+  );
+  const envelope = yield* Schema.decodeUnknownEffect(FolderListEnvelope)(
+    parsed,
+  ).pipe(
+    Effect.mapError(
+      () =>
+        new PutioFailure({
+          message: "put.io folder list response failed schema",
+        }),
+    ),
+  );
+  if (envelope.cursor)
+    return yield* new PutioFailure({
+      message: "put.io folder list exceeds one page",
+    });
+  return envelope.files.map((file) => file.id);
+}, Effect.timeout("20 seconds"));
+
+/** Every transfer on the account, up to five pages of 1000. */
+export const listTransfers = Effect.fn("live.putio.listTransfers")(
+  function* () {
+    const transfers: (typeof Transfer.Type)[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const parsed = yield* requestJson(
+        cursor === undefined
+          ? `${liveVersions.apiBase}/v2/transfers/list?per_page=1000`
+          : `${liveVersions.apiBase}/v2/transfers/list/continue?per_page=1000`,
+        cursor === undefined
+          ? {}
+          : {
+              method: "POST",
+              headers: {
+                "content-type": "application/x-www-form-urlencoded",
+              },
+              body: new URLSearchParams({ cursor }),
+            },
+      );
+      const envelope = yield* Schema.decodeUnknownEffect(TransferListEnvelope)(
+        parsed,
+      ).pipe(
+        Effect.mapError(
+          () =>
+            new PutioFailure({
+              message: "put.io transfer list response failed schema",
+            }),
+        ),
+      );
+      transfers.push(...envelope.transfers);
+      if (!envelope.cursor) return transfers;
+      cursor = envelope.cursor;
+    }
+    return yield* new PutioFailure({
+      message: "put.io transfer list exceeds the page limit",
+    });
+  },
+  Effect.timeout("60 seconds"),
+);

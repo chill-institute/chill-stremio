@@ -28,6 +28,7 @@
     "hosted:smoke": "node harness/hosted-smoke.ts",
     "hosted:container": "node harness/hosted-container.ts",
     "hosted:live": "node harness/live/hosted.ts",
+    "hosted:reuse": "node harness/live/reuse.ts",
     "native:android:account": "node harness/native/android-account.ts"
   },
   "dependencies": {

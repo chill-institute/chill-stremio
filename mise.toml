@@ -80,6 +80,10 @@ run = "pnpm exec vp run hosted:container"
 description = "Prove bounded real Engine acquisition with generated discovery and owned fixture media"
 run = "pnpm exec vp run hosted:live"
 
+[tasks."hosted:reuse"]
+description = "Prove production Engine reuses one put.io transfer for repeated add-on requests"
+run = "pnpm exec vp run hosted:reuse"
+
 [tasks."hosted:public"]
 description = "Read the deployed adapter with the designated account's add-on credential"
 # Node alone: the canary runs this next to the credential without installing packages.
