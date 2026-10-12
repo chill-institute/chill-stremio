@@ -55,7 +55,8 @@ and calls `AddTransfer` once with the returned link. Explicit prefetch hints are
 rejected, and release rows omit `bingeGroup`; these measures do not prove a human
 click universally across clients. Identical requests share one submission in
 process memory while any is open and for 60 seconds afterwards; later requests
-and requests after a restart submit again. A failed or lost submission
+and requests after a restart submit again, and Engine answers them with the
+account's existing transfer for that source while it is still usable. A failed or lost submission
 response reports `unknown` and is never retried.
 Engine's configured download destination controls where the transfer lands;
 the adapter never calls `GetDownloadFolder`, which can create or recover a folder

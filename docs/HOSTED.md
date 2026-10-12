@@ -152,8 +152,10 @@ every Stremio client.
 Identical play requests share one submission while any of them is open and for
 60 seconds after the last one finishes, so a player reopening or retrying the
 selected URL does not submit again. That memory is per process and bounded;
-selecting the same release after the window or after a restart adds another
-transfer. Under capacity pressure the oldest idle entries may be dropped before
+selecting the same release after the window or after a restart submits again.
+Engine then returns the account's existing transfer for that source instead of
+adding another, unless it failed or its finished file is gone
+([transfer reuse probe](./LIVE.md#transfer-reuse-probe)). Under capacity pressure the oldest idle entries may be dropped before
 their window ends. A submission does not depend on the requesting client staying
 connected. A failed, lost or timed-out submission response is never retried and
 reports `unknown`.
