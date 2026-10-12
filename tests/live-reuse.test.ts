@@ -66,7 +66,7 @@ function fakePutio() {
   };
 }
 
-type Mode = "reuse" | "fresh" | "overlap" | "foreign";
+type Mode = "reuse" | "fresh" | "overlap" | "foreign" | "shadow" | "lost";
 
 async function fakeEngine(
   putio: ReturnType<typeof fakePutio>,
@@ -74,7 +74,7 @@ async function fakeEngine(
   options: { root?: bigint[]; onAdd?: () => Promise<void> } = {},
 ) {
   let adds = 0;
-  let inFlight = 0;
+  const burst: (() => void)[] = [];
   const existing = (url: string) => {
     const infoHash = /urn:btih:([0-9a-f]{40})/.exec(url)?.[1] ?? "";
     return [...putio.transfers.values()].find(
@@ -109,16 +109,27 @@ async function fakeEngine(
       }
       assert.equal(request.url, "/v4/chill.v4.UserService/AddTransfer");
       const { url } = fromJsonString(proto.AddTransferRequestSchema, body);
-      adds++;
+      const arrival = adds++;
       await options.onAdd?.();
-      const order = inFlight++;
-      await setTimeout(20);
+      if (mode === "overlap" && arrival >= 2)
+        // Bounded, so a lane that sends the burst one at a time fails.
+        await new Promise<void>((resolve, reject) => {
+          burst.push(resolve);
+          if (burst.length === 3) for (const release of burst) release();
+          void setTimeout(2_000, undefined, { ref: false }).then(() =>
+            reject(new Error("burst did not overlap")),
+          );
+        });
+      if (mode === "lost") {
+        putio.add(url);
+        throw new Error("response lost");
+      }
       let id: number;
       if (mode === "foreign") id = 7;
-      else if (mode === "fresh" || (mode === "overlap" && order > 0))
+      else if (mode === "fresh" || (mode === "overlap" && arrival > 2))
         id = putio.add(url);
       else id = existing(url) ?? putio.add(url);
-      inFlight--;
+      if (mode === "shadow" && arrival === 1) putio.add(url);
       response.end(
         toJsonString(
           proto.AddTransferResponseSchema,
@@ -178,10 +189,12 @@ async function runLane(
     reservedBytes?: number;
     root?: bigint[];
     onAdd?: (directory: string) => Promise<void>;
+    provider?: (provider: ReuseProvider) => ReuseProvider;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "live-reuse-"));
   const putio = fakePutio();
+  const provider = options.provider?.(putio.provider) ?? putio.provider;
   const { onAdd } = options;
   const engine = await fakeEngine(putio, mode, {
     root: options.root,
@@ -203,7 +216,7 @@ async function runLane(
         engineBaseUrl: engine.baseUrl,
         username: "fixture",
         ledgerDirectory: async () => directory,
-        provider: putio.provider,
+        provider,
         artifact: join(directory, "artifact"),
         journal: join(directory, "recovery", "reuse.json"),
         nonce,
@@ -297,6 +310,51 @@ test("concurrent requests that create separate transfers fail", async () => {
   );
   assert.deepEqual([...run.putio.transfers.keys()], [7, 8]);
   assert.equal(run.receipt.proof.distinctTransfers, 3);
+});
+
+test("a second put.io transfer behind a reused ID fails and both are cancelled", async () => {
+  const run = await runLane("shadow");
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "provider-state");
+  assert.equal(run.receipt.proof.providerTransfers, 2);
+  assert.deepEqual(
+    run.putio.cancelled.map((ids) => ids.toSorted((a, b) => a - b)),
+    [[4242, 4243]],
+  );
+  assert.deepEqual([...run.putio.transfers.keys()], [7, 8]);
+});
+
+test("a reused transfer that put.io lists as errored fails", async () => {
+  const run = await runLane("reuse", {
+    provider: (provider) => ({
+      ...provider,
+      listTransfers: () =>
+        provider
+          .listTransfers()
+          .pipe(
+            Effect.map((transfers) =>
+              transfers.map((transfer) =>
+                carriesInfoHash(transfer, source.infoHash)
+                  ? { ...transfer, status: "ERROR" }
+                  : transfer,
+              ),
+            ),
+          ),
+    }),
+  });
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "provider-state");
+  assert.equal(run.receipt.proof.providerStatus, "ERROR");
+  assert.deepEqual(run.putio.cancelled, [[4242]]);
+});
+
+test("a transfer created behind a lost Engine response is still cancelled", async () => {
+  const run = await runLane("lost");
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "first-add");
+  assert.deepEqual(run.putio.cancelled, [[4242]]);
+  assert.deepEqual([...run.putio.transfers.keys()], [7, 8]);
+  assert.equal(run.receipt.cleanup.status, "uncertain");
 });
 
 test("a reported transfer without the run's info hash is never cancelled", async () => {
