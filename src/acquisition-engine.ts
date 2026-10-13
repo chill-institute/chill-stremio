@@ -80,6 +80,12 @@ export class AcquisitionEngine extends Context.Service<
   }
 >()("chill-stremio/AcquisitionEngine") {}
 
+/** A transfer result too large, deep or slow to list completely. */
+export class TransferTreeLimit extends Schema.TaggedError<TransferTreeLimit>()(
+  "TransferTreeLimit",
+  {},
+) {}
+
 const invalidResponse = () => new EngineError({ code: "invalid_response" });
 const invalidConfig = () => new EngineError({ code: "invalid_config" });
 const decodeTransfer = Effect.fn("Acquisition.decodeTransfer")(function* (
@@ -170,12 +176,11 @@ export const inspectTransferFiles = Effect.fn(
       if (!next) break;
       if (visited.has(next.id)) return yield* invalidResponse();
       if (visited.size >= 32 || next.depth > 8)
-        return yield* new EngineError({ code: "resource_exhausted" });
+        return yield* new TransferTreeLimit();
       visited.add(next.id);
       const folder = yield* engine.getFolder(next.id);
       fileCount += folder.files.length;
-      if (fileCount > 5000)
-        return yield* new EngineError({ code: "resource_exhausted" });
+      if (fileCount > 5000) return yield* new TransferTreeLimit();
       for (const file of folder.files) {
         if (fileIds.has(file.id)) return yield* invalidResponse();
         fileIds.add(file.id);
@@ -189,6 +194,6 @@ export const inspectTransferFiles = Effect.fn(
   },
   Effect.timeoutOrElse({
     duration: "10 seconds",
-    orElse: () => Effect.fail(new EngineError({ code: "deadline_exceeded" })),
+    orElse: () => Effect.fail(new TransferTreeLimit()),
   }),
 );

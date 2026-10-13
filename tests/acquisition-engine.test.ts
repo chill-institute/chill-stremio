@@ -48,6 +48,14 @@ function fixture(folders: Map<bigint, AcquisitionFolder>) {
   );
   return { calls, layer };
 }
+const failure = (layer: Layer.Layer<AcquisitionEngine>) =>
+  Effect.runPromise(
+    inspectTransferFiles(transfer).pipe(
+      Effect.provide(layer),
+      Effect.flip,
+      Effect.map((error) => ("code" in error ? error.code : error._tag)),
+    ),
+  );
 async function withServer(
   listener: RequestListener,
   run: (baseUrl: string) => Promise<void>,
@@ -278,17 +286,7 @@ test("inspection rejects cyclic or excessive folder trees and never escapes into
     [20n, files(20n, [{ id: 10n, fileType: "FOLDER" }])],
   ]);
   const f = fixture(folders);
-  assert.equal(
-    (
-      await Effect.runPromise(
-        inspectTransferFiles(transfer).pipe(
-          Effect.provide(f.layer),
-          Effect.flip,
-        ),
-      )
-    ).code,
-    "invalid_response",
-  );
+  assert.equal(await failure(f.layer), "invalid_response");
   folders.set(
     20n,
     files(
@@ -301,17 +299,7 @@ test("inspection rejects cyclic or excessive folder trees and never escapes into
   );
   for (let i = 0; i < 33; i++)
     folders.set(BigInt(i + 100), files(BigInt(i + 100), []));
-  assert.equal(
-    (
-      await Effect.runPromise(
-        inspectTransferFiles(transfer).pipe(
-          Effect.provide(f.layer),
-          Effect.flip,
-        ),
-      )
-    ).code,
-    "resource_exhausted",
-  );
+  assert.equal(await failure(f.layer), "TransferTreeLimit");
 });
 
 test("inspection propagates expired authorization instead of presenting missing videos", async () => {
@@ -325,12 +313,5 @@ test("inspection propagates expired authorization instead of presenting missing 
         Effect.fail(new EngineError({ code: "unauthenticated" })),
     }),
   );
-  assert.equal(
-    (
-      await Effect.runPromise(
-        inspectTransferFiles(transfer).pipe(Effect.provide(layer), Effect.flip),
-      )
-    ).code,
-    "unauthenticated",
-  );
+  assert.equal(await failure(layer), "unauthenticated");
 });

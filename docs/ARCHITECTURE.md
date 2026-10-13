@@ -64,9 +64,10 @@ and persist settings.
 
 [acquisition-engine.ts](../src/acquisition-engine.ts) validates transfer status
 and enumerates only the exact transfer result. Result folders are bounded by
-depth, total folders, total entries and time. Playback verifies that the selected
-video remains inside that result and its parent folder. No first-video guess or
-unbounded account crawl is allowed.
+depth, total folders, total entries across folders and total time; a result past
+those bounds needs a file choice and never plays a partial listing. Playback
+verifies that the selected video remains inside that result and its parent
+folder. No first-video guess or unbounded account crawl is allowed.
 
 ## Credentials
 

@@ -58,7 +58,10 @@ export function createSelection(options: { base: string }) {
     if (transfer.failed) return { status: "failed" } satisfies PlaybackResult;
     if (!transfer.isFinished)
       return { status: "pending" } satisfies PlaybackResult;
-    const files = yield* inspectTransferFiles(transfer);
+    const files = yield* inspectTransferFiles(transfer).pipe(
+      Effect.catchTag("TransferTreeLimit", () => Effect.succeed(undefined)),
+    );
+    if (!files) return { status: "select-file" } satisfies PlaybackResult;
     const file = files.length === 1 ? files[0] : undefined;
     if (!file)
       return {

@@ -76,6 +76,11 @@ async function fixture(
     addCredentials: [] as (string | string[] | undefined)[],
     transferFinished: true,
     singleFile: false,
+    // Folder listings that replace or add to the defaults, by folder ID.
+    folders: new Map<
+      bigint,
+      { id: bigint; name: string; fileType: string }[]
+    >(),
     playbackPending: false,
     rejection: undefined as { status: number; code: string } | undefined,
     // Wall-clock time a method takes, for tests that fake `Date`.
@@ -130,8 +135,10 @@ async function fixture(
       switch (method) {
         case "GetFolder": {
           const { id } = fromJsonString(proto.GetFolderRequestSchema, json);
+          await hold();
           const files =
-            id === 0n
+            state.folders.get(id) ??
+            (id === 0n
               ? [{ id: 42n, name: "Nested library", fileType: "FOLDER" }]
               : id === 42n
                 ? [{ id: 50n, name: "Existing video", fileType: "VIDEO" }]
@@ -157,7 +164,7 @@ async function fixture(
                               },
                             ]),
                       ]
-                    : undefined;
+                    : undefined);
           if (!files) {
             error(response, 404, "not_found");
             return;
@@ -1056,6 +1063,69 @@ test("multi-file Stremio selection requires choosing a file and never guesses th
       false,
     );
   } finally {
+    await f.close();
+  }
+});
+
+test("a download with too many folders to list asks for a file choice", async () => {
+  const f = await fixture();
+  try {
+    const extras = Array.from({ length: 33 }, (_, i) => ({
+      id: BigInt(100 + i),
+      name: `Extra ${i + 1}`,
+      fileType: "FOLDER",
+    }));
+    f.state.folders.set(20n, [
+      { id: 21n, name: "Independent.Film.mkv", fileType: "VIDEO" },
+      ...extras,
+    ]);
+    for (const extra of extras) f.state.folders.set(extra.id, []);
+    const response = await fetch(`${f.base()}/status/90.m3u8`, {
+      redirect: "manual",
+    });
+    assert.equal(response.status, 302);
+    assert.equal(
+      response.headers.get("location"),
+      `${f.base()}/notice/select-file.m3u8`,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("a download too slow to list asks for a file choice", async () => {
+  const f = await fixture();
+  // Fake the listing limit and Engine latency; sockets stay real.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    f.state.engineDelayMs = 6_000;
+    f.state.singleFile = true;
+    let responded = false;
+    const selected = fetch(`${f.base()}/status/90.m3u8`, {
+      redirect: "manual",
+    }).then((response) => {
+      responded = true;
+      return response;
+    });
+    // GetTransfer and each GetFolder take one step; the ten-second listing
+    // limit ends during the second GetFolder.
+    for (let step = 1; ; step++) {
+      while (f.state.heldCalls < step && !responded) await sleep(5);
+      if (responded) break;
+      await vi.advanceTimersByTimeAsync(6_000);
+    }
+    const response = await selected;
+    assert.equal(response.status, 302);
+    assert.equal(
+      response.headers.get("location"),
+      `${f.base()}/notice/select-file.m3u8`,
+    );
+    assert.equal(
+      f.calls.filter(({ method }) => method === "GetFolder").length,
+      2,
+    );
+  } finally {
+    vi.useRealTimers();
     await f.close();
   }
 });
