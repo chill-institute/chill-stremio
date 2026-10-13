@@ -42,13 +42,18 @@ async function close(server: Server) {
   );
 }
 
-async function runPublic(origin: string, presented: string) {
+async function runPublic(
+  origin: string,
+  presented: string,
+  engineBaseUrl = origin,
+) {
   const directory = await mkdtemp(join(tmpdir(), "hosted-public-"));
   try {
     const child = spawn(process.execPath, [fileURLToPath(harness)], {
       cwd: directory,
       env: {
         CHILL_PUBLIC_STREMIO_ORIGIN: origin,
+        CHILL_ENGINE_BASE_URL: engineBaseUrl,
         CHILL_STREMIO_CREDENTIAL: presented,
       },
     });
@@ -73,7 +78,9 @@ async function runPublic(origin: string, presented: string) {
   }
 }
 
-async function adapter(engine: "accepting" | "rejecting" | "no-releases") {
+async function adapter(
+  engine: "accepting" | "rejecting" | "no-releases" | "no-season-grant",
+) {
   const fake = createServer((request, response) => {
     void (async () => {
       let body = "";
@@ -120,6 +127,49 @@ async function adapter(engine: "accepting" | "rejecting" | "no-releases") {
             ),
           );
           return;
+        case "/chill.v4.UserService/GetTVShowDetail":
+          response.end(
+            toJsonString(
+              proto.GetTVShowDetailResponseSchema,
+              create(proto.GetTVShowDetailResponseSchema, {
+                show: { imdbId: "tt0903747", title: "Reference series" },
+                seasons: [{ seasonNumber: 1 }],
+              }),
+            ),
+          );
+          return;
+        case "/chill.v4.UserService/GetTVShowSeason":
+          response.end(
+            toJsonString(
+              proto.GetTVShowSeasonResponseSchema,
+              create(proto.GetTVShowSeasonResponseSchema, {
+                imdbId: "tt0903747",
+                seasonNumber: 1,
+                episodes: [
+                  { seasonNumber: 1, episodeNumber: 1, name: "Pilot" },
+                ],
+              }),
+            ),
+          );
+          return;
+        case "/chill.v4.UserService/GetTVShowSeasonDownloads":
+          assert.deepEqual(
+            fromJsonString(proto.GetTVShowSeasonDownloadsRequestSchema, body),
+            create(proto.GetTVShowSeasonDownloadsRequestSchema, {
+              imdbId: "tt0903747",
+              seasonNumber: 1,
+            }),
+          );
+          if (engine === "no-season-grant") {
+            response
+              .writeHead(403)
+              .end(
+                '{"code":"procedure_not_allowed","message":"procedure not allowed for this credential"}',
+              );
+            return;
+          }
+          response.end("{}");
+          return;
         case "/chill.v4.UserService/Search": {
           const { query } = fromJsonString(proto.UserSearchRequestSchema, body);
           response.end(
@@ -150,6 +200,7 @@ async function adapter(engine: "accepting" | "rejecting" | "no-releases") {
       }
     })();
   });
+  const engineBaseUrl = await listen(fake);
   const hosted = await startHostedAdapter({
     statusMedia: new Map(
       statusMediaKinds.map((kind) => [
@@ -161,11 +212,12 @@ async function adapter(engine: "accepting" | "rejecting" | "no-releases") {
         },
       ]),
     ),
-    engineBaseUrl: await listen(fake),
+    engineBaseUrl,
     webOrigin: "http://127.0.0.1:3000",
   });
   return {
     origin: hosted.origin,
+    engineBaseUrl,
     async close() {
       await hosted.close();
       await close(fake);
@@ -177,11 +229,20 @@ for (const [engine, failedStep, outcome] of [
   ["accepting", undefined, "an accepting Engine passes"],
   ["rejecting", "library", "a rejecting Engine fails at library"],
   ["no-releases", "standard-title", "no releases fails at standard-title"],
+  [
+    "no-season-grant",
+    "season-downloads",
+    "no season lookup grant fails at season-downloads",
+  ],
 ] as const) {
   test(`public check with ${outcome} and records no credential`, async () => {
     const hosted = await adapter(engine);
     try {
-      const run = await runPublic(hosted.origin, credential);
+      const run = await runPublic(
+        hosted.origin,
+        credential,
+        hosted.engineBaseUrl,
+      );
       assert.equal(run.code, failedStep ? 1 : 0);
       assert.equal(run.receipt.passed, !failedStep);
       assert.equal(
@@ -200,7 +261,11 @@ test("public check fails at configuration without a credential", async () => {
   const hosted = await adapter("accepting");
   try {
     for (const presented of ["", "  ", "not-a-credential"]) {
-      const run = await runPublic(hosted.origin, presented);
+      const run = await runPublic(
+        hosted.origin,
+        presented,
+        hosted.engineBaseUrl,
+      );
       assert.equal(run.code, 1);
       assert.deepEqual(run.receipt.steps, [
         {

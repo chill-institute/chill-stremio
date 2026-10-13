@@ -346,13 +346,18 @@ its Actions access settings; GitHub exposes no API for that grant.
 `mise run hosted:public` checks the deployed endpoint with the designated
 account's Engine-issued add-on credential, supplied privately as
 `CHILL_STREMIO_CREDENTIAL`. It reads the public manifest, the personal manifest,
-the whole-library catalog and release results for a standard IMDb movie, and
-fails if Engine rejects the credential or either manifest description differs
-from this checkout's [copy](../src/manifest-descriptions.ts), so run it at the
-deployed commit. It consumes no stream, so it creates no transfer and does not
-prove playback. `CHILL_PUBLIC_STREMIO_ORIGIN` overrides the endpoint. Results
-go to `artifacts/public-<timestamp>/results.json` without the credential. It
-needs only Node, not the installed packages.
+the whole-library catalog, release results for a standard IMDb movie and an
+episode's stream list, and fails if Engine rejects the credential or either
+manifest description differs from this checkout's
+[copy](../src/manifest-descriptions.ts), so run it at the deployed commit. It
+then calls Engine's `GetTVShowSeasonDownloads` directly with the credential for
+a finished series' first season and fails on `401`, `403` or a Connect
+`permission_denied` or `unauthenticated` code; any other answer passes, with or
+without a pack. It consumes no stream, so it creates no transfer and does not
+prove playback. `CHILL_PUBLIC_STREMIO_ORIGIN` overrides the endpoint and
+`CHILL_ENGINE_BASE_URL` the Engine API base, which must use HTTPS except on
+loopback. Results go to `artifacts/public-<timestamp>/results.json` without the
+credential. It needs only Node, not the installed packages.
 
 The post-deploy canary, [canary.yml](../.github/workflows/canary.yml), runs
 `hosted:public` in the `canary` GitHub Environment, which admits only `main` and
@@ -388,7 +393,10 @@ rotate, sign in to `https://chill.institute/stremio` as the designated account,
 choose **disconnect Stremio** and confirm, which revokes every add-on link of
 that account, then mint again. Mint again after any exposure, before Engine
 retires the key that signed the credential, and whenever the canary reports
-`Engine rejected the credential`.
+`Engine rejected the credential`. A `season-downloads` failure with `403` means
+Engine does not grant add-on credentials `GetTVShowSeasonDownloads`; a new
+credential does not change that, and the adapter keeps serving episodes without
+the season pack row.
 
 `mise run hosted:live` separately tests one self-generated clip through real
 Engine acquisition. It uses normal OAuth with the designated put.io test

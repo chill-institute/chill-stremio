@@ -5,10 +5,14 @@ import { redactLive } from "./redact.ts";
 
 // Read-only proof that the deployed adapter serves the designated account
 // through an Engine-issued add-on credential: read its manifest, library and
-// release results. No stream is consumed, so no transfer or allowance is used.
+// release results, and check that Engine lets the credential look up season
+// packs. No stream is consumed, so no transfer or allowance is used.
 const origin = new URL(
   process.env.CHILL_PUBLIC_STREMIO_ORIGIN ?? "https://stremio.chill.institute",
 ).origin;
+const engineBaseUrl = (
+  process.env.CHILL_ENGINE_BASE_URL ?? "https://api.chill.institute/v4"
+).replace(/\/+$/, "");
 const credential = process.env.CHILL_STREMIO_CREDENTIAL?.trim() ?? "";
 const stamp = new Date().toISOString().replaceAll(":", "-");
 const artifact = `artifacts/public-${stamp}`;
@@ -33,6 +37,15 @@ let passed = false;
 try {
   if (!isCredential(credential))
     fail("configuration", "designated add-on credential absent");
+  const engine = URL.canParse(engineBaseUrl) ? new URL(engineBaseUrl) : null;
+  if (
+    engine?.protocol !== "https:" &&
+    !(
+      engine?.protocol === "http:" &&
+      ["127.0.0.1", "[::1]", "localhost"].includes(engine.hostname)
+    )
+  )
+    fail("configuration", "Engine base URL must use HTTPS");
   const health = await read("/health");
   if (health.status !== 200) fail("health", `status ${health.status}`);
   pass("health");
@@ -78,6 +91,51 @@ try {
       "standard-title",
       `release results ${streams.length}; no media consumed`,
     );
+  const episode = await read(`${base}/stream/series/tt0903747:1:1.json`);
+  if (episode.status !== 200)
+    fail("standard-episode", `status ${episode.status}`);
+  const episodeStreams = asRecord(await episode.json())?.streams;
+  if (!Array.isArray(episodeStreams))
+    fail("standard-episode", "streams missing");
+  else if (
+    episodeStreams.some((stream) => asRecord(stream)?.externalUrl !== undefined)
+  )
+    fail("standard-episode", "Engine rejected the credential");
+  else
+    pass(
+      "standard-episode",
+      `release results ${episodeStreams.length}; no media consumed`,
+    );
+  // Engine admits an add-on credential only to procedures it was granted.
+  const season = await fetch(
+    `${engineBaseUrl}/chill.v4.UserService/GetTVShowSeasonDownloads`,
+    {
+      method: "POST",
+      signal,
+      redirect: "error",
+      headers: {
+        "content-type": "application/json",
+        "connect-protocol-version": "1",
+        "x-chill-stremio-credential": credential,
+      },
+      body: JSON.stringify({ imdbId: "tt0903747", seasonNumber: 1 }),
+    },
+  );
+  const answer = asRecord(await season.json().catch(() => undefined));
+  if (
+    [401, 403].includes(season.status) ||
+    ["unauthenticated", "permission_denied"].includes(String(answer?.code))
+  )
+    fail(
+      "season-downloads",
+      `Engine refused the lookup: status ${season.status}`,
+    );
+  pass(
+    "season-downloads",
+    season.ok
+      ? `season pack ${answer?.seasonPack === undefined ? "absent" : "offered"}`
+      : `status ${season.status}`,
+  );
   passed = true;
 } catch (error) {
   if (steps.at(-1)?.passed !== false)
