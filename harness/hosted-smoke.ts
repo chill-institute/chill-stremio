@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createConnection } from "node:net";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { chromium, expect, type Page } from "@playwright/test";
+import { chromium, expect, type Locator, type Page } from "@playwright/test";
 import { Effect } from "effect";
 import { redactCredentials } from "../src/credential.ts";
 import { startHostedAdapter } from "../src/hosted.ts";
@@ -88,6 +88,17 @@ const maskAddonUrl = (page: Page) =>
       'input[placeholder="Paste addon URL"] { -webkit-text-security: disc; }',
   });
 
+/**
+ * Follows a discover preview's detail link until `row` shows. The card can
+ * navigate on its own while its preview animates, so one click can miss.
+ */
+const reachDetail = (show: Locator, row: Locator) =>
+  expect(async () => {
+    if (!(await row.isVisible()) && (await show.isVisible()))
+      await show.click({ timeout: 1000 });
+    await expect(row).toBeVisible({ timeout: 2000 });
+  }).toPass({ timeout: 30000 });
+
 /** Opens a discovery title's detail page and returns its visible release row. */
 async function openRelease(page: Page, name: string, target: string) {
   await page
@@ -108,11 +119,7 @@ async function openRelease(page: Page, name: string, target: string) {
     .filter({ visible: true })
     .last();
   await expect(previewShow.or(release).first()).toBeVisible();
-  if (await previewShow.isVisible())
-    await previewShow.click({ timeout: 1000 }).catch(async () => {
-      await expect(release).toBeVisible();
-    });
-  await expect(release).toBeVisible();
+  await reachDetail(previewShow, release);
   return release;
 }
 
@@ -128,11 +135,7 @@ async function openLibraryFile(page: Page, name: string, fileId: bigint) {
     .getByText("chill.institute", { exact: true })
     .filter({ visible: true })
     .last();
-  // The card can navigate while its outgoing preview is still visible.
-  if (await show.isVisible())
-    await show.click({ timeout: 1000 }).catch(async () => {
-      await expect(stream).toBeVisible();
-    });
+  await reachDetail(show, stream);
   await stream.click();
 }
 

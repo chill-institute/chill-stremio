@@ -60,11 +60,15 @@ export const hostedFixture = {
   ],
   /** A download that stays pending until the smoke completes it. */
   pendingCase: { name: "Synthetic Pending Release", transferId: 6n },
-  /** Engine's season pack for the series' first season: two episode videos. */
+  /**
+   * Engine's season pack for the series' first season: two episode videos,
+   * saved outside the library root so library listings stay unchanged.
+   */
   packCase: {
     id: "fixture-season-pack",
     link: "https://fixture.invalid/season.torrent",
     transferId: 7n,
+    parentId: 301n,
     folderId: 300n,
     firstEpisodeId: 9223372036854775807n - 5n,
     secondEpisodeId: 9223372036854775807n - 6n,
@@ -368,7 +372,7 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
       percentDone: 100,
       isFinished: true,
       fileId: packCase.folderId,
-      saveParentId: 0n,
+      saveParentId: packCase.parentId,
     };
     const state: HostedEngineState = {
       submitted: false,
@@ -439,7 +443,28 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
               req.url === "/chill.v4.UserService/GetFolder"
                 ? fromJsonString(GetFolderRequestSchema, body)
                 : undefined;
-            if (folderRequest?.id === packCase.folderId) {
+            if (folderRequest?.id === packCase.parentId) {
+              assert.ok(state.packSubmitted);
+              assert.ok(!folderRequest.includeReleaseInfo);
+              calls.folder++;
+              response = toJsonString(
+                GetFolderResponseSchema,
+                create(GetFolderResponseSchema, {
+                  parent: {
+                    id: packCase.parentId,
+                    name: "Season downloads",
+                    fileType: "FOLDER",
+                  },
+                  files: [
+                    {
+                      id: packCase.folderId,
+                      name: "Generated season pack",
+                      fileType: "FOLDER",
+                    },
+                  ],
+                }),
+              );
+            } else if (folderRequest?.id === packCase.folderId) {
               assert.ok(state.packSubmitted);
               if (folderRequest.includeReleaseInfo) calls.releaseInfoListings++;
               calls.folder++;
@@ -519,15 +544,6 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                                   {
                                     id: multipleFolderId,
                                     name: "Multiple files",
-                                    fileType: "FOLDER",
-                                  },
-                                ]
-                              : []),
-                            ...(state.packSubmitted
-                              ? [
-                                  {
-                                    id: packCase.folderId,
-                                    name: "Generated season pack",
                                     fileType: "FOLDER",
                                   },
                                 ]
