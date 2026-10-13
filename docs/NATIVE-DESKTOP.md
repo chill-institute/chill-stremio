@@ -146,7 +146,7 @@ item holds:
   contains the credential.
 - Movie discovery shows the generated title; `Show` opens its detail page and
   the `Download to put.io` row is visible. The episode route shows the series
-  title and its release row. Both checkpoints require zero transfers, zero media
+  title and a `Download` row. Both checkpoints require zero transfers, zero media
   GETs and at least one stream listing: browsing stays read-only.
 - Selecting the row consumes the media URL and submits exactly one transfer.
   The player stays loading without a status clip; completing the fixture transfer

@@ -82,7 +82,10 @@ episode from Engine's release info and never parses file names itself.
 length; Engine decides whether the credential is valid and which account it
 belongs to. The adapter keeps no database, key or per-account memory beyond
 open requests. A `401` or `403` from Engine becomes a reconnect row, source or
-status clip, pointing to `https://chill.institute/stremio`.
+status clip, pointing to `https://chill.institute/stremio`. The exception is a
+`403` on the season lookup: the listing leaves out the
+[season pack](./HOSTED.md#season-packs) row, and a selected pack plays the
+release-unavailable clip.
 
 The credential grants library/discovery access, playback and chosen-release
 downloads to put.io. Keep add-on links private. Personalized responses use

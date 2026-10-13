@@ -104,12 +104,15 @@ async function fixture(
       | undefined,
     seasonRejection: undefined as { status: number; code: string } | undefined,
     stallSeasonPack: false,
+    seasonDelayMs: 0,
     abandonedSeasonLookups: 0,
     playbackPending: false,
     rejection: undefined as { status: number; code: string } | undefined,
     // Wall-clock time a method takes, for tests that fake `Date`.
     elapsedMs: {} as Partial<Record<string, number>>,
     releaseMissing: false,
+    // Search results listed after the fixture release.
+    extraReleases: 0,
     indexerError: "",
   };
   const error = (response: ServerResponse, status: number, code: string) => {
@@ -293,6 +296,14 @@ async function fixture(
                     size: 12345n,
                     seeders: 3n,
                   },
+                  ...Array.from({ length: state.extraReleases }, (_, n) => ({
+                    id: `fixture-release-${n}`,
+                    title: "Independent.Film.720p",
+                    indexer: "Fixture",
+                    link: "https://engine.fixture.test/download?token=fixture-release-secret",
+                    size: 12345n,
+                    seeders: 1n,
+                  })),
                 ],
               }),
             ),
@@ -316,6 +327,7 @@ async function fixture(
             );
             return;
           }
+          await sleep(state.seasonDelayMs);
           response.end(
             toJsonString(
               proto.GetTVShowSeasonDownloadsResponseSchema,
@@ -1839,6 +1851,11 @@ test("an episode lists Engine's season pack after its releases", async () => {
       ["Download to put.io"],
       "A pack Search already lists appears once",
     );
+    f.state.seasonPack = seasonPack;
+    f.state.extraReleases = 100;
+    const capped = await episodeRows(f);
+    assert.equal(capped.length, 101, "100 episode releases and the pack");
+    assert.equal(capped.at(-1)?.name, "Download season to put.io");
     assert.equal(f.state.addCount, 0);
   } finally {
     await f.close();
@@ -1863,6 +1880,22 @@ test("a season lookup Engine refuses or never answers leaves the episode rows", 
     );
     assert.ok(performance.now() - started < 2_000);
     await until(() => f.state.abandonedSeasonLookups === 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a season lookup slower than the episode search still lists its pack", async () => {
+  const f = await fixture();
+  try {
+    f.state.seasonPack = seasonPack;
+    // The pack answers after the search, but before the grace that follows it ends.
+    f.state.engineDelayMs = 500;
+    f.state.seasonDelayMs = 750;
+    assert.deepEqual(
+      (await episodeRows(f)).map(({ name }) => name),
+      ["Download to put.io", "Download season to put.io"],
+    );
   } finally {
     await f.close();
   }
@@ -2014,6 +2047,16 @@ test("a season pack Engine no longer offers or refuses plays release-unavailable
     f.state.seasonPack = seasonPack;
     f.state.seasonRejection = { status: 403, code: "procedure_not_allowed" };
     assert.equal(await location(packSelection(f)), unavailable);
+    f.state.seasonRejection = { status: 500, code: "internal" };
+    assert.equal(await location(packSelection(f)), unavailable);
+    f.state.seasonRejection = undefined;
+    f.state.seasonPack = { ...seasonPack, id: "" };
+    assert.equal(
+      await location(packSelection(f)),
+      unavailable,
+      "A pack without an ID",
+    );
+    f.state.seasonPack = seasonPack;
     f.state.seasonRejection = { status: 401, code: "unauthenticated" };
     assert.equal(
       await location(packSelection(f)),

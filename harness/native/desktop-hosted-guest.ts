@@ -139,7 +139,12 @@ try {
       episodeRoute = `/detail/series/${encoded(requireString(reply, "seriesId"))}/${encoded(requireString(reply, "episodeId"))}`;
       app = startApp(episodeRoute);
       await textVisible("episode-context", "Alpha", undefined, 30_000);
-      await textTarget("episode-context", "Download", streamListBounds, 30_000);
+      await textVisible(
+        "episode-context",
+        "Download",
+        streamListBounds,
+        30_000,
+      );
       await stage("episode-detail");
     },
     ["ui-installation"],
