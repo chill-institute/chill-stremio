@@ -15,6 +15,8 @@ import {
   GetTVShowSeasonResponseSchema,
   GetTVShowDetailRequestSchema,
   GetTVShowSeasonRequestSchema,
+  GetTVShowSeasonDownloadsRequestSchema,
+  GetTVShowSeasonDownloadsResponseSchema,
   UserSearchRequestSchema,
   SearchResponseSchema,
   AddTransferRequestSchema,
@@ -58,6 +60,15 @@ export const hostedFixture = {
   ],
   /** A download that stays pending until the smoke completes it. */
   pendingCase: { name: "Synthetic Pending Release", transferId: 6n },
+  /** Engine's season pack for the series' first season: two episode videos. */
+  packCase: {
+    id: "fixture-season-pack",
+    link: "https://fixture.invalid/season.torrent",
+    transferId: 7n,
+    folderId: 300n,
+    firstEpisodeId: 9223372036854775807n - 5n,
+    secondEpisodeId: 9223372036854775807n - 6n,
+  },
 } as const;
 export type RecoveryKind = (typeof hostedFixture.recoveryCases)[number]["kind"];
 export const movieTarget = (id: string) =>
@@ -75,6 +86,7 @@ export interface HostedEngineState {
   recoverySubmitted: Set<RecoveryKind>;
   pendingSubmitted: boolean;
   pendingCompleted: boolean;
+  packSubmitted: boolean;
   /** Answer every RPC as Engine does for a revoked or expired credential. */
   credentialRejected: boolean;
 }
@@ -85,6 +97,8 @@ export interface HostedEngineCalls {
   search: number;
   transfer: number;
   rejected: number;
+  /** Folder listings that asked for release info. */
+  releaseInfoListings: number;
   /** RPCs answered with 401 while the credential was rejected. */
   unauthenticated: number;
   /** Resolved playback file IDs in request order. */
@@ -159,6 +173,7 @@ export const generateCertificates = Effect.fn("generateCertificates")(
 const mediaPaths = [
   "/media/movie.mp4",
   "/media/episode1.mp4",
+  "/media/episode2.mp4",
   "/media/english.vtt",
   "/media/spanish.vtt",
   "/poster.svg",
@@ -213,7 +228,7 @@ export const startHostedMedia = Effect.fn("startHostedMedia")(function* (
 ) {
   const playlists = new Map<string, Buffer>();
   if (options.hls) {
-    for (const name of ["movie", "episode1"]) {
+    for (const name of ["movie", "episode1", "episode2"]) {
       const directory = yield* Effect.acquireRelease(
         Effect.tryPromise(() => mkdtemp(".cache/hosted-hls-")),
         (path) =>
@@ -344,8 +359,17 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
       multipleEpisodeName,
       recoveryCases,
       pendingCase,
+      packCase,
     } = hostedFixture;
     const media = options.mediaOrigin;
+    const packTransfer = {
+      id: packCase.transferId,
+      status: "COMPLETED",
+      percentDone: 100,
+      isFinished: true,
+      fileId: packCase.folderId,
+      saveParentId: 0n,
+    };
     const state: HostedEngineState = {
       submitted: false,
       episodeSubmitted: false,
@@ -353,6 +377,7 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
       recoverySubmitted: new Set(),
       pendingSubmitted: false,
       pendingCompleted: false,
+      packSubmitted: false,
       credentialRejected: false,
     };
     const pendingTransfer = (id: bigint) => ({
@@ -370,6 +395,7 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
       search: 0,
       transfer: 0,
       rejected: 0,
+      releaseInfoListings: 0,
       unauthenticated: 0,
       playbackFiles: [],
     };
@@ -387,6 +413,7 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                 "GetTVShows",
                 "GetTVShowDetail",
                 "GetTVShowSeason",
+                "GetTVShowSeasonDownloads",
                 "Search",
                 "AddTransfer",
                 "GetTransfer",
@@ -408,8 +435,46 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
               assert.ok(body.length < 4096);
             }
             let response: string;
-            if (req.url === "/chill.v4.UserService/GetFolder") {
-              const folderId = fromJsonString(GetFolderRequestSchema, body).id;
+            const folderRequest =
+              req.url === "/chill.v4.UserService/GetFolder"
+                ? fromJsonString(GetFolderRequestSchema, body)
+                : undefined;
+            if (folderRequest?.id === packCase.folderId) {
+              assert.ok(state.packSubmitted);
+              if (folderRequest.includeReleaseInfo) calls.releaseInfoListings++;
+              calls.folder++;
+              response = toJsonString(
+                GetFolderResponseSchema,
+                create(GetFolderResponseSchema, {
+                  parent: {
+                    id: packCase.folderId,
+                    name: "Generated season pack",
+                    fileType: "FOLDER",
+                  },
+                  files: [
+                    {
+                      id: packCase.firstEpisodeId,
+                      name: "Generated season video one",
+                      episode: 1,
+                    },
+                    {
+                      id: packCase.secondEpisodeId,
+                      name: "Generated season video two",
+                      episode: 2,
+                    },
+                  ].map(({ episode, ...file }) => ({
+                    ...file,
+                    fileType: "VIDEO",
+                    releaseInfo: folderRequest.includeReleaseInfo
+                      ? { season: 1, episode }
+                      : undefined,
+                  })),
+                }),
+              );
+            } else if (folderRequest) {
+              const folderId = folderRequest.id;
+              // Only a season pack's own folder is listed with release info.
+              assert.ok(!folderRequest.includeReleaseInfo);
               assert.ok(
                 folderId === 0n ||
                   folderId === libraryFolderId ||
@@ -454,6 +519,15 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                                   {
                                     id: multipleFolderId,
                                     name: "Multiple files",
+                                    fileType: "FOLDER",
+                                  },
+                                ]
+                              : []),
+                            ...(state.packSubmitted
+                              ? [
+                                  {
+                                    id: packCase.folderId,
+                                    name: "Generated season pack",
                                     fileType: "FOLDER",
                                   },
                                 ]
@@ -567,8 +641,53 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                       stillUrl: `${media}/poster.svg`,
                       airDate: "2026-01-01",
                     },
+                    {
+                      seasonNumber: 1,
+                      episodeNumber: 2,
+                      name: "A generated second episode",
+                      overview: "Only its season pack offers this episode.",
+                      stillUrl: `${media}/poster.svg`,
+                      airDate: "2026-01-08",
+                    },
                   ],
                 }),
+              );
+            } else if (
+              req.url === "/chill.v4.UserService/GetTVShowSeasonDownloads"
+            ) {
+              const seasonRequest = fromJsonString(
+                GetTVShowSeasonDownloadsRequestSchema,
+                body,
+              );
+              assert.equal(seasonRequest.imdbId, seriesImdbId);
+              assert.equal(seasonRequest.seasonNumber, 1);
+              response = toJsonString(
+                GetTVShowSeasonDownloadsResponseSchema,
+                create(GetTVShowSeasonDownloadsResponseSchema, {
+                  seasonPack: {
+                    id: packCase.id,
+                    title: `${seriesName} S01 1080p`,
+                    link: packCase.link,
+                    size: 2097152n,
+                    seeders: 12n,
+                    resolution: "1080p",
+                    codec: "x264",
+                    quality: "WEB",
+                    indexer: "fixture",
+                    seasonNumber: 1,
+                  },
+                }),
+              );
+            } else if (
+              req.url === "/chill.v4.UserService/Search" &&
+              fromJsonString(UserSearchRequestSchema, body).query ===
+                `${seriesName} S01E02`
+            ) {
+              // Only the season pack offers the second episode.
+              calls.search++;
+              response = toJsonString(
+                SearchResponseSchema,
+                create(SearchResponseSchema, { query: `${seriesName} S01E02` }),
               );
             } else if (req.url === "/chill.v4.UserService/Search") {
               const { query } = fromJsonString(UserSearchRequestSchema, body);
@@ -628,6 +747,18 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                     },
                   ],
                 }),
+              );
+            } else if (
+              req.url === "/chill.v4.UserService/AddTransfer" &&
+              fromJsonString(AddTransferRequestSchema, body).url ===
+                packCase.link
+            ) {
+              assert.ok(!state.packSubmitted, "Season pack submitted twice");
+              state.packSubmitted = true;
+              calls.transfer++;
+              response = toJsonString(
+                AddTransferResponseSchema,
+                create(AddTransferResponseSchema, { transfer: packTransfer }),
               );
             } else if (req.url === "/chill.v4.UserService/AddTransfer") {
               const { url } = fromJsonString(AddTransferRequestSchema, body);
@@ -708,6 +839,16 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                         },
                 }),
               );
+            } else if (
+              req.url === "/chill.v4.UserService/GetTransfer" &&
+              fromJsonString(GetTransferRequestSchema, body).id ===
+                packCase.transferId
+            ) {
+              assert.ok(state.packSubmitted);
+              response = toJsonString(
+                GetTransferResponseSchema,
+                create(GetTransferResponseSchema, { transfer: packTransfer }),
+              );
             } else if (req.url === "/chill.v4.UserService/GetTransfer") {
               const { id } = fromJsonString(GetTransferRequestSchema, body);
               const recovery = recoveryCases.find(
@@ -769,6 +910,8 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                 requestedFile === libraryFileId ||
                   requestedFile === fileId ||
                   (requestedFile === episodeFileId && state.episodeSubmitted) ||
+                  (requestedFile === packCase.secondEpisodeId &&
+                    state.packSubmitted) ||
                   ([multipleMovieId, multipleEpisodeId].includes(
                     requestedFile,
                   ) &&
@@ -776,6 +919,13 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
               );
               calls.playback++;
               calls.playbackFiles.push(String(requestedFile));
+              const kind =
+                requestedFile === packCase.secondEpisodeId
+                  ? "episode2"
+                  : requestedFile === episodeFileId ||
+                      requestedFile === multipleEpisodeId
+                    ? "episode1"
+                    : "movie";
               response = toJsonString(
                 ResolvePlaybackResponseSchema,
                 create(ResolvePlaybackResponseSchema, {
@@ -784,8 +934,8 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                     value: {
                       media: {
                         url: options.hls
-                          ? `${media}/hls/${requestedFile === episodeFileId || requestedFile === multipleEpisodeId ? "episode1" : "movie"}/master.m3u8`
-                          : `${media}/media/${requestedFile === episodeFileId || requestedFile === multipleEpisodeId ? "episode1" : "movie"}.mp4`,
+                          ? `${media}/hls/${kind}/master.m3u8`
+                          : `${media}/media/${kind}.mp4`,
                         expiry: { case: "expiryUnknown", value: true },
                       },
                       subtitles: [

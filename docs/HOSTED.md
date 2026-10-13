@@ -71,8 +71,8 @@ an opaque PASETO `v4.local.` token of up to 1,024 characters. The adapter checks
 only its shape; a malformed credential returns `404` without contacting Engine.
 Every Engine call for that link sends `X-Chill-Stremio-Credential` and no
 `Authorization` header. Engine accepts the credential for `Search`, `GetMovies`,
-`GetTVShows`, `GetTVShowDetail`, `GetTVShowSeason`, `GetFolder`,
-`ResolvePlayback`, `GetTransfer` and `AddTransfer`.
+`GetTVShows`, `GetTVShowDetail`, `GetTVShowSeason`, `GetTVShowSeasonDownloads`,
+`GetFolder`, `ResolvePlayback`, `GetTransfer` and `AddTransfer`.
 
 Keep your add-on link private: anyone who has it can browse your put.io library,
 play its videos and start downloads to your account. Stremio shows the full link
@@ -114,8 +114,10 @@ alone is not proof of catalog visibility.
 2. Connect your account and install the add-on link it shows.
 3. Open **Discover → put.io library**, browse movie/series discovery, or search **Releases**.
    Ordinary Stremio movie and episode pages also list chill release results.
-4. Select a **Download to put.io** release row. The player requests its media
-   URL; the adapter looks the release up again and submits it to Engine.
+4. Select a **Download to put.io** release row, or on an episode the
+   **Download season to put.io** row for its [season pack](#season-packs). The
+   player requests its media URL; the adapter looks the release up again and
+   submits it to Engine.
 5. The player waits for the download and starts a ready single video
    automatically. Completed downloads appear in **put.io library**, where you can
    choose any file, including one from a multi-file download.
@@ -141,11 +143,12 @@ downloads appear in **put.io library**.
 
 Catalog, metadata and stream listings, HEAD, OPTIONS and requests marked with
 prefetch hints are read-only. GET on a selected
-`/s/<credential>/play/<type>/<id>/<release>.m3u8` URL resolves the release through
-Engine `Search` and submits the returned link with `AddTransfer`; Engine chooses
-the destination folder. A release missing from that search plays the
-`release-unavailable` clip below; a legacy `.mp4` selection returns `404`, or
-`503 unavailable` when an indexer reported an error. The adapter omits
+`/s/<credential>/play/<type>/<id>/<release>.m3u8` URL resolves the release
+through Engine `Search`, or a [season pack](#season-packs) through
+`GetTVShowSeasonDownloads`, and submits the returned link with `AddTransfer`;
+Engine chooses the destination folder. A release missing from that search plays
+the `release-unavailable` clip below; a legacy `.mp4` selection returns `404`,
+or `503 unavailable` when an indexer reported an error. The adapter omits
 `bingeGroup`. These guards do not cryptographically prove a human click for
 every Stremio client.
 
@@ -160,10 +163,12 @@ their window ends. A submission does not depend on the requesting client staying
 connected. A failed, lost or timed-out submission response is never retried and
 reports `unknown`.
 
-After submission the adapter polls `GetTransfer`, finds the downloaded video with
-`GetFolder` and resolves it with `ResolvePlayback`. A still-pending download
-redirects to `/s/<credential>/status/<transferId>.m3u8?wait=<n>`, where the
-transfer ID is decimal. Status URLs only read; reopening one resumes waiting
+After submission the adapter polls `GetTransfer`, finds the downloaded video
+with `GetFolder` and resolves it with `ResolvePlayback`. A still-pending
+download redirects to `/s/<credential>/status/<transferId>.m3u8?wait=<n>`, or
+for a season pack to
+`/s/<credential>/status/<transferId>/<season>/<episode>.m3u8?wait=<n>`, where
+the transfer ID is decimal. Status URLs only read; reopening one resumes waiting
 without submitting. HLS waits in 25-second windows and legacy `.mp4` URLs in
 45-second windows, with up to five redirects. Each window starts with the
 request and includes submission and status reads, so a still-pending download
@@ -180,18 +185,19 @@ their fifth redirect. Downloads continue independently of the player.
 
 HLS terminal states redirect to a five-second status clip,
 `/s/<credential>/notice/<state>.m3u8`, for `failed`, `select-file`,
-`unavailable`, `unknown` or `reconnect`. When Search no longer lists the selected
-release, or its indexers fail, HLS selection plays `release-unavailable` without
-submitting. Legacy `.mp4` URLs redirect to the matching `.mp4` clip. A
-multi-file download with exactly one video that is not a sample plays that
-video. A video is a sample when the last word of its name before the extension
-is `sample`, as in `x-sample.mkv`, `x.sample.mkv` or `sample.mkv`, or when a
-folder between the download and the video is named `Sample` or `Samples`. Any
-other multi-file download plays `select-file`, as does one with too many
-folders, folders nested too deep, too many entries across its folders, or
-folders too slow to list together; choose the file from **put.io library**.
-The adapter does not guess the first video or choose by size. Clip routes only
-check the credential's shape and never contact Engine.
+`unavailable`, `unknown` or `reconnect`. When Search no longer lists the
+selected release, or its indexers fail, HLS selection plays
+`release-unavailable` without submitting. Legacy `.mp4` URLs redirect to the
+matching `.mp4` clip. Apart from a [season pack](#season-packs), a multi-file
+download with exactly one video that is not a sample plays that video. A video
+is a sample when the last word of its name before the extension is `sample`, as
+in `x-sample.mkv`, `x.sample.mkv` or `sample.mkv`, or when a folder between the
+download and the video is named `Sample` or `Samples`. Any other multi-file
+download plays `select-file`, as does one with too many folders, folders nested
+too deep, too many entries across its folders, or folders too slow to list
+together; choose the file from **put.io library**. The adapter does not guess
+the first video or choose by size. Clip routes only check the credential's shape
+and never contact Engine.
 
 When a clip ends, the player returns to the stream list. Stremio Web counts a
 clip played past 70% as watched, and when an episode's clip ends it can move on
@@ -218,6 +224,36 @@ Library videos include Engine's subtitle tracks in their stream and through the
 subtitles resource. Playback that starts directly from a selected release carries
 no separate subtitle lookup; reopen the video from **put.io library** to get its
 tracks.
+
+## Season packs
+
+An episode's stream list ends with one **Download season to put.io** row when
+Engine offers a season pack for that episode's season. Its first line reads
+`Season <n> pack` and the resolution, codec and quality Engine reports; the
+second gives the indexer, seeders and size. The adapter asks Engine with
+`GetTVShowSeasonDownloads` alongside the episode search and, once the episode
+rows are ready, waits at most half a second more. A slower, failed or refused
+lookup leaves the row out without changing the episode rows, and so does a pack
+that the episode search already lists. The 100-row limit applies to episode
+rows only. Movies never show the row.
+
+Selecting the row asks `GetTVShowSeasonDownloads` again and submits the pack
+only while Engine still offers the same one; otherwise the player shows
+`release-unavailable`, as it does when Engine refuses the season lookup to the
+add-on link. A rejected credential still shows `reconnect`.
+
+When the download completes, the adapter lists the folders inside it with
+Engine's release info, which Engine parses from each video's name; the
+destination folder listing never asks for it. It plays the one video that is
+not a sample and whose release info names the selected season and episode, with
+no episode range beyond it. A download that is a single video, has no such
+video, has several or lacks release info plays `select-file`; one without videos
+plays `unavailable`. The pack's other episodes are in **put.io library**.
+Selecting the same pack on another episode of the season gets the existing
+download back from Engine, like any repeated release, and plays that episode.
+If Engine later offers a different pack, its row is a different release and
+starts a new download; play episodes you already downloaded from **put.io
+library**.
 
 ## Verification and release
 
@@ -258,7 +294,10 @@ the completed file in **put.io library**, rendered seeking and
 English/Spanish/off subtitle controls. Its failed, unknown and multi-file
 releases each submit once through the real adapter; the player must decode each
 HLS status clip without an error and return to the stream list, and the
-multi-file result plays its second file from the library. A pending release,
+multi-file result plays its second file from the library. An episode that only
+a season pack offers lists the pack row; selecting it decodes that episode from
+a two-episode pack, its season pack status URL plays it again, and the plain
+status URL for the same download asks for a file choice. A pending release,
 with the limit shortened to 45 seconds, must keep the player waiting through a
 manifest timeout and retry, show the pending clip, and play after completion
 when selected again, without another transfer. A rejected credential must show

@@ -4,7 +4,7 @@ For the stateless multi-user service and discovery, use [HOSTED.md](./HOSTED.md)
 
 The adapter serves one selected folder using the existing chill bearer token.
 `GetFolder` supplies catalog and metadata; `ResolvePlayback` requests HLS streams
-using contracts v2.7.0. Engine returns a verified put.io HLS master URL with a
+using contracts v3.1.0. Engine returns a verified put.io HLS master URL with a
 separate download grant; the account OAuth token never reaches the adapter.
 It uses the released generated client and never calls put.io directly.
 

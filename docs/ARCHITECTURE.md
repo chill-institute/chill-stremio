@@ -44,6 +44,9 @@ Engine search IDs must identify the same source release across repeated searches
 temporary download credentials and changing seed counts must not change that ID.
 The adapter rechecks that exact ID before opening or acquiring a result, using
 the freshly issued link. A vanished release must not be replaced by a title match.
+An episode's [season pack](./HOSTED.md#season-packs) row instead resolves only
+through Engine's season lookup, `GetTVShowSeasonDownloads`, which must still
+return the same pack ID; it never falls back to the episode search.
 The [Engine search contract](https://github.com/chill-institute/chill-engine/blob/main/docs/ARCHITECTURE.md)
 owns stable source identity and its fallback limits. Release artwork association
 must remain separate from this acquisition identity.
@@ -68,7 +71,9 @@ depth, total folders, total entries across folders and total time; a result past
 those bounds needs a file choice and never plays a partial listing. Playback
 verifies that the selected video remains inside that result and its parent
 folder. No first-video guess, size-based choice or unbounded account crawl is
-allowed.
+allowed. For a season pack, the listings inside the result ask Engine for
+release info and the destination listing does not; the adapter chooses the
+episode from Engine's release info and never parses file names itself.
 
 ## Credentials
 
@@ -89,11 +94,12 @@ Harness receipts replace credentials with `[credential]`.
 
 ## Playback and failure behavior
 
-The adapter requests HLS through `ResolvePlayback` in
-[contracts v2.7.0](https://github.com/chill-institute/chill-contracts/releases/tag/v2.7.0).
-Engine checks ownership, resolves a download grant, verifies the HLS master
-anonymously and returns its HTTPS URL. The player fetches playlists and media
-from put.io; the account OAuth token stays in Engine.
+The adapter uses
+[contracts v3.1.0](https://github.com/chill-institute/chill-contracts/releases/tag/v3.1.0)
+and requests HLS through `ResolvePlayback`. Engine checks ownership, resolves a
+download grant, verifies the HLS master anonymously and returns its HTTPS URL.
+The player fetches playlists and media from put.io; the account OAuth token
+stays in Engine.
 
 Resolution is read-only. Existing processing returns pending; missing HLS returns
 unavailable. Neither starts conversion or falls back to the original file.
@@ -127,7 +133,9 @@ Disconnects cancel polling.
 Terminal states redirect to generated status clips: a VOD playlist with one
 MPEG-TS segment for HLS, an MP4 file for legacy `.mp4` URLs. A multi-file
 download plays directly only when exactly one of its videos is not a
-[sample](./HOSTED.md#selected-media); otherwise its files, like other completed
+[sample](./HOSTED.md#selected-media); a season pack plays only the one
+non-sample video whose release info is the selected episode, and its status URL
+carries that season and episode. Otherwise the files, like other completed
 files, are chosen from the put.io library. Clips are
 [generated during setup or build](../scripts/status-media.ts) and
 [loaded at runtime](../src/status-media.ts); clip routes never call Engine.

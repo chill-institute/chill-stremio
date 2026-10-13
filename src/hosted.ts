@@ -14,6 +14,7 @@ import {
   createDiscovery,
   discoveryCatalogs,
   discoveryIdPrefixes,
+  type SeasonEpisode,
 } from "./discovery.ts";
 import { DiscoveryDeadline, discoveryEngineLayer } from "./discovery-engine.ts";
 import { engineLayer } from "./engine.ts";
@@ -324,9 +325,11 @@ export async function startHostedAdapter(options: {
       const selection = createSelection({ base });
       const playRoute =
         /^\/play\/(movie|series)\/([^/]+)\/([^/]+)\.(?:mp4|m3u8)$/.exec(path);
-      const statusRoute = /^\/status\/([1-9][0-9]{0,18})\.(?:mp4|m3u8)$/.exec(
-        path,
-      );
+      // A season pack selection carries the episode it plays.
+      const statusRoute =
+        /^\/status\/([1-9][0-9]{0,18})(?:\/([1-9][0-9]{0,3})\/([1-9][0-9]{0,3}))?\.(?:mp4|m3u8)$/.exec(
+          path,
+        );
       const noticeRoute = /^\/notice\/([a-z-]+)\.(mp4|m3u8|ts)$/.exec(path);
       const noticeKind = statusMediaKinds.find(
         (kind) => kind === noticeRoute?.[1],
@@ -389,11 +392,15 @@ export async function startHostedAdapter(options: {
         }, timing.windowMs + 10_000);
         const reading = AbortSignal.any([controller.signal, waiting.signal]);
         let transferId: bigint | undefined;
+        let episode: SeasonEpisode | undefined;
         let result: PlaybackResult;
         let release = () => {};
         let selected: { waitingSince: number } | undefined;
         const inspect = (id: bigint) =>
-          run(selection.status(id).pipe(Effect.provide(layer)), reading);
+          run(
+            selection.status(id, episode).pipe(Effect.provide(layer)),
+            reading,
+          );
         try {
           if (playRoute?.[1] && playRoute[2] && playRoute[3]) {
             const type = playRoute[1];
@@ -466,10 +473,16 @@ export async function startHostedAdapter(options: {
             const submitted = await entry.submission;
             if ("transferId" in submitted) {
               transferId = submitted.transferId;
+              episode = submitted.episode;
               result = await inspect(transferId);
             } else result = submitted;
           } else {
             transferId = BigInt(statusRoute?.[1] ?? "0");
+            if (statusRoute?.[2] && statusRoute[3])
+              episode = {
+                season: Number(statusRoute[2]),
+                episode: Number(statusRoute[3]),
+              };
             result = await inspect(transferId);
           }
           const polled = transferId;
@@ -521,7 +534,7 @@ export async function startHostedAdapter(options: {
           } else {
             response
               .writeHead(302, {
-                Location: `${base}/status/${transferId}.${hls ? "m3u8" : "mp4"}?wait=${Number(continuation) + 1}`,
+                Location: `${base}/status/${transferId}${episode ? `/${episode.season}/${episode.episode}` : ""}.${hls ? "m3u8" : "mp4"}?wait=${Number(continuation) + 1}`,
               })
               .end();
           }

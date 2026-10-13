@@ -5,6 +5,7 @@ import {
   GetTVShowsResponseSchema,
   GetTVShowDetailResponseSchema,
   GetTVShowSeasonResponseSchema,
+  GetTVShowSeasonDownloadsResponseSchema,
   SearchResponseSchema,
   MovieSchema,
   TVShowSeasonSchema,
@@ -98,6 +99,11 @@ function fixture() {
       Effect.sync(() => {
         calls.push(`season:${id}:${number}`);
         return season;
+      }),
+    getTVShowSeasonDownloads: (id, number) =>
+      Effect.sync(() => {
+        calls.push(`season-downloads:${id}:${number}`);
+        return create(GetTVShowSeasonDownloadsResponseSchema);
       }),
     search: (query) =>
       Effect.sync(() => {

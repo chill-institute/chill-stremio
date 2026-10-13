@@ -35,6 +35,7 @@ test("discovery uses ordinary bearer and only existing read RPCs", async () => {
         yield* engine.getTVShows();
         yield* engine.getTVShowDetail("tt1234567");
         yield* engine.getTVShowSeason("tt1234567", 2);
+        yield* engine.getTVShowSeasonDownloads("tt1234567", 2);
         yield* engine.search("An independent film");
       }).pipe(
         Effect.provide(
@@ -54,6 +55,10 @@ test("discovery uses ordinary bearer and only existing read RPCs", async () => {
       },
       {
         path: "/chill.v4.UserService/GetTVShowSeason",
+        body: { imdbId: "tt1234567", seasonNumber: 2 },
+      },
+      {
+        path: "/chill.v4.UserService/GetTVShowSeasonDownloads",
         body: { imdbId: "tt1234567", seasonNumber: 2 },
       },
       {
@@ -111,6 +116,7 @@ test("discovery RPCs tell Engine the time left before the caller's deadline", as
           yield* engine.getTVShows();
           yield* engine.getTVShowDetail("tt1234567");
           yield* engine.getTVShowSeason("tt1234567", 2);
+          yield* engine.getTVShowSeasonDownloads("tt1234567", 2);
           yield* engine.search("An independent film");
         }).pipe(
           Effect.provide(layer),
@@ -118,8 +124,8 @@ test("discovery RPCs tell Engine the time left before the caller's deadline", as
         ),
       );
     assert.deepEqual(timeouts, [
-      ...Array<string>(5).fill("2500"),
-      ...Array<string>(5).fill("10000"),
+      ...Array<string>(6).fill("2500"),
+      ...Array<string>(6).fill("10000"),
     ]);
   });
 });

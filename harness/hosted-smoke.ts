@@ -41,6 +41,7 @@ const {
   multipleMovieName,
   multipleEpisodeName,
   pendingCase,
+  packCase,
 } = hostedFixture;
 // Shortened from the production limit so the smoke still crosses one client
 // manifest timeout and retry before the pending clip.
@@ -816,6 +817,76 @@ const program = Effect.gen(function* () {
           `${media.origin}/hls/episode1/master.m3u8`,
         );
         assert.equal(engine.calls.transfer, 2);
+        await page.goto(
+          `${web.origin}/#/discover/${encodeURIComponent(manifestUrl)}/series/discover-series`,
+        );
+        await page
+          .getByText(seriesName, { exact: true })
+          .filter({ visible: true })
+          .first()
+          .click();
+        await page
+          .getByText("A generated second episode", { exact: false })
+          .filter({ visible: true })
+          .first()
+          .click();
+        const packRelease = page
+          .getByText("Download season to put.io", { exact: true })
+          .filter({ visible: true });
+        await expect(packRelease).toBeVisible();
+        await expect(
+          page
+            .getByText("Season 1 pack · 1080p x264 WEB", { exact: false })
+            .first(),
+        ).toBeVisible();
+        assert.equal(
+          engine.calls.transfer,
+          2,
+          "Listing a season pack must not submit a transfer",
+        );
+        await page.screenshot({
+          path: `${directory}/season-pack.png`,
+          animations: "disabled",
+        });
+        await packRelease.click();
+        await expect.poll(() => engine.calls.transfer).toBe(3);
+        const packEvidence = await decoded(
+          page,
+          { ...fixture, origin: web.origin },
+          "episode2",
+          `${directory}/season-pack-decoded.png`,
+        );
+        const packPath = `${base}/play/series/${encodeURIComponent(`chill:episode:${seriesImdbId}:1:2`)}/${encodeURIComponent(`pack:${packCase.id}`)}.m3u8`;
+        assert.ok(
+          playlistRequests.has(packPath),
+          "Season pack must consume the selected adapter playlist URL",
+        );
+        assert.ok(playlistRequests.has("/hls/episode2/master.m3u8"));
+        assert.equal(
+          engine.calls.playbackFiles.at(-1),
+          String(packCase.secondEpisodeId),
+          "Season pack must play the requested episode's video",
+        );
+        assert.ok(engine.calls.releaseInfoListings > 0);
+        const packStatus = await fetch(
+          `${adapter.current.origin}${base}/status/${packCase.transferId}/1/2.m3u8`,
+          { redirect: "manual", signal: AbortSignal.timeout(10000) },
+        );
+        assert.equal(packStatus.status, 302);
+        assert.equal(
+          packStatus.headers.get("location"),
+          `${media.origin}/hls/episode2/master.m3u8`,
+        );
+        assert.equal(
+          (await statusReplay(packCase.transferId)).headers.get("location"),
+          `${adapter.current.origin}${base}/notice/select-file.m3u8`,
+          "Without its episode the season pack needs a file choice",
+        );
+        assert.equal(
+          engine.calls.transfer,
+          3,
+          "Status reads must not submit the season pack again",
+        );
         assert.equal(
           credentialLeak,
           false,
@@ -971,7 +1042,7 @@ const program = Effect.gen(function* () {
         assert.ok(playlistRequests.has("/hls/episode1/master.m3u8"));
         assert.equal(
           engine.calls.transfer,
-          6,
+          7,
           "Choosing a file from the library must not submit",
         );
         await page.goto(`${web.origin}/#/`);
@@ -1030,7 +1101,7 @@ const program = Effect.gen(function* () {
           rejectedReads,
           "Status clips must not contact Engine",
         );
-        assert.equal(engine.calls.transfer, 6);
+        assert.equal(engine.calls.transfer, 7);
         assert.equal(
           engine.calls.rejected,
           0,
@@ -1053,6 +1124,12 @@ const program = Effect.gen(function* () {
             libraryReadOnly: true,
             decoded: evidence,
             episodeDecoded: episodeEvidence,
+            seasonPack: {
+              rowListedReadOnly: true,
+              decoded: packEvidence,
+              episodeStatusReplayed: true,
+              plainStatusAsksForFile: true,
+            },
             recovery: recoveryEvidence,
             multipleFileDecoded: selectedFileEvidence,
             seek: seekEvidence,

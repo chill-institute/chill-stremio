@@ -36,6 +36,14 @@ const otherCredential = credential();
 // More accepted links, so stalled requests can fill the whole process.
 const spareCredentials = [credential(), credential()];
 const target = discoveryTargetId({ kind: "movie", id: "fixture-film" });
+const episodeTarget = discoveryTargetId({
+  kind: "episode",
+  imdbId: "tt7654321",
+  season: 1,
+  episode: 2,
+});
+const seasonPackLink =
+  "https://engine.fixture.test/download?token=fixture-season-secret";
 const Catalog = Schema.Struct({
   metas: Schema.Array(
     Schema.Struct({ id: Schema.String, name: Schema.String }),
@@ -66,6 +74,7 @@ async function fixture(
     timeout: string | string[] | undefined;
   }[] = [];
   const searches: string[] = [];
+  const listings: { id: bigint; releaseInfo: boolean }[] = [];
   const state = {
     loseTransferResponse: false,
     stallMovies: false,
@@ -79,8 +88,23 @@ async function fixture(
     // Folder listings that replace or add to the defaults, by folder ID.
     folders: new Map<
       bigint,
-      { id: bigint; name: string; fileType: string }[]
+      {
+        id: bigint;
+        name: string;
+        fileType: string;
+        releaseInfo?: {
+          season?: number;
+          episode?: number;
+          episodeEnd?: number;
+        };
+      }[]
     >(),
+    seasonPack: undefined as
+      | { id: string; resolution: string; codec: string; quality: string }
+      | undefined,
+    seasonRejection: undefined as { status: number; code: string } | undefined,
+    stallSeasonPack: false,
+    abandonedSeasonLookups: 0,
     playbackPending: false,
     rejection: undefined as { status: number; code: string } | undefined,
     // Wall-clock time a method takes, for tests that fake `Date`.
@@ -134,7 +158,11 @@ async function fixture(
       response.setHeader("content-type", "application/json");
       switch (method) {
         case "GetFolder": {
-          const { id } = fromJsonString(proto.GetFolderRequestSchema, json);
+          const { id, includeReleaseInfo } = fromJsonString(
+            proto.GetFolderRequestSchema,
+            json,
+          );
+          listings.push({ id, releaseInfo: includeReleaseInfo });
           await hold();
           const files =
             state.folders.get(id) ??
@@ -174,7 +202,9 @@ async function fixture(
               proto.GetFolderResponseSchema,
               create(proto.GetFolderResponseSchema, {
                 parent: { id, name: "Fixture folder", fileType: "FOLDER" },
-                files,
+                files: files.map(({ releaseInfo, ...file }) =>
+                  includeReleaseInfo ? { ...file, releaseInfo } : file,
+                ),
               }),
             ),
           );
@@ -269,11 +299,54 @@ async function fixture(
           );
           return;
         }
+        case "GetTVShowSeasonDownloads": {
+          const { seasonNumber } = fromJsonString(
+            proto.GetTVShowSeasonDownloadsRequestSchema,
+            json,
+          );
+          if (state.stallSeasonPack) {
+            response.once("close", () => state.abandonedSeasonLookups++);
+            return;
+          }
+          if (state.seasonRejection) {
+            error(
+              response,
+              state.seasonRejection.status,
+              state.seasonRejection.code,
+            );
+            return;
+          }
+          response.end(
+            toJsonString(
+              proto.GetTVShowSeasonDownloadsResponseSchema,
+              create(proto.GetTVShowSeasonDownloadsResponseSchema, {
+                seasonPack: state.seasonPack && {
+                  ...state.seasonPack,
+                  title: "Independent.Series.S01.1080p",
+                  link: seasonPackLink,
+                  indexer: "Fixture",
+                  size: 2147483648n,
+                  seeders: 5n,
+                  seasonNumber,
+                },
+                episodes: [
+                  {
+                    episodeNumber: 2,
+                    searchQuery: "Independent series S01E02",
+                  },
+                ],
+              }),
+            ),
+          );
+          return;
+        }
         case "AddTransfer": {
           const { url } = fromJsonString(proto.AddTransferRequestSchema, json);
-          assert.equal(
-            url,
-            "https://engine.fixture.test/download?token=fixture-release-secret",
+          assert.ok(
+            [
+              "https://engine.fixture.test/download?token=fixture-release-secret",
+              seasonPackLink,
+            ].includes(url),
           );
           state.addCount++;
           state.addCredentials.push(presented);
@@ -389,6 +462,7 @@ async function fixture(
   return {
     calls,
     searches,
+    listings,
     state,
     get origin() {
       return hosted.origin;
@@ -1687,6 +1761,308 @@ test("a finished selection is reused only within its window", async () => {
     await sleep(400);
     await select();
     assert.equal(f.state.addCount, 2);
+  } finally {
+    await f.close();
+  }
+});
+
+const Rows = Schema.Struct({
+  streams: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      title: Schema.String,
+      url: Schema.String,
+    }),
+  ),
+});
+const seasonPack = {
+  id: "fixture-season-pack",
+  resolution: "1080p",
+  codec: "x264",
+  quality: "WEB",
+};
+const packEpisodes = [
+  {
+    id: 21n,
+    name: "Season file one.mkv",
+    fileType: "VIDEO",
+    releaseInfo: { season: 1, episode: 1 },
+  },
+  {
+    id: 22n,
+    name: "Season file two.mkv",
+    fileType: "VIDEO",
+    releaseInfo: { season: 1, episode: 2 },
+  },
+];
+const episodeRows = async (f: Fixture) => {
+  const response = await fetch(
+    `${f.base()}/stream/series/${encodeURIComponent("tt7654321:1:2")}.json`,
+  );
+  assert.equal(response.status, 200);
+  return (await decode(response, Rows)).streams;
+};
+const packSelection = (f: Fixture, id = seasonPack.id) =>
+  `${f.base()}/play/series/${encodeURIComponent(episodeTarget)}/${encodeURIComponent(`pack:${id}`)}.m3u8`;
+const location = async (url: string) =>
+  (await fetch(url, { redirect: "manual" })).headers.get("location");
+
+test("an episode lists Engine's season pack after its releases", async () => {
+  const f = await fixture();
+  try {
+    f.state.seasonPack = seasonPack;
+    assert.deepEqual(await episodeRows(f), [
+      {
+        name: "Download to put.io",
+        title: "Independent.Film.1080p\nFixture · 3 seeders · 12.06 KiB",
+        url: `${f.base()}/play/series/${encodeURIComponent(episodeTarget)}/fixture-release.m3u8`,
+      },
+      {
+        name: "Download season to put.io",
+        title: "Season 1 pack · 1080p x264 WEB\nFixture · 5 seeders · 2.00 GiB",
+        url: packSelection(f),
+      },
+    ]);
+    f.state.seasonPack = {
+      ...seasonPack,
+      resolution: "",
+      codec: "",
+      quality: "",
+    };
+    assert.equal(
+      (await episodeRows(f))[1]?.title,
+      "Season 1 pack\nFixture · 5 seeders · 2.00 GiB",
+    );
+    f.state.seasonPack = { ...seasonPack, id: "fixture-release" };
+    assert.deepEqual(
+      (await episodeRows(f)).map(({ name }) => name),
+      ["Download to put.io"],
+      "A pack Search already lists appears once",
+    );
+    assert.equal(f.state.addCount, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a season lookup Engine refuses or never answers leaves the episode rows", async () => {
+  const f = await fixture();
+  try {
+    f.state.seasonPack = seasonPack;
+    f.state.seasonRejection = { status: 403, code: "procedure_not_allowed" };
+    assert.deepEqual(
+      (await episodeRows(f)).map(({ name }) => name),
+      ["Download to put.io"],
+    );
+    f.state.seasonRejection = undefined;
+    f.state.stallSeasonPack = true;
+    const started = performance.now();
+    assert.deepEqual(
+      (await episodeRows(f)).map(({ name }) => name),
+      ["Download to put.io"],
+    );
+    assert.ok(performance.now() - started < 2_000);
+    await until(() => f.state.abandonedSeasonLookups === 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a season pack plays the one video Engine names as the requested episode", async () => {
+  const f = await fixture();
+  try {
+    f.state.seasonPack = seasonPack;
+    f.state.folders.set(20n, [
+      ...packEpisodes,
+      {
+        id: 23n,
+        name: "Season file two.sample.mkv",
+        fileType: "VIDEO",
+        releaseInfo: { season: 1, episode: 2 },
+      },
+    ]);
+    assert.equal(
+      await location(packSelection(f)),
+      "https://media.fixture.test/video-22?token=fixture-playback-secret",
+    );
+    assert.equal(f.state.addCount, 1);
+    const flagged = (id: bigint) =>
+      f.listings.filter((listing) => listing.id === id && listing.releaseInfo)
+        .length;
+    assert.equal(flagged(10n), 0, "The destination listing");
+    assert.equal(flagged(20n), 1, "The download's own listing");
+    f.listings.length = 0;
+    assert.equal(
+      await location(`${f.base()}/status/90.m3u8`),
+      `${f.base()}/notice/select-file.m3u8`,
+      "The same download selected by its episode release",
+    );
+    assert.equal(flagged(20n), 0);
+    assert.equal(
+      await location(`${f.base()}/status/90/1/2.m3u8`),
+      "https://media.fixture.test/video-22?token=fixture-playback-secret",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("a season pack asks for a file choice unless exactly one video is the episode", async () => {
+  const f = await fixture();
+  const status = () => location(`${f.base()}/status/90/1/2.m3u8`);
+  const choose = `${f.base()}/notice/select-file.m3u8`;
+  const video = (
+    id: bigint,
+    releaseInfo?: { season?: number; episode?: number; episodeEnd?: number },
+  ) => ({
+    id,
+    name: `Season file ${id}.mkv`,
+    fileType: "VIDEO",
+    releaseInfo,
+  });
+  try {
+    for (const [files, expected, reason] of [
+      [
+        [video(21n, { episode: 2 }), video(22n, { season: 1, episode: 1 })],
+        choose,
+        "an episode without a season",
+      ],
+      [
+        [
+          video(21n, { season: 1, episode: 1 }),
+          video(22n, { season: 1, episode: 2, episodeEnd: 3 }),
+        ],
+        choose,
+        "an episode range",
+      ],
+      [
+        [
+          video(21n, { season: 1, episode: 2 }),
+          video(22n, { season: 1, episode: 2 }),
+        ],
+        choose,
+        "two matching videos",
+      ],
+      [[video(21n), video(22n)], choose, "no release info"],
+      [[], `${f.base()}/notice/unavailable.m3u8`, "no videos"],
+      [
+        [
+          video(21n, { season: 1, episode: 1 }),
+          video(22n, { season: 1, episode: 2, episodeEnd: 2 }),
+        ],
+        "https://media.fixture.test/video-22?token=fixture-playback-secret",
+        "a range of the episode alone",
+      ],
+    ] as const) {
+      f.state.folders.set(20n, [...files]);
+      assert.equal(await status(), expected, reason);
+    }
+    f.state.folders.set(10n, [video(20n, { season: 1, episode: 2 })]);
+    assert.equal(await status(), choose, "a single-file download");
+  } finally {
+    await f.close();
+  }
+});
+
+test("a pending season pack keeps its episode in the status URL", async () => {
+  const f = await fixture();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    f.state.seasonPack = seasonPack;
+    f.state.folders.set(20n, packEpisodes);
+    f.state.transferFinished = false;
+    const reads = () =>
+      f.calls.filter(({ method }) => method === "GetTransfer").length;
+    const selected = fetch(packSelection(f), { redirect: "manual" });
+    while (reads() === 0) await sleep(5);
+    await vi.advanceTimersByTimeAsync(25_000);
+    const continued = (await selected).headers.get("location");
+    assert.equal(continued, `${f.base()}/status/90/1/2.m3u8?wait=1`);
+    vi.useRealTimers();
+    f.state.transferFinished = true;
+    assert.equal(
+      await location(continued),
+      "https://media.fixture.test/video-22?token=fixture-playback-secret",
+    );
+    for (const [path, code] of [
+      ["/status/90/0/2.m3u8", 404],
+      ["/status/90/1/10000.m3u8", 404],
+      ["/status/90/1.m3u8", 404],
+      ["/status/90/1/2.m3u8?other=1", 400],
+      ["/status/90/1/2.m3u8?wait=6", 400],
+    ] as const)
+      assert.equal(
+        (await fetch(`${f.base()}${path}`, { redirect: "manual" })).status,
+        code,
+        path,
+      );
+    assert.equal(f.state.addCount, 1);
+  } finally {
+    vi.useRealTimers();
+    await f.close();
+  }
+});
+
+test("a season pack Engine no longer offers or refuses plays release-unavailable", async () => {
+  const f = await fixture();
+  const unavailable = `${f.base()}/notice/release-unavailable.m3u8`;
+  try {
+    f.state.seasonPack = { ...seasonPack, id: "another-season-pack" };
+    assert.equal(await location(packSelection(f)), unavailable);
+    f.state.seasonPack = undefined;
+    assert.equal(await location(packSelection(f)), unavailable);
+    f.state.seasonPack = seasonPack;
+    f.state.seasonRejection = { status: 403, code: "procedure_not_allowed" };
+    assert.equal(await location(packSelection(f)), unavailable);
+    f.state.seasonRejection = { status: 401, code: "unauthenticated" };
+    assert.equal(
+      await location(packSelection(f)),
+      `${f.base()}/notice/reconnect.m3u8`,
+    );
+    assert.equal(f.state.addCount, 0);
+    const calls = f.calls.length;
+    assert.equal(
+      await location(
+        `${f.base()}/play/movie/${encodeURIComponent(target)}/${encodeURIComponent(`pack:${seasonPack.id}`)}.m3u8`,
+      ),
+      unavailable,
+      "A movie has no season pack",
+    );
+    assert.equal(
+      f.calls
+        .slice(calls)
+        .some(({ method }) => method === "GetTVShowSeasonDownloads"),
+      false,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("movie and episode releases never consult the season lookup", async () => {
+  const f = await fixture();
+  try {
+    f.state.seasonPack = seasonPack;
+    f.state.seasonRejection = { status: 403, code: "procedure_not_allowed" };
+    f.state.singleFile = true;
+    const episode = `${f.base()}/play/series/${encodeURIComponent(episodeTarget)}/fixture-release.m3u8`;
+    f.state.releaseMissing = true;
+    assert.equal(
+      await location(episode),
+      `${f.base()}/notice/release-unavailable.m3u8`,
+    );
+    f.state.releaseMissing = false;
+    for (const url of [await releaseSelection(f), episode])
+      assert.equal(
+        await location(url),
+        "https://media.fixture.test/video-21?token=fixture-playback-secret",
+      );
+    assert.equal(f.state.addCount, 2);
+    assert.ok(f.listings.every(({ releaseInfo }) => !releaseInfo));
+    assert.equal(
+      f.calls.some(({ method }) => method === "GetTVShowSeasonDownloads"),
+      false,
+    );
   } finally {
     await f.close();
   }

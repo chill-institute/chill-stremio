@@ -98,13 +98,14 @@ const ShowDetail = Schema.Struct({
   backdropUrl: Artwork,
   genres: Schema.Array(Title).check(Schema.isMaxLength(50)),
 });
+const Total = Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n));
 const Release = Schema.Struct({
   id: OpaqueId,
   title: Title,
   link: TransferUrl,
   indexer: Title,
-  size: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
-  seeders: Schema.BigInt.check(Schema.isGreaterThanOrEqualToBigInt(0n)),
+  size: Total,
+  seeders: Total,
   imdbId: Schema.optional(Text),
   releaseInfo: Schema.optional(
     Schema.Struct({
@@ -113,6 +114,17 @@ const Release = Schema.Struct({
       episodeEnd: Schema.optional(Schema.Int),
     }),
   ),
+});
+const SeasonPack = Schema.Struct({
+  id: OpaqueId,
+  link: TransferUrl,
+  indexer: Title,
+  size: Total,
+  seeders: Total,
+  resolution: Text,
+  codec: Text,
+  quality: Text,
+  seasonNumber: NumberId,
 });
 const Target = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("imdb"), imdbId: ImdbId }),
@@ -138,6 +150,24 @@ export type DiscoveryRelease = {
   size: bigint;
   seeders: bigint;
 };
+export type SeasonEpisode = { season: number; episode: number };
+/** A release to submit; a season pack also names the episode to play from it. */
+type SelectedRelease = { url: string; episode?: SeasonEpisode };
+
+/** Release IDs with this prefix select Engine's season pack for the episode's season. */
+export const seasonPackPrefix = "pack:";
+// The add-on link may lack the season lookup grant; that leaves the pack
+// unavailable instead of the link rejected.
+const seasonPackError = (error: DiscoveryError | EngineError) =>
+  error instanceof EngineError && error.code === "unauthenticated"
+    ? error
+    : new EngineError({
+        code:
+          error instanceof EngineError &&
+          (error.code === "permission_denied" || error.code === "not_found")
+            ? "not_found"
+            : "unavailable",
+      });
 
 export const discoveryIdPrefixes = [
   "chill:movie:",
@@ -474,6 +504,18 @@ export function createDiscovery() {
       return yield* invalidResponse();
     return response.episodes;
   });
+  const seasonPack = Effect.fn("Discovery.seasonPack")(function* (
+    target: DiscoveryTarget,
+  ) {
+    if (target.kind !== "episode") return undefined;
+    const engine = yield* DiscoveryEngine;
+    const { seasonPack: pack } = yield* decodeResponse(
+      Schema.Struct({ seasonPack: Schema.optional(SeasonPack) }),
+    )(yield* engine.getTVShowSeasonDownloads(target.imdbId, target.season));
+    if (pack && pack.seasonNumber !== target.season)
+      return yield* invalidResponse();
+    return pack;
+  });
   const releaseContext = Effect.fn("Discovery.releaseContext")(function* (
     entry: typeof Release.Type,
   ) {
@@ -594,6 +636,18 @@ export function createDiscovery() {
       return yield* new EngineError({
         code: incomplete ? "unavailable" : "not_found",
       });
+    }),
+    seasonPackRelease: Effect.fn("Discovery.seasonPackRelease")(function* (
+      target: DiscoveryTarget,
+      id: string,
+    ) {
+      const pack = yield* seasonPack(target);
+      if (target.kind !== "episode" || pack?.id !== id)
+        return yield* new EngineError({ code: "not_found" });
+      return {
+        url: pack.link,
+        episode: { season: target.season, episode: target.episode },
+      };
     }),
     catalog: Effect.fn("Discovery.catalog")(function* (input: {
       type: string;
@@ -771,8 +825,21 @@ export function createDiscovery() {
     }, budget),
     releases: (target: DiscoveryTarget) =>
       methods.releases(target).pipe(budget),
-    release: (target: DiscoveryTarget, id: string) =>
-      methods.release(target, id).pipe(budget),
+    /** Engine's season pack for an episode target's season, if it offers one. */
+    seasonPack: (target: DiscoveryTarget) => seasonPack(target).pipe(budget),
+    release: (
+      target: DiscoveryTarget,
+      id: string,
+    ): Effect.Effect<
+      SelectedRelease,
+      DiscoveryError | EngineError,
+      DiscoveryEngine
+    > =>
+      id.startsWith(seasonPackPrefix)
+        ? methods
+            .seasonPackRelease(target, id.slice(seasonPackPrefix.length))
+            .pipe(budget, Effect.mapError(seasonPackError))
+        : methods.release(target, id).pipe(budget),
     catalog: (input: Parameters<typeof methods.catalog>[0]) =>
       methods.catalog(input).pipe(budget),
     meta: (input: Parameters<typeof methods.meta>[0]) =>

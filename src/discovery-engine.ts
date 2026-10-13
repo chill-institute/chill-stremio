@@ -3,6 +3,7 @@ import type {
   GetTVShowsResponse,
   GetTVShowDetailResponse,
   GetTVShowSeasonResponse,
+  GetTVShowSeasonDownloadsResponse,
   SearchResponse,
 } from "@chill-institute/contracts/chill/v4/api_pb";
 import { Clock, Context, Effect, Layer } from "effect";
@@ -29,6 +30,10 @@ export class DiscoveryEngine extends Context.Service<
       imdbId: string,
       seasonNumber: number,
     ): Effect.Effect<GetTVShowSeasonResponse, EngineError>;
+    getTVShowSeasonDownloads(
+      imdbId: string,
+      seasonNumber: number,
+    ): Effect.Effect<GetTVShowSeasonDownloadsResponse, EngineError>;
     search(query: string): Effect.Effect<SearchResponse, EngineError>;
   }
 >()("chill-stremio/DiscoveryEngine") {}
@@ -79,6 +84,13 @@ export function discoveryEngineLayer(configuration: EngineAuth) {
         getTVShowSeason: (imdbId, seasonNumber) =>
           call((options) =>
             rpc.client.getTVShowSeason({ imdbId, seasonNumber }, options),
+          ),
+        getTVShowSeasonDownloads: (imdbId, seasonNumber) =>
+          call((options) =>
+            rpc.client.getTVShowSeasonDownloads(
+              { imdbId, seasonNumber },
+              options,
+            ),
           ),
         search: (query) =>
           call((options) => rpc.client.search({ query }, options)),

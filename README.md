@@ -28,7 +28,11 @@ For a public listing, use the [public manifest](https://stremio.chill.institute/
   choice or is still running after a few minutes, the player shows a short
   clip that says what to do next. Completed downloads appear in
   **put.io library**, where you can choose files from multi-file downloads.
-  Selecting the same release again later starts another download.
+  Selecting the same release again reuses its put.io download unless that
+  download failed or was deleted.
+- An episode can also offer **Download season to put.io**, which downloads the
+  season pack and plays that episode once the download finishes. The season's
+  other episodes then appear in **put.io library**.
 
 Supported clients are Stremio Web, tested in Chromium, and Stremio for Linux,
 tested with the Flathub app 1.2.0 on x86_64; app 1.2.2 failed Next Video

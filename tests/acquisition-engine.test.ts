@@ -131,6 +131,54 @@ test("acquisition RPCs preserve ids without retaining provider URLs", async () =
   );
 });
 
+test("folder listings carry release info only when asked for it", async () => {
+  const bodies: unknown[] = [];
+  await withServer(
+    (request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => (body += chunk));
+      request.on("end", () => {
+        bodies.push(JSON.parse(body));
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            parent: { id: "10", name: "Folder", fileType: "FOLDER" },
+            files: [
+              {
+                id: "20",
+                name: "Episode",
+                fileType: "VIDEO",
+                releaseInfo: { title: "Episode", season: 1, episode: 2 },
+              },
+            ],
+          }),
+        );
+      });
+    },
+    async (baseUrl) => {
+      const listed = await Effect.runPromise(
+        Effect.gen(function* () {
+          const engine = yield* AcquisitionEngine;
+          return [
+            yield* engine.getFolder(10n),
+            yield* engine.getFolder(10n, { releaseInfo: true }),
+          ].map((folder) => folder.files[0]?.releaseInfo);
+        }).pipe(
+          Effect.provide(
+            acquisitionEngineLayer({ baseUrl, token: "fixture-token" }),
+          ),
+        ),
+      );
+      assert.deepEqual(listed, [undefined, { season: 1, episode: 2 }]);
+    },
+  );
+  assert.deepEqual(bodies, [
+    { id: "10" },
+    { id: "10", includeReleaseInfo: true },
+  ]);
+});
+
 test("ambiguous AddTransfer transport failure stays an error and is never retried", async () => {
   let calls = 0;
   await withServer(

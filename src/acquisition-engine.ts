@@ -7,22 +7,42 @@ const PositiveId = Schema.BigInt.check(
 const FolderId = Schema.BigInt.check(
   Schema.isBetweenBigInt({ minimum: 0n, maximum: 9223372036854775807n }),
 );
-const File = Schema.Struct({
+const fileFields = {
   id: PositiveId,
   name: Schema.NonEmptyString.check(Schema.isMaxLength(4096)),
   fileType: Schema.NonEmptyString.check(Schema.isMaxLength(64)),
+};
+const ReleaseFile = Schema.Struct({
+  ...fileFields,
+  releaseInfo: Schema.optional(
+    Schema.Struct({
+      season: Schema.optional(Schema.Int),
+      episode: Schema.optional(Schema.Int),
+      episodeEnd: Schema.optional(Schema.Int),
+    }),
+  ),
 });
-const Folder = Schema.Struct({
+const folderFields = {
   parent: Schema.Struct({
     id: FolderId,
     name: Schema.String.check(Schema.isMaxLength(4096)),
     fileType: Schema.Literal("FOLDER"),
   }),
-  files: Schema.Array(File).check(
+};
+const uniqueFiles = (files: readonly { id: bigint }[]) =>
+  new Set(files.map((file) => file.id)).size === files.length;
+const Folder = Schema.Struct({
+  ...folderFields,
+  files: Schema.Array(Schema.Struct(fileFields)).check(
     Schema.isMaxLength(5000),
-    Schema.makeFilter(
-      (files) => new Set(files.map((file) => file.id)).size === files.length,
-    ),
+    Schema.makeFilter(uniqueFiles),
+  ),
+});
+const ReleaseFolder = Schema.Struct({
+  ...folderFields,
+  files: Schema.Array(ReleaseFile).check(
+    Schema.isMaxLength(5000),
+    Schema.makeFilter(uniqueFiles),
   ),
 });
 const Transfer = Schema.Struct({
@@ -64,12 +84,13 @@ const TransferUrl = Schema.String.check(
   }),
 );
 
-export type AcquisitionFile = typeof File.Type;
+/** Release info is present only in listings that asked for it. */
+export type AcquisitionFile = typeof ReleaseFile.Type;
 export type AcquiredVideo = AcquisitionFile & {
   parentId: bigint;
   sample: boolean;
 };
-export type AcquisitionFolder = typeof Folder.Type;
+export type AcquisitionFolder = typeof ReleaseFolder.Type;
 export type AcquisitionTransfer = Omit<typeof Transfer.Type, "errorMessage"> & {
   failed: boolean;
 };
@@ -77,7 +98,10 @@ export type AcquisitionTransfer = Omit<typeof Transfer.Type, "errorMessage"> & {
 export class AcquisitionEngine extends Context.Service<
   AcquisitionEngine,
   {
-    getFolder(id: bigint): Effect.Effect<AcquisitionFolder, EngineError>;
+    getFolder(
+      id: bigint,
+      options?: { releaseInfo?: boolean },
+    ): Effect.Effect<AcquisitionFolder, EngineError>;
     addTransfer(url: string): Effect.Effect<AcquisitionTransfer, EngineError>;
     getTransfer(id: bigint): Effect.Effect<AcquisitionTransfer, EngineError>;
   }
@@ -121,12 +145,23 @@ export function acquisitionEngineLayer(configuration: EngineAuth) {
     Effect.gen(function* () {
       const rpc = yield* createEngineRpc(configuration);
       return AcquisitionEngine.of({
-        getFolder: Effect.fn("Acquisition.getFolder")(function* (id: bigint) {
+        getFolder: Effect.fn("Acquisition.getFolder")(function* (
+          id: bigint,
+          { releaseInfo = false }: { releaseInfo?: boolean } = {},
+        ) {
           yield* Schema.decodeUnknownEffect(FolderId)(id).pipe(
             Effect.mapError(invalidConfig),
           );
-          const folder = yield* Schema.decodeUnknownEffect(Folder)(
-            yield* rpc.call((options) => rpc.client.getFolder({ id }, options)),
+          const response = yield* rpc.call((options) =>
+            rpc.client.getFolder(
+              { id, includeReleaseInfo: releaseInfo },
+              options,
+            ),
+          );
+          const folder: AcquisitionFolder = yield* (
+            releaseInfo
+              ? Schema.decodeUnknownEffect(ReleaseFolder)(response)
+              : Schema.decodeUnknownEffect(Folder)(response)
           ).pipe(Effect.mapError(invalidResponse));
           if (folder.parent.id !== id) return yield* invalidResponse();
           return folder;
@@ -166,7 +201,10 @@ export function acquisitionEngineLayer(configuration: EngineAuth) {
 export const inspectTransferFiles = Effect.fn(
   "Acquisition.inspectTransferFiles",
 )(
-  function* (transfer: AcquisitionTransfer) {
+  function* (
+    transfer: AcquisitionTransfer,
+    options: { releaseInfo?: boolean } = {},
+  ) {
     if (
       !transfer.isFinished ||
       transfer.failed ||
@@ -201,7 +239,7 @@ export const inspectTransferFiles = Effect.fn(
       if (visited.size >= 32 || next.depth > 8)
         return yield* new TransferTreeLimit();
       visited.add(next.id);
-      const folder = yield* engine.getFolder(next.id);
+      const folder = yield* engine.getFolder(next.id, options);
       fileCount += folder.files.length;
       if (fileCount > 5000) return yield* new TransferTreeLimit();
       for (const file of folder.files) {
