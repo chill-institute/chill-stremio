@@ -183,11 +183,15 @@ HLS terminal states redirect to a five-second status clip,
 `unavailable`, `unknown` or `reconnect`. When Search no longer lists the selected
 release, or its indexers fail, HLS selection plays `release-unavailable` without
 submitting. Legacy `.mp4` URLs redirect to the matching `.mp4` clip. A
-multi-file download plays `select-file`, as does one with too many folders,
-folders nested too deep, too many entries across its folders, or folders too
-slow to list together; choose the file from **put.io library**. The adapter does
-not guess the first video. Clip routes only check the credential's shape and
-never contact Engine.
+multi-file download with exactly one video that is not a sample plays that
+video. A video is a sample when the last word of its name before the extension
+is `sample`, as in `x-sample.mkv`, `x.sample.mkv` or `sample.mkv`, or when a
+folder between the download and the video is named `Sample` or `Samples`. Any
+other multi-file download plays `select-file`, as does one with too many
+folders, folders nested too deep, too many entries across its folders, or
+folders too slow to list together; choose the file from **put.io library**.
+The adapter does not guess the first video or choose by size. Clip routes only
+check the credential's shape and never contact Engine.
 
 When a clip ends, the player returns to the stream list. Stremio Web counts a
 clip played past 70% as watched, and when an episode's clip ends it can move on

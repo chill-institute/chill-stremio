@@ -65,7 +65,10 @@ const TransferUrl = Schema.String.check(
 );
 
 export type AcquisitionFile = typeof File.Type;
-export type AcquiredVideo = AcquisitionFile & { parentId: bigint };
+export type AcquiredVideo = AcquisitionFile & {
+  parentId: bigint;
+  sample: boolean;
+};
 export type AcquisitionFolder = typeof Folder.Type;
 export type AcquisitionTransfer = Omit<typeof Transfer.Type, "errorMessage"> & {
   failed: boolean;
@@ -85,6 +88,20 @@ export class TransferTreeLimit extends Schema.TaggedError<TransferTreeLimit>()(
   "TransferTreeLimit",
   {},
 ) {}
+
+const nameTokens = (name: string) =>
+  name
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token !== "");
+const sampleFolder = (name: string) => {
+  const tokens = nameTokens(name);
+  return (
+    tokens.length === 1 && (tokens[0] === "sample" || tokens[0] === "samples")
+  );
+};
+const sampleVideo = (name: string) =>
+  nameTokens(name.replace(/\.[^.]*$/, "")).at(-1) === "sample";
 
 const invalidResponse = () => new EngineError({ code: "invalid_response" });
 const invalidConfig = () => new EngineError({ code: "invalid_config" });
@@ -164,9 +181,15 @@ export const inspectTransferFiles = Effect.fn(
     );
     if (!result) return [];
     if (result.fileType === "VIDEO")
-      return [{ ...result, parentId: transfer.saveParentId }];
+      return [
+        {
+          ...result,
+          parentId: transfer.saveParentId,
+          sample: sampleVideo(result.name),
+        },
+      ];
     if (result.fileType !== "FOLDER") return [];
-    const pending = [{ id: result.id, depth: 0 }];
+    const pending = [{ id: result.id, depth: 0, sample: false }];
     const visited = new Set<bigint>([transfer.saveParentId]);
     const fileIds = new Set<bigint>();
     const videos: AcquiredVideo[] = [];
@@ -185,9 +208,17 @@ export const inspectTransferFiles = Effect.fn(
         if (fileIds.has(file.id)) return yield* invalidResponse();
         fileIds.add(file.id);
         if (file.fileType === "VIDEO")
-          videos.push({ ...file, parentId: next.id });
+          videos.push({
+            ...file,
+            parentId: next.id,
+            sample: next.sample || sampleVideo(file.name),
+          });
         else if (file.fileType === "FOLDER")
-          pending.push({ id: file.id, depth: next.depth + 1 });
+          pending.push({
+            id: file.id,
+            depth: next.depth + 1,
+            sample: next.sample || sampleFolder(file.name),
+          });
       }
     }
     return videos;

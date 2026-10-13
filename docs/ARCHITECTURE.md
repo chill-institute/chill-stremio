@@ -67,7 +67,8 @@ and enumerates only the exact transfer result. Result folders are bounded by
 depth, total folders, total entries across folders and total time; a result past
 those bounds needs a file choice and never plays a partial listing. Playback
 verifies that the selected video remains inside that result and its parent
-folder. No first-video guess or unbounded account crawl is allowed.
+folder. No first-video guess, size-based choice or unbounded account crawl is
+allowed.
 
 ## Credentials
 
@@ -124,10 +125,12 @@ clip; legacy `.mp4` returns `503 download_pending` at its redirect limit.
 Disconnects cancel polling.
 
 Terminal states redirect to generated status clips: a VOD playlist with one
-MPEG-TS segment for HLS, an MP4 file for legacy `.mp4` URLs. Completed files,
-including each file of a multi-file download, are chosen from the put.io
-library. Clips are [generated during setup or build](../scripts/status-media.ts)
-and [loaded at runtime](../src/status-media.ts); clip routes never call Engine.
+MPEG-TS segment for HLS, an MP4 file for legacy `.mp4` URLs. A multi-file
+download plays directly only when exactly one of its videos is not a
+[sample](./HOSTED.md#selected-media); otherwise its files, like other completed
+files, are chosen from the put.io library. Clips are
+[generated during setup or build](../scripts/status-media.ts) and
+[loaded at runtime](../src/status-media.ts); clip routes never call Engine.
 
 HLS URLs are offered to the client HLS player without claiming known codecs.
 Known MP4/H.264/AAC remains Web-ready for compatible older responses. A passing

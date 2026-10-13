@@ -62,7 +62,13 @@ export function createSelection(options: { base: string }) {
       Effect.catchTag("TransferTreeLimit", () => Effect.succeed(undefined)),
     );
     if (!files) return { status: "select-file" } satisfies PlaybackResult;
-    const file = files.length === 1 ? files[0] : undefined;
+    const features = files.filter((video) => !video.sample);
+    const file =
+      files.length === 1
+        ? files[0]
+        : features.length === 1
+          ? features[0]
+          : undefined;
     if (!file)
       return {
         status: files.length ? "select-file" : "unavailable",

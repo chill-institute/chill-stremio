@@ -1067,6 +1067,62 @@ test("multi-file Stremio selection requires choosing a file and never guesses th
   }
 });
 
+test("a multi-file download plays its one video that is not a sample", async () => {
+  const f = await fixture();
+  const status = async () =>
+    (
+      await fetch(`${f.base()}/status/90.m3u8`, { redirect: "manual" })
+    ).headers.get("location");
+  const feature = { id: 21n, name: "Independent.Film.mkv", fileType: "VIDEO" };
+  const played =
+    "https://media.fixture.test/video-21?token=fixture-playback-secret";
+  try {
+    f.state.folders.set(20n, [
+      feature,
+      { id: 30n, name: "Sample", fileType: "FOLDER" },
+    ]);
+    f.state.folders.set(30n, [{ id: 31n, name: "x.mkv", fileType: "VIDEO" }]);
+    assert.equal(await status(), played, "a video in a sample folder");
+    f.state.folders.set(20n, [
+      feature,
+      { id: 30n, name: "Sample Extras", fileType: "FOLDER" },
+    ]);
+    assert.equal(
+      await status(),
+      `${f.base()}/notice/select-file.m3u8`,
+      "a folder named with more than the sample word",
+    );
+    f.state.folders.set(20n, [
+      feature,
+      { id: 31n, name: "x_sample.mkv", fileType: "VIDEO" },
+    ]);
+    assert.equal(await status(), played, "a video named as a sample");
+    f.state.folders.set(20n, [
+      feature,
+      { id: 31n, name: "The.Sample.S01E05.mkv", fileType: "VIDEO" },
+    ]);
+    assert.equal(
+      await status(),
+      `${f.base()}/notice/select-file.m3u8`,
+      "a sample word inside a video's name",
+    );
+    f.state.folders.set(10n, [{ id: 20n, name: "Sample", fileType: "FOLDER" }]);
+    f.state.folders.set(20n, [
+      feature,
+      { id: 30n, name: "Samples", fileType: "FOLDER" },
+    ]);
+    f.state.folders.set(30n, [{ id: 32n, name: "Extras", fileType: "FOLDER" }]);
+    f.state.folders.set(32n, [{ id: 31n, name: "x.mkv", fileType: "VIDEO" }]);
+    assert.equal(
+      await status(),
+      played,
+      "a video deeper in a sample folder of a download named Sample",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("a download with too many folders to list asks for a file choice", async () => {
   const f = await fixture();
   try {
