@@ -2,15 +2,18 @@ import { Effect, Fiber, Option } from "effect";
 import type { Stream } from "stremio-addon-sdk";
 import {
   AcquisitionEngine,
+  addTransferTimeoutMs,
   inspectTransferFiles,
 } from "./acquisition-engine.ts";
 import {
   createDiscovery,
+  discoveryBudgetMs,
   discoveryTargetId,
   releaseDescription,
   seasonPackPrefix,
   type SeasonEpisode,
 } from "./discovery.ts";
+import { responseReserveMs } from "./discovery-engine.ts";
 import { EngineError } from "./engine.ts";
 import { createLibrary, filePlayback } from "./library.ts";
 import type { PlaybackResult } from "./playback-wait.ts";
@@ -18,6 +21,10 @@ import type { PlaybackResult } from "./playback-wait.ts";
 export type Submission =
   | { transferId: bigint; episode?: SeasonEpisode }
   | { status: "unknown" };
+
+/** Long enough to resolve the target, find the release and receive Engine's shared add. */
+export const submissionBudgetMs =
+  2 * discoveryBudgetMs + addTransferTimeoutMs + responseReserveMs;
 
 /** How long a listing waits for its optional lookups once its release rows are ready. */
 const lookupGraceMs = 500;

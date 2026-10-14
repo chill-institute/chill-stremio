@@ -23,6 +23,7 @@ import {
   createSelection,
   ownedFileId,
   ownedPrefix,
+  submissionBudgetMs,
   type Submission,
 } from "./selection.ts";
 import {
@@ -49,6 +50,12 @@ class HttpFailure extends Error {
 const fail = (code: string): never => {
   throw new HttpFailure(code);
 };
+/** Resolves once the signal aborts. */
+const aborted = (signal: AbortSignal) =>
+  new Promise<undefined>((resolve) => {
+    if (signal.aborted) resolve(undefined);
+    signal.addEventListener("abort", () => resolve(undefined), { once: true });
+  });
 const status = (code: string) =>
   ({
     unauthenticated: 401,
@@ -358,7 +365,8 @@ export async function startHostedAdapter(options: {
         const hls = path.endsWith(".m3u8");
         // The pinned Web client's manifest request times out after 30 seconds,
         // redirects included, and then retries the selected URL, rejoining its
-        // selection until the pending limit. Each HLS window ends before that.
+        // selection until the pending limit. Each HLS window ends before that,
+        // even while the selection's submission runs on.
         const timing = hls
           ? { ...playbackWait, windowMs: 25_000 }
           : playbackWait;
@@ -461,11 +469,11 @@ export async function startHostedAdapter(options: {
               for (const [stale, candidate] of submissions)
                 if (submissions.size >= 256 && candidate.users === 0)
                   forget(stale);
-              // The submission outlives any single client. An interrupted
-              // submission may still have created the transfer.
+              // The submission outlives any single client and window. An
+              // interrupted submission may still have created the transfer.
               const signal = AbortSignal.any([
                 shutdown.signal,
-                AbortSignal.timeout(timing.windowMs),
+                AbortSignal.timeout(submissionBudgetMs),
               ]);
               const created = {
                 submission: run(
@@ -473,7 +481,7 @@ export async function startHostedAdapter(options: {
                     .submit({ type, id, releaseId })
                     .pipe(Effect.provide(layer)),
                   signal,
-                  Date.now() + timing.windowMs,
+                  Date.now() + submissionBudgetMs,
                 ).catch((error: unknown): Submission => {
                   if (signal.aborted) return { status: "unknown" };
                   throw error;
@@ -504,8 +512,14 @@ export async function startHostedAdapter(options: {
                 entry.expiry.unref();
               }
             };
-            const submitted = await entry.submission;
-            if ("transferId" in submitted) {
+            // A window that ends first continues at this URL, which rejoins
+            // the same submission.
+            const submitted = await Promise.race([
+              entry.submission,
+              aborted(reading),
+            ]);
+            if (submitted === undefined) result = { status: "pending" };
+            else if ("transferId" in submitted) {
               transferId = submitted.transferId;
               episode = submitted.episode;
               result = await inspect(transferId);
@@ -566,9 +580,13 @@ export async function startHostedAdapter(options: {
             response.setHeader("Retry-After", "5");
             json(response, 503, { error: "download_pending" });
           } else {
+            const next =
+              transferId === undefined
+                ? `${base}${path}`
+                : `${base}/status/${transferId}${episode ? `/${episode.season}/${episode.episode}` : ""}.${hls ? "m3u8" : "mp4"}`;
             response
               .writeHead(302, {
-                Location: `${base}/status/${transferId}${episode ? `/${episode.season}/${episode.episode}` : ""}.${hls ? "m3u8" : "mp4"}?wait=${Number(continuation) + 1}`,
+                Location: `${next}?wait=${Number(continuation) + 1}`,
               })
               .end();
           }

@@ -118,6 +118,8 @@ async function fixture(
     ownedDelayMs: 0,
     playbackPending: false,
     rejection: undefined as { status: number; code: string } | undefined,
+    // Engine latency by method on the global clock, which tests may fake.
+    delayMs: {} as Partial<Record<string, number>>,
     // Wall-clock time a method takes, for tests that fake `Date`.
     elapsedMs: {} as Partial<Record<string, number>>,
     releaseMissing: false,
@@ -159,6 +161,11 @@ async function fixture(
       });
       const elapsed = state.elapsedMs[method];
       if (elapsed) vi.setSystemTime(Date.now() + elapsed);
+      const delay = state.delayMs[method];
+      if (delay) {
+        state.heldCalls++;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
       assert.equal(request.method, "POST");
       if (state.rejection) {
         error(response, state.rejection.status, state.rejection.code);
@@ -1352,6 +1359,70 @@ test("a lost submission response is reported as unknown and never retried", asyn
   }
 });
 
+test("an HLS selection outlasting its window continues at its URL with one submission", async () => {
+  const f = await fixture();
+  // Fake request windows, Engine latency and the wall clock Engine deadlines
+  // read; sockets stay real.
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "Date", "performance"],
+  });
+  // Real time bounds each wait; the faked `Date` cannot.
+  const reached = async (condition: () => boolean) => {
+    for (let tries = 0; !condition(); tries++) {
+      assert.ok(tries < 400, "condition not reached");
+      await sleep(5);
+    }
+  };
+  try {
+    f.state.transferFinished = false;
+    // Finding the movie and its release take most of the 25-second HLS
+    // window; Engine's shared add takes 15 seconds more.
+    f.state.delayMs = { GetMovies: 9_000, Search: 9_000, AddTransfer: 15_000 };
+    const url = `${f.base()}/play/movie/tt1234567/fixture-release.m3u8`;
+    const first = fetch(url, { redirect: "manual" });
+    for (const [calls, ms] of [
+      [1, 9_000],
+      [2, 9_000],
+      [3, 7_000],
+    ] as const) {
+      await reached(() => f.state.heldCalls === calls);
+      await vi.advanceTimersByTimeAsync(ms);
+    }
+    const continued = await first;
+    assert.equal(continued.status, 302);
+    assert.equal(continued.headers.get("location"), `${url}?wait=1`);
+    let responded = false;
+    const second = fetch(`${url}?wait=1`, { redirect: "manual" }).then(
+      (response) => {
+        responded = true;
+        return response;
+      },
+    );
+    await sleep(100);
+    const reads = () =>
+      f.calls.filter(({ method }) => method === "GetTransfer").length;
+    assert.equal(reads(), 0, "The add is still in flight");
+    // The add answers eight seconds in; the download is still pending when
+    // the second window ends.
+    for (let elapsed = 0; !responded; elapsed += 1_000) {
+      assert.ok(elapsed < 30_000, "the continuation never answered");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await sleep(5);
+    }
+    const pending = await second;
+    assert.equal(pending.status, 302);
+    assert.equal(
+      pending.headers.get("location"),
+      `${f.base()}/status/90.m3u8?wait=2`,
+    );
+    assert.ok(reads() > 0);
+    assert.equal(f.state.addCount, 1, "The continuation rejoins the add");
+  } finally {
+    vi.useRealTimers();
+    await f.close();
+  }
+});
+
 test("status clips play from their credential path without reaching Engine", async () => {
   const f = await fixture();
   try {
@@ -1748,7 +1819,7 @@ test("release searches tell Engine the time left before their route's deadline",
       await searchTimeout("/stream/movie/tt1234567.json", "GetMovies"),
       "8500",
     );
-    // A selection searches within its own window, not the request's ...
+    // A selection searches within its own budget, not the request's ...
     assert.equal(
       await searchTimeout(
         "/play/movie/tt1234567/fixture-release.m3u8",
@@ -1770,14 +1841,17 @@ test("release searches tell Engine the time left before their route's deadline",
   }
 });
 
-test("selections wait for Engine's shared add within their window", async () => {
+test("selections always wait for Engine's shared add", async () => {
   // Freeze the wall clock so Engine time is exact; sockets and timers stay real.
   vi.useFakeTimers({ toFake: ["Date"] });
   // Each selection gets its own server, since identical selections share one submission.
-  const addTimeout = async (path: string, searchMs: number) => {
+  const addTimeout = async (
+    path: string,
+    elapsedMs: Partial<Record<string, number>>,
+  ) => {
     const f = await fixture();
     try {
-      f.state.elapsedMs = { Search: searchMs };
+      f.state.elapsedMs = elapsedMs;
       await (
         await fetch(`${f.base()}${path}`, { redirect: "manual" })
       ).arrayBuffer();
@@ -1789,13 +1863,17 @@ test("selections wait for Engine's shared add within their window", async () => 
   try {
     // Engine keeps a shared add running for 20 seconds after its caller leaves.
     assert.equal(
-      await addTimeout("/play/movie/tt1234567/fixture-release.mp4", 0),
+      await addTimeout("/play/movie/tt1234567/fixture-release.mp4", {}),
       "21000",
     );
-    // An HLS selection's 25-second window, less its search, still bounds it.
+    // Nor does an HLS selection's 25-second window cut it short after finding
+    // the movie and its release take nearly their whole budgets.
     assert.equal(
-      await addTimeout("/play/movie/tt1234567/fixture-release.m3u8", 9_000),
-      "15500",
+      await addTimeout("/play/movie/tt1234567/fixture-release.m3u8", {
+        GetMovies: 9_900,
+        Search: 9_900,
+      }),
+      "21000",
     );
   } finally {
     vi.useRealTimers();

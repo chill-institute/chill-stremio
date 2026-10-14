@@ -4,7 +4,7 @@ import { createEngineRpc, EngineError, type EngineAuth } from "./engine.ts";
 
 // Engine finishes a shared add within 20 seconds even after its caller leaves,
 // so waiting slightly longer receives the outcome instead of losing it.
-const addTransferTimeoutMs = 21_000;
+export const addTransferTimeoutMs = 21_000;
 
 const PositiveId = Schema.BigInt.check(
   Schema.isBetweenBigInt({ minimum: 1n, maximum: 9223372036854775807n }),

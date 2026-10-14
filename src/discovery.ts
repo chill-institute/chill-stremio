@@ -170,6 +170,9 @@ type SelectedRelease = { url: string; episode?: SeasonEpisode };
 
 /** Release IDs with this prefix select Engine's season pack for the episode's season. */
 export const seasonPackPrefix = "pack:";
+/** The time each discovery step, such as resolving a target or finding a release, may take. */
+export const discoveryBudgetMs = 10_000;
+
 // The add-on link may lack the season lookup grant; that leaves the pack
 // unavailable instead of the link rejected.
 const seasonPackError = (error: DiscoveryError | EngineError) =>
@@ -685,15 +688,14 @@ export function createDiscovery() {
       incomplete,
     };
   });
-  const budgetMs = 10_000;
   const budget = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Effect.flatMap(Clock.currentTimeMillis, (now) =>
       Effect.updateService(effect, DiscoveryDeadline, (deadline) =>
-        Math.min(deadline, now + budgetMs),
+        Math.min(deadline, now + discoveryBudgetMs),
       ),
     ).pipe(
       Effect.timeoutOrElse({
-        duration: budgetMs,
+        duration: discoveryBudgetMs,
         orElse: () =>
           Effect.fail(new EngineError({ code: "deadline_exceeded" })),
       }),

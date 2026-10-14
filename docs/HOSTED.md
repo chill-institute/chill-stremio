@@ -164,10 +164,13 @@ selecting the same release after the window or after a restart submits again.
 Engine then returns the account's existing transfer for that source instead of
 adding another, unless it failed or its finished file is gone
 ([transfer reuse probe](./LIVE.md#transfer-reuse-probe)). Under capacity pressure the oldest idle entries may be dropped before
-their window ends. A submission does not depend on the requesting client staying
-connected. It waits up to 21 seconds of its window for Engine's answer, longer
-than Engine takes to finish an add. A failed, lost or timed-out submission
-response is never retried and reports `unknown`.
+their window ends. A submission depends on neither the requesting client nor its
+wait window. It has its own 41.5 seconds: 10 seconds each to resolve the title
+and find the release, then 21 seconds for Engine's answer, longer than Engine
+takes to finish an add, and 500 ms to receive it. When an HLS window ends first,
+the adapter redirects to the same play URL with the next `wait=<n>`, which
+rejoins that submission instead of adding again. A failed, lost or timed-out
+submission response is never retried and reports `unknown`.
 
 After submission the adapter polls `GetTransfer`, finds the downloaded video
 with `GetFolder` and resolves it with `ResolvePlayback`. A still-pending
@@ -177,10 +180,11 @@ for a season pack to
 the transfer ID is decimal. Status URLs only read; reopening one resumes waiting
 without submitting. HLS waits in 25-second windows and legacy `.mp4` URLs in
 45-second windows, with up to five redirects. Each window starts with the
-request and includes submission and status reads, so a still-pending download
-redirects before the request deadline. Stremio Web abandons each redirect chain
-after 30 seconds and requests the selected URL again, up to ten times, rejoining
-the same submission. Once an HLS selection has waited four minutes, or an HLS
+request and includes waiting for the submission and status reads, so a
+still-running submission or still-pending download redirects before the request
+deadline. Stremio Web abandons each redirect chain after 30 seconds and
+requests the selected URL again, up to ten times, rejoining the same
+submission. Once an HLS selection has waited four minutes, or an HLS
 status URL reaches its fifth redirect, the adapter redirects to the pending
 status clip. Selecting the source again within the reuse window waits another
 four minutes on the same submission; later it submits again. Stremio for Linux
