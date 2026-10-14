@@ -106,12 +106,17 @@ function fakePutio(options: FakeOptions = {}) {
           ? Effect.succeed({ ...transfer })
           : Effect.fail(new Error("put.io HTTP 404"));
       }),
-    // put.io drops a cancelled transfer from its list and keeps its file.
+    // Cancel only stops a seeding transfer; otherwise it drops the transfer
+    // from the list. Files stay either way.
     cancelTransfers: (ids) =>
       Effect.sync(() => {
         events.push("cancel");
         cancelled.push([...ids]);
-        for (const id of ids) transfers.delete(id);
+        for (const id of ids) {
+          const transfer = transfers.get(id);
+          if (transfer?.status === "SEEDING") transfer.status = "COMPLETED";
+          else transfers.delete(id);
+        }
       }),
     getFile: (id) =>
       Effect.sync(() => {
@@ -468,7 +473,8 @@ const assertPreexistingUntouched = (run: Run) => {
 
 /** The new transfer's file was recorded before cancellation and removed. */
 const assertCleaned = (run: Run) => {
-  assert.deepEqual(run.putio.cancelled, [[newTransfer]]);
+  // The first cancel stops seeding; the second removes the transfer.
+  assert.deepEqual(run.putio.cancelled, [[newTransfer], [newTransfer]]);
   assert.deepEqual(run.putio.deleted, [[newFile]]);
   assert.ok(!run.putio.files.has(newFile));
   assert.ok(!run.putio.transfers.has(newTransfer));
@@ -536,6 +542,9 @@ test("the pinned release is acquired with one selection, decoded, and removed", 
   assert.deepEqual(order.slice(cancelAt), [
     "cancel",
     "decode",
+    "list",
+    "list",
+    "cancel",
     "list",
     "delete",
     "list",

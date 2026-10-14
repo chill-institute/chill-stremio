@@ -207,7 +207,7 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     return { kind: "invalid" };
   };
 
-  /** Each cancellation is sent once; later cleanup only acknowledges it. */
+  /** Stops each transfer at most once while the run is in progress. */
   const cancelOnce = (ids: readonly number[]) => {
     const due = ids.filter((id) => !cancelled.has(id));
     if (due.length === 0) return Effect.void;
@@ -219,6 +219,19 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
       ),
     );
   };
+
+  /** put.io's cancel only stops a seeding transfer; a later cancel removes it. */
+  const removeTransfers = (ids: readonly number[]) =>
+    Effect.gen(function* () {
+      for (let round = 0; round < 3; round++) {
+        const listed = yield* provider.listTransfers();
+        const due = ids.filter((id) =>
+          listed.some((transfer) => transfer.id === id),
+        );
+        if (due.length === 0) return;
+        yield* provider.cancelTransfers(due);
+      }
+    });
 
   /** Charges bytes put.io reported past the pin, once, even past the cap. */
   const chargeExcess = (size: number) =>
@@ -597,7 +610,7 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
 
   yield* withLiveLifecycle(attempt, work, {
     reconcile: record,
-    cancelTransfers: cancelOnce,
+    cancelTransfers: removeTransfers,
     deleteFiles: provider.deleteFiles,
     verify: verify.pipe(
       Effect.tap((verification) =>

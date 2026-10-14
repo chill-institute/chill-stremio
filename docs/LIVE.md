@@ -361,7 +361,8 @@ The probe then:
    playlist's video with FFmpeg, which must decode frames
 
 Every exit after the GET records the transfer's file before cancelling. Cleanup
-cancels only the attributed transfer and deletes its file only when that file
+cancels only the attributed transfer, again while put.io still lists it, since
+cancelling a seeding transfer only stops it, and deletes its file only when that file
 is not in the baseline, sits in the transfer's save folder and was created
 during the run. Afterwards put.io must no longer list the transfer and must
 answer `404` for the file, including a file that already answered `404` when
