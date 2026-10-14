@@ -42,7 +42,7 @@ jobs:
       - name: Require a commit on main
         run: |
           git merge-base --is-ancestor HEAD refs/remotes/origin/main || { echo "::error::the canary runs only commits on main"; exit 1; }
-      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
       - name: Read the deployed adapter
         env:
           CHILL_STREMIO_CREDENTIAL: ${{ secrets.CHILL_STREMIO_CREDENTIAL }}
