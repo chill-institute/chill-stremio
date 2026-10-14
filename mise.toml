@@ -88,6 +88,10 @@ run = "pnpm exec vp run hosted:live"
 description = "Prove production Engine reuses one put.io transfer for repeated add-on requests"
 run = "pnpm exec vp run hosted:reuse"
 
+[tasks."hosted:owned"]
+description = "Prove a video already in put.io plays through the deployed adapter"
+run = "pnpm exec vp run hosted:owned"
+
 [tasks."hosted:public"]
 description = "Read the deployed adapter with the designated account's add-on credential"
 # Node alone: the canary runs this next to the credential without installing packages.

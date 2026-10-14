@@ -77,25 +77,38 @@ export const proveUrlRenewal = Effect.fn("live.playback.proveUrlRenewal")(
   },
 );
 
-const extract = Effect.fn("live.playback.extract")(
-  function* (args: string[], cwd = process.cwd()) {
+const runTool = Effect.fn("live.playback.runTool")(
+  function* (
+    command: "ffmpeg" | "ffprobe",
+    args: string[],
+    cwd = process.cwd(),
+  ) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
       ChildProcess.make(
-        "ffmpeg",
+        command,
         ["-hide_banner", "-loglevel", "error", ...args],
         {
           cwd,
           stdin: "ignore",
-          stdout: "ignore",
+          stdout: "pipe",
           stderr: "pipe",
           forceKillAfter: "2 seconds",
         },
       ),
     );
+    let output = "";
     let diagnostic = "";
-    const [, code] = yield* Effect.all(
+    const [, , code] = yield* Effect.all(
       [
+        child.stdout.pipe(
+          Stream.decodeText(),
+          Stream.runForEach((text) =>
+            Effect.sync(() => {
+              output = (output + text).slice(-65_536);
+            }),
+          ),
+        ),
         child.stderr.pipe(
           Stream.decodeText(),
           Stream.runForEach((text) =>
@@ -111,13 +124,71 @@ const extract = Effect.fn("live.playback.extract")(
     if (code !== ChildProcessSpawner.ExitCode(0))
       return yield* new LivePlaybackFailure({
         message: redactLive(
-          `ffmpeg failed (${code})${diagnostic ? `: ${diagnostic}` : ""}`,
+          `${command} failed (${code})${diagnostic ? `: ${diagnostic}` : ""}`,
         ),
       });
+    return output;
   },
   Effect.timeout("30 seconds"),
   Effect.scoped,
 );
+
+const extract = (args: string[], cwd?: string) =>
+  Effect.asVoid(runTool("ffmpeg", args, cwd));
+
+const VideoProbe = Schema.fromJsonString(
+  Schema.Struct({
+    streams: Schema.Tuple([
+      Schema.Struct({
+        codec_name: Schema.String.check(Schema.isPattern(/^[a-z0-9_]{1,32}$/)),
+        width: Schema.Int,
+        height: Schema.Int,
+      }),
+    ]),
+  }),
+);
+
+/** Decodes up to `seconds` of a media URL's first video stream to nowhere. */
+export const decodeVideo = Effect.fn("live.playback.decodeVideo")(function* (
+  url: string,
+  seconds = 10,
+) {
+  const probe = yield* Schema.decodeUnknownEffect(VideoProbe)(
+    yield* runTool("ffprobe", [
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=codec_name,width,height",
+      "-of",
+      "json",
+      url,
+    ]),
+  ).pipe(
+    Effect.mapError(
+      () => new LivePlaybackFailure({ message: "No video stream to decode" }),
+    ),
+  );
+  const progress = yield* runTool("ffmpeg", [
+    "-nostdin",
+    "-nostats",
+    "-progress",
+    "pipe:1",
+    "-t",
+    String(seconds),
+    "-i",
+    url,
+    "-map",
+    "0:v:0",
+    "-f",
+    "null",
+    "-",
+  ]);
+  const [{ codec_name: codec, width, height }] = probe.streams;
+  const frames = Number(
+    [...progress.matchAll(/^frame=(\d+)$/gm)].at(-1)?.[1] ?? 0,
+  );
+  return { frames, codec, width, height };
+});
 
 export const muxFixtureCaptions = Effect.fn("live.muxFixtureCaptions")(
   function* (movie: string, captions: string, output: string) {

@@ -5,6 +5,7 @@ import { Cause, Effect, Option, Schema, Semaphore } from "effect";
 import { isCredential, redactCredentials } from "../../src/credential.ts";
 import { createEngineRpc, EngineError } from "../../src/engine.ts";
 import { reserve } from "./allowance.ts";
+import { sameAccountRoot } from "./binding.ts";
 import {
   createLiveAttempt,
   trackAcquisition,
@@ -114,16 +115,7 @@ export const runTransferReuse = Effect.fn("live.runTransferReuse")(function* (
     if (!options.username || account.username !== options.username)
       return yield* fail(stage);
     stage = "account-binding";
-    const [engineRoot, providerRoot] = yield* Effect.all(
-      [
-        rpc.call((call) => rpc.client.getFolder({ id: 0n }, call)),
-        provider.listFolderIds(0),
-      ],
-      { concurrency: 2 },
-    );
-    const engineIds = engineRoot.files.map((file) => String(file.id)).sort();
-    const providerIds = providerRoot.map(String).sort();
-    if (providerIds.length === 0 || engineIds.join() !== providerIds.join())
+    if (!(yield* sameAccountRoot(rpc, provider.listFolderIds)))
       return yield* fail(stage);
     stage = "baseline";
     const before = yield* provider.listTransfers();

@@ -559,6 +559,18 @@ export const deleteFiles = Effect.fn("live.putio.deleteFiles")(function* (
   );
 }, Effect.timeout("20 seconds"));
 
+/** Whether put.io no longer has a file, read independently of its deletion. */
+export const fileAbsent = Effect.fn("live.putio.fileAbsent")(function* (
+  id: number,
+) {
+  const response = yield* request(`${liveVersions.apiBase}/v2/files/${id}`, {});
+  if (response.status === 404) return true;
+  if (response.ok) return false;
+  return yield* new PutioFailure({
+    message: `put.io HTTP ${response.status}`,
+  });
+}, Effect.timeout("20 seconds"));
+
 export const listFolderIds = Effect.fn("live.putio.listFolderIds")(function* (
   parentId: number,
 ) {

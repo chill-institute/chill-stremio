@@ -30,6 +30,7 @@
     "hosted:container": "node harness/hosted-container.ts",
     "hosted:live": "node harness/live/hosted.ts",
     "hosted:reuse": "node harness/live/reuse.ts",
+    "hosted:owned": "node harness/live/owned.ts",
     "native:android:account": "node harness/native/android-account.ts"
   },
   "dependencies": {

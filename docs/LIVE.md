@@ -268,6 +268,39 @@ private `.cache/live/recovery/search-<timestamp>.json` journal keeps the folder
 name, label-to-name and label-to-ID mappings and the verification result for
 reconciliation.
 
+## Owned video probe
+
+`mise run hosted:owned` checks that the deployed adapter lists and plays a
+video the account already holds. Supply `CHILL_STREMIO_CREDENTIAL`,
+`PUTIO_USERNAME` and `PUTIO_TEST_TOKEN` as for the
+[transfer reuse probe](#transfer-reuse-probe); `CHILL_PUBLIC_STREMIO_ORIGIN`
+overrides the adapter endpoint and `CHILL_ENGINE_BASE_URL` the Engine endpoint
+used for the account check.
+
+Before any provider mutation the probe requires the credential and the token to
+list the same put.io root folder, then reserves two creations and the generated
+movie's size. It creates a run-unique folder and uploads the generated fixture
+movie, `.cache/media/movie.mp4`, into it as
+`Night.of.the.Living.Dead.1968.1080p.WEB.mkv`, named after a 1968
+public-domain film (`tt0063350`). It then polls that film's stream list on the
+deployed adapter, at most 30 times 10 seconds apart, until a
+**Play from put.io** row names the uploaded file. That row's media URL must
+answer HEAD with `200` and GET with a `302` to an HLS playlist on the put.io API
+origin, not a status clip. FFmpeg then decodes up to 10 seconds of that
+playlist's video in memory and must decode frames.
+
+Cleanup deletes only the folder and file the run created, then requires put.io
+to report each as gone; otherwise cleanup stays `uncertain`. The private
+`.cache/live/recovery/owned-<timestamp>.json` journal keeps their IDs and the
+folder name. The receipt at `artifacts/live-owned-<timestamp>/results.json`
+keeps stage codes, booleans, counts, timings and the decoded codec and size; it
+holds no credential, token, filename, provider ID or URL.
+
+A pass covers one movie title on Stremio's movie route through the deployed
+adapter and production Engine, decoded by FFmpeg rather than a Stremio client.
+It does not cover episodes or the recognition gaps in
+[videos already in put.io](./HOSTED.md#videos-already-in-putio).
+
 ## HLS audio probe
 
 Under the same maintainer-only test environment, run

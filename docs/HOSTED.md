@@ -479,6 +479,11 @@ times with the designated add-on credential, sequentially and concurrently, and
 requires every call to return the same put.io transfer; see the
 [transfer reuse probe](./LIVE.md#transfer-reuse-probe).
 
+`mise run hosted:owned` uploads the generated movie under a public-domain
+film's name, waits for the deployed adapter to list it as a **Play from
+put.io** row, follows that row to put.io's HLS playlist and decodes it with
+FFmpeg; see the [owned video probe](./LIVE.md#owned-video-probe).
+
 The public endpoint depends on the `infra`-owned DNS record and the Engine-owned
 Compose service and deploy workflow. Native desktop and Android TV support
 require their own passing receipts; Web results do not establish native support.
