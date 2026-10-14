@@ -6,7 +6,8 @@ import { redactLive } from "./redact.ts";
 // Read-only proof that the deployed adapter serves the designated account
 // through an Engine-issued add-on credential: read its manifest, library and
 // release results, and check that Engine lets the credential look up season
-// packs. No stream is consumed, so no transfer or allowance is used.
+// packs and videos already in the account. No stream is consumed, so no
+// transfer or allowance is used.
 const origin = new URL(
   process.env.CHILL_PUBLIC_STREMIO_ORIGIN ?? "https://stremio.chill.institute",
 ).origin;
@@ -28,6 +29,25 @@ const pass = (name: string, detail?: string) =>
   steps.push({ name, passed: true, ...(detail ? { detail } : {}) });
 const read = async (path: string) =>
   fetch(`${origin}${path}`, { signal, redirect: "error" });
+// Engine admits an add-on credential only to procedures it was granted.
+const engineCall = (procedure: string, body: unknown) =>
+  fetch(`${engineBaseUrl}/chill.v4.UserService/${procedure}`, {
+    method: "POST",
+    signal,
+    redirect: "error",
+    headers: {
+      "content-type": "application/json",
+      "connect-protocol-version": "1",
+      "x-chill-stremio-credential": credential,
+    },
+    body: JSON.stringify(body),
+  });
+const refused = (
+  response: Response,
+  answer: Record<string, unknown> | undefined,
+) =>
+  [401, 403].includes(response.status) ||
+  ["unauthenticated", "permission_denied"].includes(String(answer?.code));
 const asRecord = (value: unknown) =>
   typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)
@@ -106,26 +126,12 @@ try {
       "standard-episode",
       `release results ${episodeStreams.length}; no media consumed`,
     );
-  // Engine admits an add-on credential only to procedures it was granted.
-  const season = await fetch(
-    `${engineBaseUrl}/chill.v4.UserService/GetTVShowSeasonDownloads`,
-    {
-      method: "POST",
-      signal,
-      redirect: "error",
-      headers: {
-        "content-type": "application/json",
-        "connect-protocol-version": "1",
-        "x-chill-stremio-credential": credential,
-      },
-      body: JSON.stringify({ imdbId: "tt0903747", seasonNumber: 1 }),
-    },
-  );
+  const season = await engineCall("GetTVShowSeasonDownloads", {
+    imdbId: "tt0903747",
+    seasonNumber: 1,
+  });
   const answer = asRecord(await season.json().catch(() => undefined));
-  if (
-    [401, 403].includes(season.status) ||
-    ["unauthenticated", "permission_denied"].includes(String(answer?.code))
-  )
+  if (refused(season, answer))
     fail(
       "season-downloads",
       `Engine refused the lookup: status ${season.status}`,
@@ -135,6 +141,20 @@ try {
     season.ok
       ? `season pack ${answer?.seasonPack === undefined ? "absent" : "offered"}`
       : `status ${season.status}`,
+  );
+  // A public-domain film; an empty answer passes.
+  const owned = await engineCall("FindOwnedVideos", {
+    title: "Night of the Living Dead",
+    year: 1968,
+  });
+  const found = asRecord(await owned.json().catch(() => undefined));
+  if (refused(owned, found))
+    fail("owned-videos", `Engine refused the lookup: status ${owned.status}`);
+  pass(
+    "owned-videos",
+    owned.ok
+      ? `videos ${Array.isArray(found?.videos) ? found.videos.length : 0}`
+      : `status ${owned.status}`,
   );
   passed = true;
 } catch (error) {

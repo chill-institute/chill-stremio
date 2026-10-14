@@ -78,8 +78,15 @@ async function runPublic(
   }
 }
 
+const ownedName = "Night.of.the.Living.Dead.1968.1080p.WEB.mkv";
+
 async function adapter(
-  engine: "accepting" | "rejecting" | "no-releases" | "no-season-grant",
+  engine:
+    | "accepting"
+    | "rejecting"
+    | "no-releases"
+    | "no-season-grant"
+    | "no-owned-grant",
 ) {
   const fake = createServer((request, response) => {
     void (async () => {
@@ -170,6 +177,32 @@ async function adapter(
           }
           response.end("{}");
           return;
+        case "/chill.v4.UserService/FindOwnedVideos": {
+          const { title, year } = fromJsonString(
+            proto.FindOwnedVideosRequestSchema,
+            body,
+          );
+          if (engine === "no-owned-grant") {
+            response
+              .writeHead(403)
+              .end(
+                '{"code":"procedure_not_allowed","message":"procedure not allowed for this credential"}',
+              );
+            return;
+          }
+          response.end(
+            toJsonString(
+              proto.FindOwnedVideosResponseSchema,
+              create(proto.FindOwnedVideosResponseSchema, {
+                videos:
+                  title === "Night of the Living Dead" && year === 1968
+                    ? [{ id: 4242n, name: ownedName, fileType: "VIDEO" }]
+                    : [],
+              }),
+            ),
+          );
+          return;
+        }
         case "/chill.v4.UserService/Search": {
           const { query } = fromJsonString(proto.UserSearchRequestSchema, body);
           response.end(
@@ -234,6 +267,11 @@ for (const [engine, failedStep, outcome] of [
     "season-downloads",
     "no season lookup grant fails at season-downloads",
   ],
+  [
+    "no-owned-grant",
+    "owned-videos",
+    "no owned-video lookup grant fails at owned-videos",
+  ],
 ] as const) {
   test(`public check with ${outcome} and records no credential`, async () => {
     const hosted = await adapter(engine);
@@ -250,7 +288,14 @@ for (const [engine, failedStep, outcome] of [
         failedStep,
       );
       for (const text of [run.text, run.output])
-        assert.ok(!text.includes("v4.local."));
+        for (const secret of ["v4.local.", ownedName, "4242"])
+          assert.ok(!text.includes(secret), secret);
+      if (!failedStep)
+        assert.deepEqual(run.receipt.steps.at(-1), {
+          name: "owned-videos",
+          passed: true,
+          detail: "videos 1",
+        });
     } finally {
       await hosted.close();
     }
