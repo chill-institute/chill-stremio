@@ -23,6 +23,10 @@ For a public listing, use the [public manifest](https://stremio.chill.institute/
   including subfolders. Stremio's **Library** tab is for items saved in Stremio.
 - Browse movies and shows, search **Releases**, or open a movie or episode to
   see chill release results.
+- A movie or episode already in your put.io account lists up to ten
+  **Play from put.io** sources first, which play the video without
+  downloading again. Videos named differently from the title, such as without
+  its year, may not appear; open them from **put.io library**.
 - Select **Download to put.io** on a release. Playback waits for the download
   and starts when a single video is ready. If the download fails, needs a file
   choice or is still running after a few minutes, the player shows a short
