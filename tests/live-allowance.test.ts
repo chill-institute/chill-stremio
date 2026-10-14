@@ -21,6 +21,7 @@ import {
   withAllowanceLock,
 } from "../harness/live/allowance.ts";
 import {
+  accountHome,
   liveRunnerDirectory,
   liveRunnerPath,
   measureLivePayloads,
@@ -169,6 +170,18 @@ test("an old lock is not stolen and a cancelled waiter cannot remove it", async 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("a HOME other than the account's home is refused", () => {
+  assert.throws(
+    () => accountHome("/home/operator", "/home/image-user"),
+    AllowanceFailure,
+  );
+  assert.equal(
+    accountHome("/home/operator", "/home/operator/"),
+    "/home/operator",
+  );
+  assert.equal(accountHome("/home/operator", ""), "/home/operator");
 });
 
 test("a missing ledger is created fresh and private, then reused", async () => {

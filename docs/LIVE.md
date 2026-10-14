@@ -76,7 +76,8 @@ checkout of the current OS user. The first live run creates the directory
 (`0700`) and a zeroed `allowance.json` (`0600`) for the current UTC day. An
 existing directory or ledger that is not private, not owned by the current user
 or not valid stops the run; it is never replaced. There is no checkout-local
-fallback or environment path override.
+fallback or environment path override, and a `HOME` other than the OS account's
+home stops the run, as in a container that maps the uid to another user.
 
 ## Credential and budget
 

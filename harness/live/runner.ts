@@ -1,7 +1,7 @@
 import type { Stats } from "node:fs";
 import { lstat, mkdir, stat } from "node:fs/promises";
 import { userInfo } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   AllowanceFailure,
   createMissingLedger,
@@ -14,8 +14,23 @@ export const liveRunnerPath = (home: string) =>
 const isPrivate = (file: Stats, uid: number | undefined) =>
   file.uid === uid && (file.mode & 0o077) === 0;
 
+/**
+ * The OS account's home. A different HOME, as in a container whose uid maps
+ * to another user, would put reservations in a ledger other runs never read.
+ */
+export function accountHome(
+  account = userInfo().homedir,
+  home = process.env.HOME,
+) {
+  if (home && resolve(home) !== resolve(account))
+    throw new AllowanceFailure(
+      `HOME ${home} is not this account's home ${account}; the shared ledger would split`,
+    );
+  return account;
+}
+
 export async function liveRunnerDirectory(
-  home = userInfo().homedir,
+  home = accountHome(),
   now = new Date(),
 ) {
   const directory = liveRunnerPath(home);
