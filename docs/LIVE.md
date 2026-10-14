@@ -95,10 +95,10 @@ The [probe](../harness/live/probe.ts) reserves four creations and the prepared
 media size twice plus both generated subtitle sizes before provider mutations.
 Reservations persist even after failure or cleanup. Bytes put.io reports
 beyond a reservation are charged under the same lock even past the cap; such a
-ledger refuses every reservation until UTC rollover. The ledger is locked and
-atomically replaced with filesystem synchronization. Probes may cross UTC
-midnight; each reservation is charged to its start day. Transfer counts remain
-recorded for recovery and reporting.
+ledger refuses every reservation and every one-attempt extension until UTC
+rollover. The ledger is locked and atomically replaced with filesystem
+synchronization. Probes may cross UTC midnight; each reservation is charged to
+its start day. Transfer counts remain recorded for recovery and reporting.
 
 When repairing a ledger with unknown current-day usage, reserve the full cap,
 never a fresh zero balance. A valid older ledger rolls forward at UTC midnight;

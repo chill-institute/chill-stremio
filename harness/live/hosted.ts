@@ -16,6 +16,7 @@ import { startHostedAdapter } from "../../src/hosted.ts";
 import { discoveryTargetId } from "../../src/discovery.ts";
 import { authorizeChill } from "./auth.ts";
 import {
+  AllowanceFailure,
   allowanceLimits,
   readLedger,
   reserve,
@@ -128,6 +129,11 @@ export async function extendForOneAttempt(
   await withAllowanceLock(directory, async (path) => {
     const current = await readLedger(path);
     const limits = allowanceLimits(current);
+    // Charged usage past the cap blocks every reservation until rollover.
+    if (current.reservedBytes > limits.byteLimit)
+      throw new AllowanceFailure(
+        `Usage for ${current.day} UTC is already past the ${limits.byteLimit}-byte budget`,
+      );
     const next = {
       ...current,
       approvedLimits: {

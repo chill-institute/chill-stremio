@@ -470,9 +470,10 @@ establish playback from another device or network.
 The shared live ledger reserves the source upload and copied bytes plus
 three creations before any provider mutation. An explicitly approved one-attempt
 extension is available through `--approved-extra`; it preserves existing usage
-and audit history. Persisted private preflight and result checkpoints support
-exact-resource cleanup. Unknown copy outcomes remain pending; never clear them
-merely because transfer cancellation succeeded.
+and audit history, and is refused once charged usage is past the cap.
+Persisted private preflight and result checkpoints support exact-resource
+cleanup. Unknown copy outcomes remain pending; never clear them merely because
+transfer cancellation succeeded.
 
 `mise run hosted:reuse` sends one unseeded magnet to production Engine five
 times with the designated add-on credential, sequentially and concurrently, and

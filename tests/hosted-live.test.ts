@@ -14,7 +14,13 @@ import {
   requestSelectedMedia,
   startFixtureDiscoveryProxy,
 } from "../harness/live/hosted.ts";
-import { readLedger, utcDay } from "../harness/live/allowance.ts";
+import {
+  AllowanceFailure,
+  charge,
+  readLedger,
+  utcDay,
+} from "../harness/live/allowance.ts";
+import { liveVersions } from "../harness/live/versions.ts";
 
 const credential = `v4.local.${"F".repeat(300)}`;
 
@@ -54,6 +60,31 @@ test("explicit hosted allowance extension preserves usage and adds only bounded 
       code: "ENOENT",
     });
     await assert.rejects(readFile(`${path}.next`), { code: "ENOENT" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an allowance extension is refused once charged usage passed the cap", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "hosted-allowance-fixture-"));
+  try {
+    const path = join(directory, "allowance.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        day: utcDay(),
+        reservedTransfers: 1,
+        reservedBytes: liveVersions.byteLimit - 10,
+      }),
+      { mode: 0o600 },
+    );
+    await charge(directory, 1000);
+    const before = await readFile(path, "utf8");
+    await assert.rejects(
+      extendForOneAttempt(directory, 50, "Single fixture proof approval"),
+      AllowanceFailure,
+    );
+    assert.equal(await readFile(path, "utf8"), before);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
