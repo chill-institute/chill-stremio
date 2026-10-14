@@ -297,6 +297,9 @@ The lookup misses, and **put.io library** still lists by filename:
 - files holding several episodes
 - videos named only by their folder
 - matches beyond the first 100 results of put.io's search
+- filenames joining title words with underscores, which put.io's search does
+  not split
+- videos put.io types as plain files; a fresh `.mkv` upload once was
 - files friends share with the account
 - specials in season 0
 
