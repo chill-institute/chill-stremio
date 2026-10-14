@@ -77,6 +77,9 @@ export const Transfer = Schema.Struct({
   hash: Schema.optional(Schema.NullOr(Schema.String)),
   source: Schema.optional(Schema.NullOr(Schema.String)),
   magneturi: Schema.optional(Schema.NullOr(Schema.String)),
+  size: Schema.optional(Schema.NullOr(Schema.Number)),
+  save_parent_id: Schema.optional(Schema.NullOr(Schema.Number)),
+  created_at: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 const Cursor = Schema.optional(Schema.NullOr(Schema.String));
@@ -698,6 +701,42 @@ export const searchFiles = Effect.fn("live.putio.searchFiles")(function* (
     cursor: Boolean(envelope.cursor),
     total: envelope.total,
   } satisfies SearchPage;
+}, Effect.timeout("20 seconds"));
+
+export const FileDetailEnvelope = Schema.Struct({
+  status: Schema.Literal("OK"),
+  file: Schema.Struct({
+    id: Schema.Int,
+    parent_id: Schema.optional(Schema.NullOr(Schema.Int)),
+    created_at: Schema.optional(Schema.NullOr(Schema.String)),
+  }),
+});
+
+/** A file's parent and creation time, or `undefined` once put.io answers 404. */
+export const getFile = Effect.fn("live.putio.getFile")(function* (id: number) {
+  const response = yield* request(`${liveVersions.apiBase}/v2/files/${id}`, {});
+  if (response.status === 404) return undefined;
+  if (!response.ok)
+    return yield* new PutioFailure({
+      message: `put.io file get HTTP ${response.status}`,
+    });
+  const envelope = yield* Schema.decodeUnknownEffect(
+    Schema.fromJsonString(FileDetailEnvelope),
+  )(response.text).pipe(
+    Effect.mapError(
+      () =>
+        new PutioFailure({ message: "put.io file get response failed schema" }),
+    ),
+  );
+  if (envelope.file.id !== id)
+    return yield* new PutioFailure({
+      message: "put.io file get returned a different file",
+    });
+  return {
+    id,
+    parentId: envelope.file.parent_id ?? undefined,
+    createdAt: envelope.file.created_at ?? undefined,
+  };
 }, Effect.timeout("20 seconds"));
 
 export const fileExists = Effect.fn("live.putio.fileExists")(function* (

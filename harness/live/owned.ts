@@ -74,7 +74,7 @@ const Streams = Schema.Struct({
   ),
 });
 
-const validOrigin = (value: string) => {
+export const validOrigin = (value: string) => {
   if (!URL.canParse(value)) return false;
   const url = new URL(value);
   return (
@@ -84,6 +84,28 @@ const validOrigin = (value: string) => {
         ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)))
   );
 };
+
+/** Whether a selection redirected to an HLS playlist on the put.io API origin. */
+export function mediaLocation(
+  status: number,
+  location: string,
+  mediaOrigin: string,
+) {
+  const target = URL.canParse(location) ? new URL(location) : undefined;
+  const checks = {
+    locationMediaOrigin: target?.origin === mediaOrigin,
+    locationHls: target?.pathname.endsWith(".m3u8") ?? false,
+  };
+  return {
+    target,
+    checks,
+    ok:
+      status === 302 &&
+      checks.locationMediaOrigin &&
+      checks.locationHls &&
+      !target?.pathname.includes("/notice/"),
+  };
+}
 
 export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
   options: OwnedOptions,
@@ -203,19 +225,11 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
     yield* discard(selection);
     proof.redirectStatus = selection.status;
     const location = selection.headers.get("location") ?? "";
-    const target = URL.canParse(location) ? new URL(location) : undefined;
-    proof.locationMediaOrigin = target?.origin === mediaOrigin;
-    proof.locationHls = target?.pathname.endsWith(".m3u8") ?? false;
+    const media = mediaLocation(selection.status, location, mediaOrigin);
+    Object.assign(proof, media.checks);
     proof.locationNamesFile =
-      target?.pathname.includes(`/files/${file.id}/`) ?? false;
-    if (
-      selection.status !== 302 ||
-      !target ||
-      target.origin !== mediaOrigin ||
-      !target.pathname.endsWith(".m3u8") ||
-      target.pathname.includes("/notice/")
-    )
-      return yield* fail(stage);
+      media.target?.pathname.includes(`/files/${file.id}/`) ?? false;
+    if (!media.ok) return yield* fail(stage);
 
     stage = "decode";
     const decodeStarted = performance.now();

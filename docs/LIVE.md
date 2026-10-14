@@ -81,7 +81,11 @@ fallback or environment path override.
 ## Credential and budget
 
 Use only the designated test account and its `PUTIO_TEST_TOKEN`. Never borrow
-production keys. The lawful source is `.cache/media/movie.mp4` plus `english.vtt`.
+production keys. The generated fixture, `.cache/media/movie.mp4` plus
+`english.vtt`, is the only source, except that
+[`hosted:acquire`](#real-acquisition-probe) may acquire the single release the
+account owner approved, supplied privately at run time; it is never a fallback
+or a looser match.
 
 The default allowance is 10 GiB per UTC day, with no transfer-count quota. This is
 the standing test budget; ordinary runs need no daily approval. The budget is
@@ -89,7 +93,9 @@ tracked per OS user and machine in the shared `allowance.json`.
 
 The [probe](../harness/live/probe.ts) reserves four creations and the prepared
 media size twice plus both generated subtitle sizes before provider mutations.
-Reservations persist even after failure or cleanup. The ledger is locked and
+Reservations persist even after failure or cleanup. Bytes put.io reports
+beyond a reservation are charged under the same lock even past the cap; such a
+ledger refuses every reservation until UTC rollover. The ledger is locked and
 atomically replaced with filesystem synchronization. Probes may cross UTC
 midnight; each reservation is charged to its start day. Transfer counts remain
 recorded for recovery and reporting.
@@ -302,6 +308,78 @@ A pass covers one movie title on Stremio's movie route through the deployed
 adapter and production Engine, decoded by FFmpeg rather than a Stremio client.
 It does not cover episodes or the recognition gaps in
 [videos already in put.io](./HOSTED.md#videos-already-in-putio).
+
+## Real acquisition probe
+
+`mise run hosted:acquire` checks that selecting a release on the deployed
+adapter makes production Engine create a put.io transfer, that put.io completes
+it and that the adapter then redirects to its HLS media. Supply
+`CHILL_STREMIO_CREDENTIAL`, `PUTIO_USERNAME` and `PUTIO_TEST_TOKEN` as for the
+[owned video probe](#owned-video-probe), with the same
+`CHILL_PUBLIC_STREMIO_ORIGIN` and `CHILL_ENGINE_BASE_URL` overrides, plus the
+private pin for the one release the account owner approved:
+
+| Variable                  | Value                                                 |
+| ------------------------- | ----------------------------------------------------- |
+| `LIVE_ACQUIRE_IMDB_ID`    | the movie's IMDb ID, `tt` and digits                  |
+| `LIVE_ACQUIRE_RELEASE_ID` | the release ID in the adapter row's media URL, a UUID |
+| `LIVE_ACQUIRE_MAX_BYTES`  | the largest size accepted, a positive integer ≤ 4 GiB |
+
+Keep the pin in the private process environment, never in this checkout. A
+missing or malformed pin fails at stage `configuration` before any request.
+
+The probe then:
+
+1. requires the credential and the token to list the same put.io root folder,
+   and the designated username
+2. reads the movie's stream list once and requires a **Download to put.io**
+   row whose media URL names the pinned release; otherwise it fails at
+   `pinned-row-missing` with nothing reserved. It never selects another row
+3. lists every put.io transfer as the baseline, kept only in the journal
+4. reserves one creation and `LIVE_ACQUIRE_MAX_BYTES`
+5. sends HEAD, which must answer `200`, then GET to the row's media URL exactly
+   once. It follows only same-origin redirects to that link's
+   `/status/<id>.m3u8`. When the adapter redirects to the pending clip, the
+   probe reads the last status URL again, at most every 10 seconds, until 20
+   minutes after the selection; a `503` capacity refusal repeats the same
+   read. Any other status clip fails at `adapter-<kind>`
+6. attributes the transfer the status URL names, or else the one transfer not
+   in the baseline and created during the run. A pre-existing transfer or more
+   than one candidate fails at `attribution`; the probe then cancels and
+   deletes nothing it did not create
+7. reads the transfer between status reads. When put.io reports a size above
+   the pin, it cancels the transfer, charges the excess bytes to the ledger and
+   fails at `size-exceeded`
+8. requires the final redirect to be an HLS playlist on the put.io API origin,
+   as the owned video probe does, not a status clip, and put.io to have
+   reported the transfer's size, or fails at `size-unknown`
+9. lists transfers again and records the transfer's file and save folder,
+   cancels the transfer to stop seeding, and decodes up to 10 seconds of the
+   playlist's video with FFmpeg, which must decode frames
+
+Every exit after the GET records the transfer's file before cancelling. Cleanup
+cancels only the attributed transfer and deletes its file only when that file
+is not in the baseline, sits in the transfer's save folder and was created
+during the run. Afterwards put.io must no longer list the transfer and must
+answer `404` for the file. The receipt's `cleanup.verification` is `verified`
+only then; `acknowledged` alone does not pass. A recorded file the run cannot
+prove it created stays in place and leaves verification `unverified`; a GET
+with no attributable transfer leaves cleanup `uncertain`. As in the owned video probe, the playlist
+URL is a signed media grant on FFmpeg's command line; run the lane only on a
+host reserved for the operator.
+
+The private `.cache/live/recovery/acquire-<timestamp>.json` journal keeps the
+run start, the baseline, candidate and attributed transfer IDs and the file
+and save folder IDs. The receipt at
+`artifacts/live-acquire-<timestamp>/results.json` keeps stage codes, booleans,
+counts, timings from selection to the first status URL, to completion and to
+media, the status read count, a size bucket, the decoded codec, size and frame
+count, and cleanup acknowledgement and verification. It holds no credential,
+token, IMDb ID, release ID, title, filename, magnet, info hash, provider ID or
+URL.
+
+A pass covers one approved movie release acquired through the deployed adapter
+and production Engine, decoded by FFmpeg rather than a Stremio client.
 
 ## HLS audio probe
 

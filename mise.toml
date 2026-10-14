@@ -92,6 +92,10 @@ run = "pnpm exec vp run hosted:reuse"
 description = "Prove a video already in put.io plays through the deployed adapter"
 run = "pnpm exec vp run hosted:owned"
 
+[tasks."hosted:acquire"]
+description = "Acquire the one approved release through the deployed adapter, decode it, and clean up"
+run = "pnpm exec vp run hosted:acquire"
+
 [tasks."hosted:public"]
 description = "Read the deployed adapter with the designated account's add-on credential"
 # Node alone: the canary runs this next to the credential without installing packages.

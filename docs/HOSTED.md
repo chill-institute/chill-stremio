@@ -484,6 +484,12 @@ film's name, waits for the deployed adapter to list it as a **Play from
 put.io** row, follows that row to put.io's HLS playlist and decodes it with
 FFmpeg; see the [owned video probe](./LIVE.md#owned-video-probe).
 
+`mise run hosted:acquire` selects the one release the account owner approved
+on the deployed adapter, waits for production Engine's put.io transfer to
+complete, follows the adapter to put.io's HLS playlist, decodes it with FFmpeg
+and removes only what the run created; see the
+[real acquisition probe](./LIVE.md#real-acquisition-probe).
+
 The public endpoint depends on the `infra`-owned DNS record and the Engine-owned
 Compose service and deploy workflow. Native desktop and Android TV support
 require their own passing receipts; Web results do not establish native support.
