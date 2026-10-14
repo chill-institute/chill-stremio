@@ -85,11 +85,14 @@ Gaps:
 - `hosted:live` fakes Engine's credential check. The canary proves production
   Engine accepts an issued credential only after a publish or a manual dispatch,
   so Engine deploys between adapter releases go unchecked until the next run. Owner: operator.
-- `hosted:owned` recorded a pass on 2026-10-14 for one movie's library
-  playback through the deployed adapter, decoded by FFmpeg rather than a
-  Stremio client. `hosted:acquire` covers acquisition of one approved release
-  through the deployed adapter and production Engine, also decoded by FFmpeg,
-  and has no recorded pass. `hosted:public` and its canary consume no stream,
+- On 2026-10-14 `hosted:owned` recorded a pass for one movie's library
+  playback through the deployed adapter, and `hosted:acquire` for one approved
+  movie release acquired through the deployed adapter and production Engine.
+  The passing acquisition completed at once from put.io's cache; an earlier
+  run covered a six-minute download through pending status clips, then left
+  its stopped transfer listed, since fixed. Both decode with FFmpeg rather
+  than a Stremio client, and no episode or season pack was acquired.
+  `hosted:public` and its canary consume no stream,
   `hosted:live`'s Stremio Web step has no recorded pass since v2.0.0, and
   Stremio client UI playback through the deployed adapter remains unproven. Owner: chill-institute/chill-stremio.
 - CI artifacts expire after 7 days; archive evidence needed longer. Owner: chill-institute/chill-stremio.
