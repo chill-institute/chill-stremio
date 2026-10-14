@@ -150,11 +150,16 @@ try {
   const found = asRecord(await owned.json().catch(() => undefined));
   if (refused(owned, found))
     fail("owned-videos", `Engine refused the lookup: status ${owned.status}`);
+  // The adapter drops these rows on any lookup error, so only an answer passes.
+  if (
+    !owned.ok ||
+    found === undefined ||
+    (found.videos !== undefined && !Array.isArray(found.videos))
+  )
+    fail("owned-videos", `status ${owned.status}`);
   pass(
     "owned-videos",
-    owned.ok
-      ? `videos ${Array.isArray(found?.videos) ? found.videos.length : 0}`
-      : `status ${owned.status}`,
+    `videos ${Array.isArray(found?.videos) ? found.videos.length : 0}`,
   );
   passed = true;
 } catch (error) {

@@ -86,7 +86,8 @@ async function adapter(
     | "rejecting"
     | "no-releases"
     | "no-season-grant"
-    | "no-owned-grant",
+    | "no-owned-grant"
+    | "no-owned-lookup",
 ) {
   const fake = createServer((request, response) => {
     void (async () => {
@@ -190,6 +191,10 @@ async function adapter(
               );
             return;
           }
+          if (engine === "no-owned-lookup") {
+            response.writeHead(404).end('{"code":"unimplemented"}');
+            return;
+          }
           response.end(
             toJsonString(
               proto.FindOwnedVideosResponseSchema,
@@ -271,6 +276,11 @@ for (const [engine, failedStep, outcome] of [
     "no-owned-grant",
     "owned-videos",
     "no owned-video lookup grant fails at owned-videos",
+  ],
+  [
+    "no-owned-lookup",
+    "owned-videos",
+    "an Engine without the owned-video lookup fails at owned-videos",
   ],
 ] as const) {
   test(`public check with ${outcome} and records no credential`, async () => {

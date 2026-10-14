@@ -287,7 +287,9 @@ deployed adapter, at most 30 times 10 seconds apart, until a
 **Play from put.io** row names the uploaded file. That row's media URL must
 answer HEAD with `200` and GET with a `302` to an HLS playlist on the put.io API
 origin, not a status clip. FFmpeg then decodes up to 10 seconds of that
-playlist's video in memory and must decode frames.
+playlist's video in memory and must decode frames. The playlist URL is a signed
+media grant passed on FFmpeg's command line, so other local users can read it
+while the decode runs; run the lane only on a host reserved for the operator.
 
 Cleanup deletes only the folder and file the run created, then requires put.io
 to report each as gone; otherwise cleanup stays `uncertain`. The private
