@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { Clock, Effect, Schema } from "effect";
+import { Clock, Effect, Option, Schema } from "effect";
 import type { Manifest, MetaDetail, MetaVideo } from "stremio-addon-sdk";
 import { DiscoveryDeadline, DiscoveryEngine } from "./discovery-engine.ts";
 import { EngineError } from "./engine.ts";
@@ -126,6 +126,13 @@ const SeasonPack = Schema.Struct({
   quality: Text,
   seasonNumber: NumberId,
 });
+const OwnedVideo = Schema.Struct({
+  id: Schema.BigInt.check(
+    Schema.isBetweenBigInt({ minimum: 1n, maximum: 9223372036854775807n }),
+  ),
+  name: Schema.NonEmptyString.check(Schema.isMaxLength(4096)),
+  fileType: Schema.Literal("VIDEO"),
+});
 const Target = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("imdb"), imdbId: ImdbId }),
   Schema.Struct({ kind: Schema.Literal("movie"), id: OpaqueId }),
@@ -151,6 +158,13 @@ export type DiscoveryRelease = {
   seeders: bigint;
 };
 export type SeasonEpisode = { season: number; episode: number };
+/** The title a movie or episode target names; an episode also carries its numbers. */
+export type DiscoverySubject = {
+  title: string;
+  year: number;
+  season?: number;
+  episode?: number;
+};
 /** A release to submit; a season pack also names the episode to play from it. */
 type SelectedRelease = { url: string; episode?: SeasonEpisode };
 
@@ -557,17 +571,16 @@ export function createDiscovery() {
         }
       : undefined;
   });
-  const candidates = Effect.fn("Discovery.candidates")(function* (
+  const subject = Effect.fn("Discovery.subject")(function* (
     input: DiscoveryTarget,
   ): Effect.fn.Return<
-    { releases: DiscoveryRelease[]; incomplete: boolean },
-    DiscoveryError | import("./engine.ts").EngineError,
+    Option.Option<DiscoverySubject>,
+    DiscoveryError | EngineError,
     DiscoveryEngine
   > {
     const target = yield* Schema.decodeUnknownEffect(Target)(input).pipe(
       Effect.mapError(invalidRequest),
     );
-    let query: string;
     if (target.kind === "imdb") {
       const matching = moviesByImdb(yield* movies()).get(target.imdbId) ?? [];
       const engine = yield* DiscoveryEngine;
@@ -575,24 +588,88 @@ export function createDiscovery() {
         matching.length === 1
           ? matching[0]
           : yield* engine.getMovieMetadata(target.imdbId);
-      if (!movie) return { releases: [], incomplete: false };
-      query = `${movie.title}${movie.year ? ` ${movie.year}` : ""}`;
-    } else if (target.kind === "movie") {
+      return Option.fromNullishOr(
+        movie && { title: movie.title, year: movie.year },
+      );
+    }
+    if (target.kind === "movie") {
       const movie = (yield* movies()).find((movie) => movie.id === target.id);
-      if (!movie) return { releases: [], incomplete: false };
-      query = `${movie.title}${movie.year ? ` ${movie.year}` : ""}`;
-    } else if (target.kind === "episode") {
-      const show = yield* detail(target.imdbId);
-      if (!show.seasons.some((entry) => entry.seasonNumber === target.season))
-        return { releases: [], incomplete: false };
-      if (
-        !(yield* season(target.imdbId, target.season)).some(
-          (entry) => entry.episodeNumber === target.episode,
-        )
+      return Option.fromNullishOr(
+        movie && { title: movie.title, year: movie.year },
+      );
+    }
+    if (target.kind === "release") return Option.none();
+    const show = yield* detail(target.imdbId);
+    if (!show.seasons.some((entry) => entry.seasonNumber === target.season))
+      return Option.none();
+    if (
+      !(yield* season(target.imdbId, target.season)).some(
+        (entry) => entry.episodeNumber === target.episode,
       )
-        return { releases: [], incomplete: false };
-      query = `${show.show.title} S${String(target.season).padStart(2, "0")}E${String(target.episode).padStart(2, "0")}`;
-    } else query = target.query;
+    )
+      return Option.none();
+    return Option.some({
+      title: show.show.title,
+      year: show.show.year,
+      season: target.season,
+      episode: target.episode,
+    });
+  });
+  const ownedVideos = Effect.fn("Discovery.ownedVideos")(function* (
+    subject: DiscoverySubject,
+  ) {
+    // Engine finds nothing for these, so they are not asked.
+    if (
+      !/[\p{L}\p{N}]/u.test(subject.title) ||
+      (subject.episode === undefined && !subject.year)
+    )
+      return [];
+    const engine = yield* DiscoveryEngine;
+    const { videos } = yield* decodeResponse(
+      Schema.Struct({
+        videos: Schema.Array(OwnedVideo).check(
+          Schema.isMaxLength(10),
+          Schema.makeFilter(
+            (items) =>
+              new Set(items.map((item) => item.id)).size === items.length,
+          ),
+        ),
+      }),
+    )(
+      yield* engine.findOwnedVideos({
+        title: subject.title,
+        year: subject.year,
+        ...(subject.season !== undefined &&
+          subject.episode !== undefined && {
+            season: subject.season,
+            episode: subject.episode,
+          }),
+      }),
+    );
+    return videos;
+  });
+  const candidates = Effect.fn("Discovery.candidates")(function* (
+    input: DiscoveryTarget,
+    resolved?: Option.Option<DiscoverySubject>,
+  ): Effect.fn.Return<
+    { releases: DiscoveryRelease[]; incomplete: boolean },
+    DiscoveryError | EngineError,
+    DiscoveryEngine
+  > {
+    const target = yield* Schema.decodeUnknownEffect(Target)(input).pipe(
+      Effect.mapError(invalidRequest),
+    );
+    let query: string;
+    if (target.kind === "release") query = target.query;
+    else {
+      const found = resolved ?? (yield* subject(target));
+      if (Option.isNone(found)) return { releases: [], incomplete: false };
+      const { title, year, season, episode } = found.value;
+      query =
+        season === undefined || episode === undefined
+          ? `${title}${year ? ` ${year}` : ""}`
+          : `${title} S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+    }
     const { results, incomplete } = yield* search(query);
     return {
       releases: results
@@ -622,8 +699,10 @@ export function createDiscovery() {
       }),
     );
   const methods = {
-    releases: (target: DiscoveryTarget) =>
-      Effect.map(candidates(target), ({ releases }) => releases),
+    releases: (
+      target: DiscoveryTarget,
+      resolved?: Option.Option<DiscoverySubject>,
+    ) => Effect.map(candidates(target, resolved), ({ releases }) => releases),
     release: Effect.fn("Discovery.release")(function* (
       target: DiscoveryTarget,
       id: string,
@@ -823,8 +902,16 @@ export function createDiscovery() {
       const movie = matching.length === 1 ? matching[0] : undefined;
       return movie ? { kind: "movie" as const, id: movie.id } : target;
     }, budget),
-    releases: (target: DiscoveryTarget) =>
-      methods.releases(target).pipe(budget),
+    /** The title a target names, for callers that also pass it to `releases`. */
+    subject: (target: DiscoveryTarget) => subject(target).pipe(budget),
+    /** A resolved subject saves `releases` from looking it up again. */
+    releases: (
+      target: DiscoveryTarget,
+      resolved?: Option.Option<DiscoverySubject>,
+    ) => methods.releases(target, resolved).pipe(budget),
+    /** Videos Engine finds in the account under the subject's exact title. */
+    ownedVideos: (subject: DiscoverySubject) =>
+      ownedVideos(subject).pipe(budget),
     /** Engine's season pack for an episode target's season, if it offers one. */
     seasonPack: (target: DiscoveryTarget) => seasonPack(target).pipe(budget),
     release: (

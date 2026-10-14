@@ -1,4 +1,5 @@
 import type {
+  FindOwnedVideosResponse,
   GetMoviesResponse,
   GetTVShowsResponse,
   GetTVShowDetailResponse,
@@ -35,6 +36,12 @@ export class DiscoveryEngine extends Context.Service<
       seasonNumber: number,
     ): Effect.Effect<GetTVShowSeasonDownloadsResponse, EngineError>;
     search(query: string): Effect.Effect<SearchResponse, EngineError>;
+    findOwnedVideos(request: {
+      title: string;
+      year: number;
+      season?: number;
+      episode?: number;
+    }): Effect.Effect<FindOwnedVideosResponse, EngineError>;
   }
 >()("chill-stremio/DiscoveryEngine") {}
 
@@ -102,6 +109,8 @@ export function discoveryEngineLayer(configuration: EngineAuth) {
           ),
         search: (query) =>
           call((options) => rpc.client.search({ query }, options)),
+        findOwnedVideos: (request) =>
+          call((options) => rpc.client.findOwnedVideos(request, options)),
       });
     }),
   );

@@ -33,11 +33,14 @@ never as `Authorization`. It keeps no database, key, installation registry or
 management API; chill-web issues links. Catalog, metadata, stream listing, HEAD
 and OPTIONS stay read-only; consuming a selected media URL with GET submits one
 transfer, reused in memory for 60 seconds, and a lost submission response is
-never retried. HLS terminal states, and waits past the four-minute pending limit
+never retried. An `owned:` row plays a [video already in put.io](./docs/HOSTED.md#videos-already-in-putio)
+through `ResolvePlayback` alone and never submits; Engine, not the adapter,
+matches filenames. HLS terminal states, and waits past the four-minute pending limit
 or an HLS status URL's fifth redirect, redirect to status clips under `/notice/`,
 which never call Engine. Engine `401`/`403` becomes the reconnect notice,
 except a `403` on the [season lookup](./docs/HOSTED.md#season-packs), which
-leaves out the season pack row or plays `release-unavailable` for a selected pack.
+leaves out the season pack row or plays `release-unavailable` for a selected pack,
+and any error on the owned-video lookup, which leaves out its rows.
 [Capacity](./docs/HOSTED.md#capacity) refusals of selected media stay `503`;
 `/health`, HEAD, OPTIONS and `/notice/` stay outside the per-link limit.
 `mise run hosted:smoke` is fake-only, including its recording. Status clips are

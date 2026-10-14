@@ -56,7 +56,8 @@ media under `/play/` and `/status/`, which gets `503 unavailable` because HLS
 players retry a 5xx but not a 4xx. Every refusal carries `Retry-After: 5` and
 `Access-Control-Allow-Origin: *`. A new selection needs two free units on its
 link, one for the request and one for its submission; otherwise it returns that
-`503` and submits nothing. The pinned Stremio Web client's hls.js settings
+`503` and submits nothing; a [video already in put.io](#videos-already-in-putio)
+needs only the request's unit. The pinned Stremio Web client's hls.js settings
 retry a refused manifest and Stremio for Linux's do not, but no client run has
 been refused yet; select the source again if playback stops. `GET /health`, HEAD and
 OPTIONS never count, and status clips under `/notice/` count only toward the
@@ -72,7 +73,8 @@ only its shape; a malformed credential returns `404` without contacting Engine.
 Every Engine call for that link sends `X-Chill-Stremio-Credential` and no
 `Authorization` header. Engine accepts the credential for `Search`, `GetMovies`,
 `GetTVShows`, `GetTVShowDetail`, `GetTVShowSeason`, `GetTVShowSeasonDownloads`,
-`GetFolder`, `ResolvePlayback`, `GetTransfer` and `AddTransfer`.
+`FindOwnedVideos`, `GetFolder`, `ResolvePlayback`, `GetTransfer` and
+`AddTransfer`.
 
 Keep your add-on link private: anyone who has it can browse your put.io library,
 play its videos and start downloads to your account. Stremio shows the full link
@@ -113,7 +115,8 @@ alone is not proof of catalog visibility.
 1. Choose **Configure** on the chill.institute add-on, or open `/stremio` on chill.institute.
 2. Connect your account and install the add-on link it shows.
 3. Open **Discover → put.io library**, browse movie/series discovery, or search **Releases**.
-   Ordinary Stremio movie and episode pages also list chill release results.
+   Ordinary Stremio movie and episode pages also list chill release results,
+   after any [videos already in put.io](#videos-already-in-putio).
 4. Select a **Download to put.io** release row, or on an episode the
    **Download season to put.io** row for its [season pack](#season-packs). The
    player requests its media URL; the adapter looks the release up again and
@@ -146,9 +149,11 @@ prefetch hints are read-only. GET on a selected
 `/s/<credential>/play/<type>/<id>/<release>.m3u8` URL resolves the release
 through Engine `Search`, or a [season pack](#season-packs) through
 `GetTVShowSeasonDownloads`, and submits the returned link with `AddTransfer`;
-Engine chooses the destination folder. A release missing from that search plays
-the `release-unavailable` clip below; a legacy `.mp4` selection returns `404`,
-or `503 unavailable` when an indexer reported an error. The adapter omits
+Engine chooses the destination folder. A row for a
+[video already in put.io](#videos-already-in-putio) only resolves its playback.
+A release missing from that search plays the `release-unavailable` clip below; a
+legacy `.mp4` selection returns `404`, or `503 unavailable` when an indexer
+reported an error. The adapter omits
 `bingeGroup`. These guards do not cryptographically prove a human click for
 every Stremio client.
 
@@ -255,6 +260,48 @@ download back from Engine, like any repeated release, and plays that episode.
 If Engine later offers a different pack, its row is a different release and
 starts a new download; play episodes you already downloaded from **put.io
 library**.
+
+## Videos already in put.io
+
+A movie or episode page's stream list starts with up to ten **Play from put.io**
+rows when the account already holds matching videos. Each row shows the
+video's filename. The adapter asks Engine with `FindOwnedVideos` for the
+page's title and year, and for an episode its season and episode, as soon as
+it has resolved them for the release search, so both run together. Engine runs
+one put.io file search and returns only videos whose filenames match strictly:
+a movie needs its exact title and year, an episode its exact show title, season
+and episode, with any year in the filename equal to the show's. The adapter
+never reads filenames itself. Once the release rows are ready, the listing
+waits at most half a second more for the lookup. A slower, failed or refused
+lookup, including `401` or `403`, leaves the page as it would be without it and
+never shows the reconnect source. These rows do not count toward the 100-row
+release limit. Release search results, movies without a year and titles without
+letters or digits skip the lookup.
+
+Selecting a row requests `/s/<credential>/play/<type>/<id>/owned:<fileId>.m3u8`.
+The adapter calls `ResolvePlayback` for that file within the request's 10-second
+deadline and redirects to the media URL Engine returns. It never searches,
+submits a transfer, shares a submission or redirects to a status URL. Playback
+still being prepared plays the `pending` clip, a file that is gone or has no
+playable source plays `unavailable`, and a rejected credential plays
+`reconnect`; legacy `.mp4` URLs get the matching `.mp4` clips. A malformed file
+ID returns `400`. HEAD and prefetch hints answer as for other selected media,
+and the request counts toward [capacity](#capacity) like any other.
+
+The lookup misses, and **put.io library** still lists by filename:
+
+- movies whose filename has no year
+- alternate, localized or abbreviated titles
+- years one off from the catalog's
+- date-based or absolute-numbered episodes
+- files holding several episodes
+- videos named only by their folder
+- matches beyond the first 100 results of put.io's search
+- files friends share with the account
+- specials in season 0
+
+It can also list a different movie with the same title and year, or a
+different show with the same name when the filename has no year.
 
 ## Verification and release
 

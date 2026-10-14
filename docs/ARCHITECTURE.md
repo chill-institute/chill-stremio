@@ -47,6 +47,12 @@ the freshly issued link. A vanished release must not be replaced by a title matc
 An episode's [season pack](./HOSTED.md#season-packs) row instead resolves only
 through Engine's season lookup, `GetTVShowSeasonDownloads`, which must still
 return the same pack ID; it never falls back to the episode search.
+Movie and episode stream lists also ask Engine's `FindOwnedVideos` for
+[videos already in the account](./HOSTED.md#videos-already-in-putio) under the
+title and year the release search uses. Discovery resolves that subject once per
+listing and passes it to both lookups, which run together. Engine owns filename
+matching; the adapter never parses filenames. An `owned:<fileId>` row resolves
+through `ResolvePlayback` alone, without `GetFolder`, and never submits.
 The [Engine search contract](https://github.com/chill-institute/chill-engine/blob/main/docs/ARCHITECTURE.md)
 owns stable source identity and its fallback limits. Release artwork association
 must remain separate from this acquisition identity.
@@ -82,10 +88,11 @@ episode from Engine's release info and never parses file names itself.
 length; Engine decides whether the credential is valid and which account it
 belongs to. The adapter keeps no database, key or per-account memory beyond
 open requests. A `401` or `403` from Engine becomes a reconnect row, source or
-status clip, pointing to `https://chill.institute/stremio`. The exception is a
-`403` on the season lookup: the listing leaves out the
-[season pack](./HOSTED.md#season-packs) row, and a selected pack plays the
-release-unavailable clip.
+status clip, pointing to `https://chill.institute/stremio`. The exceptions are a
+`403` on the season lookup, where the listing leaves out the
+[season pack](./HOSTED.md#season-packs) row and a selected pack plays the
+release-unavailable clip, and any error on the owned-video lookup, which leaves
+out the **Play from put.io** rows.
 
 The credential grants library/discovery access, playback and chosen-release
 downloads to put.io. Keep add-on links private. Personalized responses use
@@ -98,7 +105,7 @@ Harness receipts replace credentials with `[credential]`.
 ## Playback and failure behavior
 
 The adapter uses
-[contracts v3.1.0](https://github.com/chill-institute/chill-contracts/releases/tag/v3.1.0)
+[contracts v3.2.0](https://github.com/chill-institute/chill-contracts/releases/tag/v3.2.0)
 and requests HLS through `ResolvePlayback`. Engine checks ownership, resolves a
 download grant, verifies the HLS master anonymously and returns its HTTPS URL.
 The player fetches playlists and media from put.io; the account OAuth token

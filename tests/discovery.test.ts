@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { create } from "@bufbuild/protobuf";
 import {
+  FindOwnedVideosResponseSchema,
   GetMoviesResponseSchema,
   GetTVShowsResponseSchema,
   GetTVShowDetailResponseSchema,
@@ -10,7 +11,7 @@ import {
   MovieSchema,
   TVShowSeasonSchema,
 } from "@chill-institute/contracts/chill/v4/api_pb";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { test } from "vite-plus/test";
 import { DiscoveryEngine } from "../src/discovery-engine.ts";
 import {
@@ -74,6 +75,11 @@ function fixture() {
       },
     ],
   });
+  const owned = create(FindOwnedVideosResponseSchema, {
+    videos: [
+      { id: 77n, name: "An.Independent.Film.2024.mkv", fileType: "VIDEO" },
+    ],
+  });
   const service = DiscoveryEngine.of({
     getMovieMetadata: (id) =>
       Effect.sync(() => {
@@ -110,6 +116,11 @@ function fixture() {
         calls.push(`search:${query}`);
         return create(SearchResponseSchema, { query, results: [release] });
       }),
+    findOwnedVideos: (request) =>
+      Effect.sync(() => {
+        calls.push(`owned:${JSON.stringify(request)}`);
+        return owned;
+      }),
   });
   return {
     calls,
@@ -117,6 +128,7 @@ function fixture() {
     shows,
     detail,
     season,
+    owned,
     service,
     layer: Layer.succeed(DiscoveryEngine, service),
   };
@@ -870,4 +882,86 @@ test("IMDb movie outside the current catalog resolves public metadata before sea
     `metadata:${imdbId}`,
     "search:Another Film 2020",
   ]);
+});
+
+test("a resolved subject names the title, year and episode, and is not looked up again", async () => {
+  const f = fixture();
+  const run = <A, E>(effect: Effect.Effect<A, E, DiscoveryEngine>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(f.layer)));
+  const episode = { kind: "episode" as const, imdbId, season: 1, episode: 2 };
+  const subject = await run(discovery.subject(episode));
+  assert.deepEqual(Option.getOrUndefined(subject), {
+    title: show.title,
+    year: show.year,
+    season: 1,
+    episode: 2,
+  });
+  f.calls.length = 0;
+  assert.equal(
+    (await run(discovery.releases(episode, subject)))[0]?.id,
+    release.id,
+  );
+  assert.deepEqual(f.calls, [`search:${show.title} S01E02`]);
+  assert.deepEqual(
+    Option.getOrUndefined(
+      await run(discovery.subject({ kind: "movie", id: movie.id })),
+    ),
+    { title: movie.title, year: movie.year },
+  );
+  for (const target of [
+    { kind: "episode" as const, imdbId, season: 1, episode: 9 },
+    { kind: "movie" as const, id: "another-film" },
+    { kind: "release" as const, query: "independent", id: release.id },
+  ])
+    assert.ok(Option.isNone(await run(discovery.subject(target))));
+});
+
+test("owned video lookups ask Engine only for a subject it can match", async () => {
+  const f = fixture();
+  const owned = (subject: Parameters<typeof discovery.ownedVideos>[0]) =>
+    Effect.runPromise(
+      discovery.ownedVideos(subject).pipe(Effect.provide(f.layer)),
+    );
+  assert.deepEqual(await owned({ title: movie.title, year: movie.year }), [
+    { id: 77n, name: "An.Independent.Film.2024.mkv", fileType: "VIDEO" },
+  ]);
+  await owned({ title: show.title, year: 0, season: 1, episode: 2 });
+  assert.deepEqual(f.calls, [
+    `owned:${JSON.stringify({ title: movie.title, year: movie.year })}`,
+    `owned:${JSON.stringify({ title: show.title, year: 0, season: 1, episode: 2 })}`,
+  ]);
+  f.calls.length = 0;
+  assert.deepEqual(await owned({ title: movie.title, year: 0 }), []);
+  assert.deepEqual(await owned({ title: "· · ·", year: 2024 }), []);
+  assert.deepEqual(f.calls, []);
+});
+
+test("owned video responses Engine should not send fail closed", async () => {
+  const f = fixture();
+  const video = {
+    id: 77n,
+    name: "An.Independent.Film.2024.mkv",
+    fileType: "VIDEO",
+  };
+  for (const [videos, reason] of [
+    [[{ ...video, fileType: "FOLDER" }], "not a video"],
+    [[{ ...video, id: 0n }], "no file ID"],
+    [[{ ...video, name: "" }], "no name"],
+    [[{ ...video, name: "a".repeat(4097) }], "an oversized name"],
+    [[video, video], "a repeated video"],
+    [
+      Array.from({ length: 11 }, (_, n) => ({ ...video, id: BigInt(n + 1) })),
+      "more than ten videos",
+    ],
+  ] as const) {
+    f.owned.videos = create(FindOwnedVideosResponseSchema, {
+      videos: [...videos],
+    }).videos;
+    const failure = await Effect.runPromise(
+      discovery
+        .ownedVideos({ title: movie.title, year: movie.year })
+        .pipe(Effect.provide(f.layer), Effect.flip),
+    );
+    assert.equal(failure.code, "invalid_response", reason);
+  }
 });

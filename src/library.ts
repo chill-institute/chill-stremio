@@ -169,6 +169,33 @@ const checkExpiry = Effect.fn("Library.checkExpiry")(function* (
   return source.url;
 });
 
+/** Engine's playback for a file the credential's account owns, by ID alone. */
+export const filePlayback = Effect.fn("Library.filePlayback")(function* (
+  id: bigint,
+) {
+  const engine = yield* Engine;
+  const response = yield* engine.resolvePlayback(id);
+  const playback = yield* Schema.decodeUnknownEffect(Playback)(response).pipe(
+    Effect.mapError(invalidResponse),
+  );
+  if (playback.result.case !== "ready")
+    return { case: playback.result.case } as const;
+  const ready = playback.result.value;
+  const now = yield* Clock.currentTimeMillis;
+  const url = yield* checkExpiry(ready.media, now);
+  const subtitles = yield* Effect.forEach(
+    ready.subtitles,
+    Effect.fn("Library.subtitle")(function* (track) {
+      return {
+        id: track.id,
+        lang: track.language,
+        url: yield* checkExpiry(track.source, now),
+      };
+    }),
+  );
+  return { case: "ready", url, subtitles, format: ready.format } as const;
+});
+
 export function createLibrary(folderId: bigint, recursive = false) {
   const files = Effect.fn("Library.files")(function* (
     matches: (file: typeof File.Type) => boolean,
@@ -216,26 +243,10 @@ export function createLibrary(folderId: bigint, recursive = false) {
     const [file] = yield* files((entry) => entry.id === id, 1);
     const streams: Stream[] = [];
     if (!file) return { streams, pending: false };
-    const engine = yield* Engine;
-    const response = yield* engine.resolvePlayback(id);
-    const playback = yield* Schema.decodeUnknownEffect(Playback)(response).pipe(
-      Effect.mapError(invalidResponse),
-    );
-    if (playback.result.case !== "ready")
-      return { streams, pending: playback.result.case === "pending" };
-    const ready = playback.result.value;
-    const now = yield* Clock.currentTimeMillis;
-    const url = yield* checkExpiry(ready.media, now);
-    const subtitles = yield* Effect.forEach(
-      ready.subtitles,
-      Effect.fn("Library.subtitle")(function* (track) {
-        return {
-          id: track.id,
-          lang: track.language,
-          url: yield* checkExpiry(track.source, now),
-        };
-      }),
-    );
+    const playback = yield* filePlayback(id);
+    if (playback.case !== "ready")
+      return { streams, pending: playback.case === "pending" };
+    const { url, subtitles, format } = playback;
     streams.push({
       name: "chill.institute",
       title: file.name,
@@ -244,9 +255,9 @@ export function createLibrary(folderId: bigint, recursive = false) {
       behaviorHints: {
         notWebReady: !(
           new URL(url).pathname.endsWith(".m3u8") ||
-          (ready.format?.container === Container.MP4 &&
-            ready.format.videoCodec === VideoCodec.H264 &&
-            ready.format.audioCodec === AudioCodec.AAC)
+          (format?.container === Container.MP4 &&
+            format.videoCodec === VideoCodec.H264 &&
+            format.audioCodec === AudioCodec.AAC)
         ),
       },
     });

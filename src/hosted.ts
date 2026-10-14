@@ -19,7 +19,12 @@ import {
 import { DiscoveryDeadline, discoveryEngineLayer } from "./discovery-engine.ts";
 import { engineLayer } from "./engine.ts";
 import { createLibrary } from "./library.ts";
-import { createSelection, type Submission } from "./selection.ts";
+import {
+  createSelection,
+  ownedFileId,
+  ownedPrefix,
+  type Submission,
+} from "./selection.ts";
 import {
   playbackWait,
   waitForPlayback,
@@ -381,6 +386,43 @@ export async function startHostedAdapter(options: {
           url.searchParams.size > (url.searchParams.has("wait") ? 1 : 0)
         )
           return fail("invalid_request");
+        let choice: { type: string; id: string; releaseId: string } | undefined;
+        if (playRoute?.[1] && playRoute[2] && playRoute[3]) {
+          try {
+            choice = {
+              type: playRoute[1],
+              id: decodeURIComponent(playRoute[2]),
+              releaseId: decodeURIComponent(playRoute[3]),
+            };
+          } catch {
+            return fail("invalid_request");
+          }
+        }
+        // A video already in the account resolves once within the request
+        // deadline: no submission, transfer or status URL.
+        if (choice?.releaseId.startsWith(ownedPrefix)) {
+          const fileId = ownedFileId(choice.releaseId);
+          if (fileId === undefined) return fail("invalid_request");
+          let result: PlaybackResult;
+          try {
+            result = await run(
+              selection.owned(fileId).pipe(Effect.provide(layer)),
+            );
+          } catch (error) {
+            if (!rejected(error)) throw error;
+            result = { status: "reconnect" };
+          }
+          if (response.destroyed || response.writableEnded) return;
+          response
+            .writeHead(302, {
+              Location:
+                "url" in result
+                  ? result.url
+                  : `${base}/notice/${result.status}.${hls ? "m3u8" : "mp4"}`,
+            })
+            .end();
+          return;
+        }
         clearTimeout(deadline);
         // Status reads and polling stop when this window ends, as a new
         // submission does; the later deadline leaves room to redirect.
@@ -402,16 +444,8 @@ export async function startHostedAdapter(options: {
             reading,
           );
         try {
-          if (playRoute?.[1] && playRoute[2] && playRoute[3]) {
-            const type = playRoute[1];
-            let id: string;
-            let releaseId: string;
-            try {
-              id = decodeURIComponent(playRoute[2]);
-              releaseId = decodeURIComponent(playRoute[3]);
-            } catch {
-              return fail("invalid_request");
-            }
+          if (choice) {
+            const { type, id, releaseId } = choice;
             const key = createHash("sha256")
               .update(`${credential}\n${type}\n${id}\n${releaseId}`)
               .digest("hex");

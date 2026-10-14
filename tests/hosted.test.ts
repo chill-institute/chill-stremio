@@ -75,6 +75,12 @@ async function fixture(
   }[] = [];
   const searches: string[] = [];
   const listings: { id: bigint; releaseInfo: boolean }[] = [];
+  const ownedLookups: {
+    title: string;
+    year: number;
+    season?: number;
+    episode?: number;
+  }[] = [];
   const state = {
     loseTransferResponse: false,
     stallMovies: false,
@@ -106,6 +112,10 @@ async function fixture(
     stallSeasonPack: false,
     seasonDelayMs: 0,
     abandonedSeasonLookups: 0,
+    // Videos FindOwnedVideos returns; each one also resolves for playback.
+    ownedVideos: [] as { id: bigint; name: string; fileType?: string }[],
+    ownedRejection: undefined as { status: number; code: string } | undefined,
+    ownedDelayMs: 0,
     playbackPending: false,
     rejection: undefined as { status: number; code: string } | undefined,
     // Wall-clock time a method takes, for tests that fake `Date`.
@@ -352,6 +362,39 @@ async function fixture(
           );
           return;
         }
+        case "FindOwnedVideos": {
+          const { title, year, season, episode } = fromJsonString(
+            proto.FindOwnedVideosRequestSchema,
+            json,
+          );
+          ownedLookups.push({
+            title,
+            year,
+            ...(season !== undefined && { season }),
+            ...(episode !== undefined && { episode }),
+          });
+          if (state.ownedRejection) {
+            error(
+              response,
+              state.ownedRejection.status,
+              state.ownedRejection.code,
+            );
+            return;
+          }
+          await sleep(state.ownedDelayMs);
+          response.end(
+            toJsonString(
+              proto.FindOwnedVideosResponseSchema,
+              create(proto.FindOwnedVideosResponseSchema, {
+                videos: state.ownedVideos.map((video) => ({
+                  fileType: "VIDEO",
+                  ...video,
+                })),
+              }),
+            ),
+          );
+          return;
+        }
         case "AddTransfer": {
           const { url } = fromJsonString(proto.AddTransferRequestSchema, json);
           assert.ok(
@@ -415,7 +458,14 @@ async function fixture(
             proto.ResolvePlaybackRequestSchema,
             json,
           );
-          assert.ok([21n, 22n, 50n].includes(fileId));
+          if (
+            ![21n, 22n, 50n, ...state.ownedVideos.map(({ id }) => id)].includes(
+              fileId,
+            )
+          ) {
+            error(response, 404, "not_found");
+            return;
+          }
           if (state.playbackPending) {
             response.end(
               JSON.stringify({
@@ -475,6 +525,7 @@ async function fixture(
     calls,
     searches,
     listings,
+    ownedLookups,
     state,
     get origin() {
       return hosted.origin;
@@ -1669,10 +1720,11 @@ test("a stream listing for a catalog IMDb movie reads the movie catalog once", a
     const response = await fetch(`${f.base()}/stream/movie/tt1234567.json`);
     assert.equal(response.status, 200);
     assert.equal((await decode(response, Streams)).streams.length, 1);
-    assert.deepEqual(
-      f.calls.map(({ method }) => method),
-      ["GetMovies", "Search"],
-    );
+    assert.deepEqual(f.calls.map(({ method }) => method).toSorted(), [
+      "FindOwnedVideos",
+      "GetMovies",
+      "Search",
+    ]);
   } finally {
     await f.close();
   }
@@ -2140,5 +2192,272 @@ test("movie and episode releases never consult the season lookup", async () => {
     );
   } finally {
     await f.close();
+  }
+});
+
+const ownedVideo = (id: bigint) => ({
+  id,
+  name: `Independent.Film.2024.Part${id}.mkv`,
+});
+const movieRows = async (f: Fixture, id = "tt1234567") => {
+  const response = await fetch(
+    `${f.base()}/stream/movie/${encodeURIComponent(id)}.json`,
+  );
+  assert.equal(response.status, 200);
+  return (await decode(response, Rows)).streams;
+};
+const ownedSelection = (f: Fixture, fileId: string, format = "m3u8") =>
+  `${f.base()}/play/movie/${encodeURIComponent(target)}/${encodeURIComponent(`owned:${fileId}`)}.${format}`;
+
+test("videos already in put.io lead the stream list, outside the release limit", async () => {
+  const f = await fixture();
+  try {
+    f.state.ownedVideos = Array.from({ length: 10 }, (_, n) =>
+      ownedVideo(BigInt(n + 70)),
+    );
+    f.state.extraReleases = 100;
+    const response = await fetch(`${f.base()}/stream/movie/tt1234567.json`);
+    const listed = Schema.decodeUnknownSync(
+      Schema.Struct({
+        streams: Schema.Array(
+          Schema.Struct({
+            name: Schema.String,
+            title: Schema.String,
+            url: Schema.String,
+            behaviorHints: Schema.Struct({ notWebReady: Schema.Boolean }),
+          }),
+        ),
+      }),
+    )(await response.json()).streams;
+    assert.equal(listed.length, 110, "10 videos and 100 releases");
+    assert.deepEqual(listed[0], {
+      name: "Play from put.io",
+      title: "Independent.Film.2024.Part70.mkv",
+      url: ownedSelection(f, "70"),
+      behaviorHints: { notWebReady: false },
+    });
+    assert.deepEqual(
+      listed.slice(0, 10).map(({ name, title }) => ({ name, title })),
+      f.state.ownedVideos.map(({ name }) => ({
+        name: "Play from put.io",
+        title: name,
+      })),
+    );
+    assert.ok(
+      listed.slice(10).every(({ name }) => name === "Download to put.io"),
+    );
+    f.state.seasonPack = seasonPack;
+    const episode = await episodeRows(f);
+    assert.equal(episode.length, 111, "10 videos, 100 releases and the pack");
+    assert.equal(episode[0]?.name, "Play from put.io");
+    assert.equal(episode.at(-1)?.name, "Download season to put.io");
+    for (const method of ["GetTVShowDetail", "GetTVShowSeason"])
+      assert.equal(
+        f.calls.filter((call) => call.method === method).length,
+        1,
+        `${method} serves both the lookup and Search`,
+      );
+    assert.deepEqual(f.ownedLookups, [
+      { title: "Independent film", year: 2024 },
+      { title: "Independent series", year: 2024, season: 1, episode: 2 },
+    ]);
+    assert.equal(f.state.addCount, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("the account lookup runs alongside Search, not after it", async () => {
+  const f = await fixture();
+  try {
+    f.state.ownedVideos = [ownedVideo(77n)];
+    // Search takes 1 s; the lookup answers after 1.2 s, inside the grace
+    // that follows Search only if it started with Search.
+    f.state.engineDelayMs = 1_000;
+    f.state.ownedDelayMs = 1_200;
+    assert.deepEqual(
+      (await movieRows(f)).map(({ name }) => name),
+      ["Play from put.io", "Download to put.io"],
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("an account lookup slower than its grace is left out", async () => {
+  const f = await fixture();
+  try {
+    f.state.ownedVideos = [ownedVideo(77n)];
+    f.state.ownedDelayMs = 2_000;
+    const started = performance.now();
+    assert.deepEqual(
+      (await movieRows(f)).map(({ name }) => name),
+      ["Download to put.io"],
+    );
+    assert.ok(performance.now() - started < 1_500);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a refused or malformed account lookup leaves the rows unchanged", async () => {
+  const f = await fixture();
+  try {
+    const baseline = await movieRows(f);
+    assert.deepEqual(
+      baseline.map(({ name }) => name),
+      ["Download to put.io"],
+    );
+    f.state.ownedVideos = [ownedVideo(77n)];
+    for (const rejection of [
+      { status: 401, code: "unauthenticated" },
+      { status: 403, code: "permission_denied" },
+      { status: 403, code: "procedure_not_allowed" },
+      { status: 503, code: "unavailable" },
+    ]) {
+      f.state.ownedRejection = rejection;
+      assert.deepEqual(await movieRows(f), baseline, rejection.code);
+    }
+    f.state.ownedRejection = undefined;
+    for (const videos of [
+      [{ ...ownedVideo(77n), fileType: "FOLDER" }],
+      Array.from({ length: 11 }, (_, n) => ownedVideo(BigInt(n + 70))),
+    ]) {
+      f.state.ownedVideos = videos;
+      assert.deepEqual(await movieRows(f), baseline);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("release targets and missing titles never ask for videos in put.io", async () => {
+  const f = await fixture();
+  try {
+    f.state.ownedVideos = [ownedVideo(77n)];
+    const release = discoveryTargetId({
+      kind: "release",
+      query: "Independent film",
+      id: "fixture-release",
+    });
+    assert.deepEqual(
+      (await movieRows(f, release)).map(({ name }) => name),
+      ["Download to put.io"],
+    );
+    assert.deepEqual(
+      await movieRows(
+        f,
+        discoveryTargetId({ kind: "movie", id: "missing-film" }),
+      ),
+      [],
+    );
+    assert.deepEqual(f.ownedLookups, []);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a video already in put.io plays without a transfer or status URL", async () => {
+  const f = await fixture();
+  const media =
+    "https://media.fixture.test/video-77?token=fixture-playback-secret";
+  try {
+    f.state.ownedVideos = [ownedVideo(77n)];
+    const [row] = await movieRows(f);
+    assert.equal(row?.url, ownedSelection(f, "77"));
+    f.calls.length = 0;
+    assert.equal(
+      (await fetch(ownedSelection(f, "77"), { method: "HEAD" })).status,
+      200,
+    );
+    const prefetch = await fetch(ownedSelection(f, "77"), {
+      headers: { "sec-purpose": "prefetch" },
+    });
+    assert.equal(prefetch.status, 204);
+    assert.deepEqual(f.calls, []);
+    assert.equal(await location(ownedSelection(f, "77")), media);
+    assert.equal(await location(ownedSelection(f, "77", "mp4")), media);
+    f.state.playbackPending = true;
+    for (const format of ["m3u8", "mp4"])
+      assert.equal(
+        await location(ownedSelection(f, "77", format)),
+        `${f.base()}/notice/pending.${format}`,
+      );
+    f.state.playbackPending = false;
+    assert.equal(await location(ownedSelection(f, "77")), media);
+    for (const format of ["m3u8", "mp4"])
+      assert.equal(
+        await location(ownedSelection(f, "78", format)),
+        `${f.base()}/notice/unavailable.${format}`,
+      );
+    for (const rejection of [
+      { status: 401, code: "unauthenticated" },
+      { status: 403, code: "permission_denied" },
+    ]) {
+      f.state.rejection = rejection;
+      assert.equal(
+        await location(ownedSelection(f, "77")),
+        `${f.base()}/notice/reconnect.m3u8`,
+      );
+    }
+    f.state.rejection = undefined;
+    assert.ok(f.calls.every(({ method }) => method === "ResolvePlayback"));
+    assert.equal(f.state.addCount, 0);
+    const calls = f.calls.length;
+    for (const id of [
+      "0",
+      "077",
+      "-1",
+      "",
+      "abc",
+      "9223372036854775808",
+      "1".repeat(20),
+    ])
+      assert.equal(
+        (await fetch(ownedSelection(f, id), { redirect: "manual" })).status,
+        400,
+        id,
+      );
+    assert.equal(f.calls.length, calls);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a video already in put.io needs no submission unit of its link", async () => {
+  const f = await fixture();
+  const catalog = () => fetch(`${f.base()}/catalog/movie/discover-movies.json`);
+  const stalled: Promise<Response>[] = [];
+  // Fake only the request deadline timers; sockets stay real.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    f.state.ownedVideos = [ownedVideo(77n)];
+    f.state.stallMovies = true;
+    for (let i = 0; i < 15; i++) stalled.push(catalog());
+    await until(
+      () =>
+        f.calls.filter(({ method }) => method === "GetMovies").length === 15,
+    );
+    const another = await fetch(
+      `${f.base()}/play/movie/${encodeURIComponent(target)}/fixture-release.m3u8`,
+      { redirect: "manual" },
+    );
+    assert.equal(another.status, 503, "a new selection needs two free units");
+    await another.arrayBuffer();
+    assert.equal(
+      await location(ownedSelection(f, "77")),
+      "https://media.fixture.test/video-77?token=fixture-playback-secret",
+    );
+    assert.equal(f.state.addCount, 0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    for (const response of await Promise.all(stalled)) {
+      assert.equal(response.status, 504);
+      await response.arrayBuffer();
+    }
+  } finally {
+    vi.useRealTimers();
+    const settled = Promise.allSettled(stalled);
+    await f.close();
+    await settled;
   }
 });

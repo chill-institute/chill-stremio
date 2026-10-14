@@ -11,15 +11,37 @@ import {
   seasonPackPrefix,
   type SeasonEpisode,
 } from "./discovery.ts";
-import { createLibrary } from "./library.ts";
+import { EngineError } from "./engine.ts";
+import { createLibrary, filePlayback } from "./library.ts";
 import type { PlaybackResult } from "./playback-wait.ts";
 
 export type Submission =
   | { transferId: bigint; episode?: SeasonEpisode }
   | { status: "unknown" };
 
-/** How long a listing waits for the season lookup once its episode rows are ready. */
-const seasonPackGraceMs = 500;
+/** How long a listing waits for its optional lookups once its release rows are ready. */
+const lookupGraceMs = 500;
+
+/** Release IDs with this prefix play a video already in the account, by file ID. */
+export const ownedPrefix = "owned:";
+/** The file ID an owned release ID names, if it is well formed. */
+export function ownedFileId(releaseId: string) {
+  if (!/^owned:[1-9][0-9]{0,18}$/.test(releaseId)) return undefined;
+  const id = BigInt(releaseId.slice(ownedPrefix.length));
+  return id <= 9223372036854775807n ? id : undefined;
+}
+
+// A late or failed optional lookup leaves its rows out.
+const withinGrace = Effect.fn("Selection.withinGrace")(function* <A>(
+  lookup: Fiber.Fiber<A> | undefined,
+) {
+  if (!lookup) return undefined;
+  const result = yield* Fiber.join(lookup).pipe(
+    Effect.timeoutOption(lookupGraceMs),
+  );
+  yield* Fiber.interrupt(lookup);
+  return Option.getOrUndefined(result);
+});
 
 /** Stremio release rows and selected-media playback for one add-on base URL. */
 export function createSelection(options: { base: string }) {
@@ -39,18 +61,32 @@ export function createSelection(options: { base: string }) {
             Effect.forkChild,
           )
         : undefined;
-    const releases = yield* discovery.releases(target);
-    const rows: Stream[] = releases.slice(0, 100).map((release) => ({
-      name: "Download to put.io",
-      title: `${release.title}\n${releaseDescription(release)}`,
-      url: play(release.id),
+    const subject = yield* discovery.subject(target);
+    // Started before Search, so the account lookup runs alongside it.
+    const owned = Option.isSome(subject)
+      ? yield* discovery.ownedVideos(subject.value).pipe(
+          Effect.orElseSucceed(() => []),
+          Effect.forkChild,
+        )
+      : undefined;
+    const releases = yield* discovery.releases(target, subject);
+    const [videos, pack] = yield* Effect.all(
+      [withinGrace(owned), withinGrace(lookup)],
+      { concurrency: "unbounded" },
+    );
+    const rows: Stream[] = (videos ?? []).map((video) => ({
+      name: "Play from put.io",
+      title: video.name,
+      url: play(`${ownedPrefix}${video.id}`),
       behaviorHints: { notWebReady: false },
     }));
-    if (!lookup) return { streams: rows };
-    const pack = Option.getOrUndefined(
-      yield* Fiber.join(lookup).pipe(Effect.timeoutOption(seasonPackGraceMs)),
-    );
-    yield* Fiber.interrupt(lookup);
+    for (const release of releases.slice(0, 100))
+      rows.push({
+        name: "Download to put.io",
+        title: `${release.title}\n${releaseDescription(release)}`,
+        url: play(release.id),
+        behaviorHints: { notWebReady: false },
+      });
     if (pack && !releases.some((release) => release.id === pack.id)) {
       const details = [pack.resolution, pack.codec, pack.quality]
         .filter(Boolean)
@@ -128,5 +164,19 @@ export function createSelection(options: { base: string }) {
       url ? { url } : { status: playback.pending ? "pending" : "unavailable" }
     ) satisfies PlaybackResult;
   });
-  return { streams, submit, status };
+  /** A video already in the account plays without a transfer. */
+  const owned = Effect.fn("Selection.owned")(function* (fileId: bigint) {
+    const playback = yield* filePlayback(fileId).pipe(
+      Effect.catchIf(
+        (error) => error instanceof EngineError && error.code === "not_found",
+        () => Effect.succeed({ case: "unavailable" } as const),
+      ),
+    );
+    return (
+      playback.case === "ready"
+        ? { url: playback.url }
+        : { status: playback.case }
+    ) satisfies PlaybackResult;
+  });
+  return { streams, submit, status, owned };
 }

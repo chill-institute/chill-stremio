@@ -37,6 +37,16 @@ test("discovery uses ordinary bearer and only existing read RPCs", async () => {
         yield* engine.getTVShowSeason("tt1234567", 2);
         yield* engine.getTVShowSeasonDownloads("tt1234567", 2);
         yield* engine.search("An independent film");
+        yield* engine.findOwnedVideos({
+          title: "An independent film",
+          year: 2024,
+        });
+        yield* engine.findOwnedVideos({
+          title: "An independent series",
+          year: 0,
+          season: 1,
+          episode: 2,
+        });
       }).pipe(
         Effect.provide(
           discoveryEngineLayer({
@@ -64,6 +74,14 @@ test("discovery uses ordinary bearer and only existing read RPCs", async () => {
       {
         path: "/chill.v4.UserService/Search",
         body: { query: "An independent film" },
+      },
+      {
+        path: "/chill.v4.UserService/FindOwnedVideos",
+        body: { title: "An independent film", year: 2024 },
+      },
+      {
+        path: "/chill.v4.UserService/FindOwnedVideos",
+        body: { title: "An independent series", season: 1, episode: 2 },
       },
     ]);
   } finally {
@@ -118,14 +136,18 @@ test("discovery RPCs tell Engine the time left before the caller's deadline", as
           yield* engine.getTVShowSeason("tt1234567", 2);
           yield* engine.getTVShowSeasonDownloads("tt1234567", 2);
           yield* engine.search("An independent film");
+          yield* engine.findOwnedVideos({
+            title: "An independent film",
+            year: 2024,
+          });
         }).pipe(
           Effect.provide(layer),
           Effect.provideService(DiscoveryDeadline, Date.now() + remaining),
         ),
       );
     assert.deepEqual(timeouts, [
-      ...Array<string>(6).fill("2500"),
-      ...Array<string>(6).fill("10000"),
+      ...Array<string>(7).fill("2500"),
+      ...Array<string>(7).fill("10000"),
     ]);
   });
 });
