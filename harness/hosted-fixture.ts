@@ -9,6 +9,8 @@ import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import {
   AudioCodec,
   SubtitleFormat,
+  FindOwnedVideosRequestSchema,
+  FindOwnedVideosResponseSchema,
   GetMoviesResponseSchema,
   GetTVShowsResponseSchema,
   GetTVShowDetailResponseSchema,
@@ -418,6 +420,7 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                 "GetTVShowDetail",
                 "GetTVShowSeason",
                 "GetTVShowSeasonDownloads",
+                "FindOwnedVideos",
                 "Search",
                 "AddTransfer",
                 "GetTransfer",
@@ -667,6 +670,15 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                     },
                   ],
                 }),
+              );
+            } else if (req.url === "/chill.v4.UserService/FindOwnedVideos") {
+              // The generated account holds no video under a discovery title.
+              assert.ok(
+                fromJsonString(FindOwnedVideosRequestSchema, body).title,
+              );
+              response = toJsonString(
+                FindOwnedVideosResponseSchema,
+                create(FindOwnedVideosResponseSchema),
               );
             } else if (
               req.url === "/chill.v4.UserService/GetTVShowSeasonDownloads"
