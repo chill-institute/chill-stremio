@@ -66,7 +66,10 @@ click universally across clients. Identical requests share one submission in
 process memory while any is open and for 60 seconds afterwards; later requests
 and requests after a restart submit again, and Engine answers them with the
 account's existing transfer for that source while it is still usable. A failed or lost submission
-response reports `unknown` and is never retried.
+response reports `unknown` and is never retried. An `AddTransfer` refusal whose
+`Chill-Error-Code` header says no transfer was made plays a clip that names the
+fix instead: `stremio_folder_missing` plays `reconnect`, and
+`putio_rate_limited` and `invalid_transfer_url` play `release-unavailable`.
 Engine's configured download destination controls where the transfer lands;
 the adapter never calls `GetDownloadFolder`, which can create or recover a folder
 and persist settings.

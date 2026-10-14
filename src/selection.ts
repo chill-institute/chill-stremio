@@ -20,7 +20,15 @@ import type { PlaybackResult } from "./playback-wait.ts";
 
 export type Submission =
   | { transferId: bigint; episode?: SeasonEpisode }
-  | { status: "unknown" };
+  | { status: "unknown" | "reconnect" | "release-unavailable" };
+
+/** Clips for the Engine refusals that leave no transfer behind. */
+const refusalClips = {
+  // The link's download folder is gone; a new link binds an existing one.
+  stremio_folder_missing: "reconnect",
+  putio_rate_limited: "release-unavailable",
+  invalid_transfer_url: "release-unavailable",
+} as const;
 
 /** Long enough to resolve the target, find the release and receive Engine's shared add. */
 export const submissionBudgetMs =
@@ -126,7 +134,9 @@ export function createSelection(options: { base: string }) {
           error.code,
         )
           ? Effect.fail(error)
-          : Effect.succeed<Submission>({ status: "unknown" }),
+          : Effect.succeed<Submission>({
+              status: error.reason ? refusalClips[error.reason] : "unknown",
+            }),
       ),
     );
   });

@@ -9,6 +9,13 @@ import { createConnectTransport } from "@connectrpc/connect-web";
 import { Context, Effect, Layer, Schema } from "effect";
 import { credentialPattern } from "./credential.ts";
 
+/** Engine's stable codes, sent as `Chill-Error-Code`, for refusals the adapter explains. */
+const EngineReason = Schema.Literals([
+  "stremio_folder_missing",
+  "putio_rate_limited",
+  "invalid_transfer_url",
+]);
+
 export class EngineError extends Schema.TaggedError<EngineError>()(
   "EngineError",
   {
@@ -24,6 +31,7 @@ export class EngineError extends Schema.TaggedError<EngineError>()(
       "canceled",
       "unknown",
     ]),
+    reason: Schema.optional(EngineReason),
   },
 ) {}
 
@@ -124,6 +132,17 @@ const boundedFetch: typeof globalThis.fetch = async (input, init) => {
 };
 
 function mapRpcError(error: unknown): EngineError {
+  const mapped = mapRpcCode(error);
+  const reason =
+    error instanceof ConnectError
+      ? error.metadata.get("chill-error-code")
+      : null;
+  return Schema.is(EngineReason)(reason)
+    ? new EngineError({ code: mapped.code, reason })
+    : mapped;
+}
+
+function mapRpcCode(error: unknown): EngineError {
   const code = error instanceof ConnectError ? error.code : Code.Unknown;
   switch (code) {
     case Code.Unauthenticated:

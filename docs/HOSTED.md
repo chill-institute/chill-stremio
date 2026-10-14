@@ -172,6 +172,14 @@ the adapter redirects to the same play URL with the next `wait=<n>`, which
 rejoins that submission instead of adding again. A failed, lost or timed-out
 submission response is never retried and reports `unknown`.
 
+Engine names some refusals with a stable code in the `Chill-Error-Code`
+response header. An `AddTransfer` refused with `stremio_folder_missing`, because
+the download folder the add-on link was issued for no longer exists, plays
+`reconnect`: a new link from chill.institute binds an existing folder.
+`putio_rate_limited` and `invalid_transfer_url` play `release-unavailable`.
+Without the header, and for any other code, including `putio_rejected`, which
+can mean the transfer already exists, the refusal reports `unknown`.
+
 After submission the adapter polls `GetTransfer`, finds the downloaded video
 with `GetFolder` and resolves it with `ResolvePlayback`. A still-pending
 download redirects to `/s/<credential>/status/<transferId>.m3u8?wait=<n>`, or

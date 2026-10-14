@@ -118,6 +118,10 @@ async function fixture(
     ownedDelayMs: 0,
     playbackPending: false,
     rejection: undefined as { status: number; code: string } | undefined,
+    // An AddTransfer refusal and the stable code Engine sends with it.
+    addRejection: undefined as
+      | { status: number; code: string; engineCode?: string }
+      | undefined,
     // Engine latency by method on the global clock, which tests may fake.
     delayMs: {} as Partial<Record<string, number>>,
     // Wall-clock time a method takes, for tests that fake `Date`.
@@ -127,8 +131,16 @@ async function fixture(
     extraReleases: 0,
     indexerError: "",
   };
-  const error = (response: ServerResponse, status: number, code: string) => {
-    response.writeHead(status, { "content-type": "application/json" });
+  const error = (
+    response: ServerResponse,
+    status: number,
+    code: string,
+    engineCode?: string,
+  ) => {
+    response.writeHead(status, {
+      "content-type": "application/json",
+      ...(engineCode && { "chill-error-code": engineCode }),
+    });
     response.end(JSON.stringify({ code, message: "fixture error" }));
   };
   // Global timers, so a test's fake clock decides this Engine latency.
@@ -412,6 +424,11 @@ async function fixture(
           );
           state.addCount++;
           state.addCredentials.push(presented);
+          if (state.addRejection) {
+            const { status, code, engineCode } = state.addRejection;
+            error(response, status, code, engineCode);
+            return;
+          }
           await sleep(state.addDelayMs);
           await hold();
           if (state.loseTransferResponse) {
@@ -1357,6 +1374,67 @@ test("a lost submission response is reported as unknown and never retried", asyn
   } finally {
     await f.close();
   }
+});
+
+test("Engine refusals that leave no transfer play the clip that explains them", async () => {
+  const cases = [
+    {
+      status: 400,
+      code: "failed_precondition",
+      engineCode: "stremio_folder_missing",
+      clip: "reconnect",
+    },
+    {
+      status: 429,
+      code: "resource_exhausted",
+      engineCode: "putio_rate_limited",
+      clip: "release-unavailable",
+    },
+    {
+      status: 400,
+      code: "invalid_argument",
+      engineCode: "invalid_transfer_url",
+      clip: "release-unavailable",
+    },
+    // put.io may refuse a release the account already holds.
+    {
+      status: 400,
+      code: "failed_precondition",
+      engineCode: "putio_rejected",
+      clip: "unknown",
+    },
+    {
+      status: 400,
+      code: "failed_precondition",
+      engineCode: "unlisted_code",
+      clip: "unknown",
+    },
+  ];
+  for (const { engineCode, clip, ...rejection } of cases)
+    for (const sent of [engineCode, undefined]) {
+      // A fresh server, since identical selections share one submission.
+      const f = await fixture();
+      try {
+        f.state.addRejection = { ...rejection, engineCode: sent };
+        const url = await releaseSelection(f);
+        const expected = sent ? clip : "unknown";
+        for (const extension of ["m3u8", "mp4"]) {
+          const selected = await fetch(
+            url.replace(/\.m3u8$/, `.${extension}`),
+            { redirect: "manual" },
+          );
+          assert.equal(selected.status, 302);
+          assert.equal(
+            selected.headers.get("location"),
+            `${f.base()}/notice/${expected}.${extension}`,
+            `${rejection.code} with ${sent ?? "no code"}`,
+          );
+        }
+        assert.equal(f.state.addCount, 1, "A refusal is never retried");
+      } finally {
+        await f.close();
+      }
+    }
 });
 
 test("an HLS selection outlasting its window continues at its URL with one submission", async () => {
