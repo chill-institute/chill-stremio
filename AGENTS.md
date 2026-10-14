@@ -82,6 +82,10 @@ Gaps:
 - No macOS or Windows native lane. Owner: chill-institute/chill-stremio.
 - Stremio Web proof covers only the pinned revision in Chromium; Firefox, Safari
   and the current web.stremio.com build are unverified. Owner: chill-institute/chill-stremio.
+- Stremio Web with a connected streaming server sends selected media through
+  the server's ffprobe and transcode path; no lane covers it ([HOSTED](./docs/HOSTED.md#verification-and-release)). Owner: chill-institute/chill-stremio.
+- Android clients' ExoPlayer read timeout, 8 seconds by default, is shorter
+  than a pending selection's hold, so waiting there is unsupported. Owner: chill-institute/chill-stremio.
 - `hosted:live` fakes Engine's credential check. The canary proves production
   Engine accepts an issued credential only after a publish or a manual dispatch,
   so Engine deploys between adapter releases go unchecked until the next run. Owner: operator.

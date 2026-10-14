@@ -333,6 +333,14 @@ generic native fixture add-on does not establish hosted support; the
 adapter in the pinned Linux client. Linux proof does not establish macOS or
 Windows support.
 
+Stremio Web with a connected streaming server sends selected media through the
+server's ffprobe and transcode path (stremio-video `withStreamingServer`)
+instead of playing it directly. No lane covers that path: the Web lanes dismiss
+the streaming-server prompt. Android and Android TV clients play through
+ExoPlayer, whose default read timeout of 8 seconds is shorter than the adapter
+holds a pending selection's request, so waiting on a pending selection is
+unsupported there.
+
 ```sh
 mise run verify
 mise run hosted:smoke
