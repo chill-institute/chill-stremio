@@ -48,6 +48,10 @@ run = "pnpm exec vp run live:setup"
 description = "Upload the fixture to the designated put.io account, decode it, and clean up"
 run = "pnpm exec vp run live:probe"
 
+[tasks."live:search"]
+description = "Measure put.io file search on generated release names in the designated account, and clean up"
+run = "pnpm exec vp run live:search"
+
 [tasks."native:desktop:setup"]
 description = "Install and verify the pinned Linux Flatpak client in its own installation"
 run = "pnpm exec vp run native:desktop:setup"

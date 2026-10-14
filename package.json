@@ -20,6 +20,7 @@
     "native:desktop:probe": "node harness/native/desktop.ts",
     "live:setup": "node harness/live/probe.ts setup",
     "live:probe": "node harness/live/probe.ts probe",
+    "live:search": "node harness/live/search.ts",
     "native:desktop:setup": "node harness/native/desktop-setup.ts",
     "adapter:serve": "node src/run.ts",
     "adapter:smoke": "node harness/adapter-smoke.ts",

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { firstHttpsUri } from "./playback.ts";
 import { redactLive } from "./redact.ts";
 import { liveVersions } from "./versions.ts";
@@ -186,6 +186,7 @@ export const accountInfo = Effect.fn("live.putio.accountInfo")(function* () {
 
 export const createFolder = Effect.fn("live.putio.createFolder")(function* (
   name: string,
+  parentId = 0,
 ) {
   const parsed = yield* requestJson(
     `${liveVersions.apiBase}/v2/files/create-folder`,
@@ -196,7 +197,7 @@ export const createFolder = Effect.fn("live.putio.createFolder")(function* (
       },
       body: new URLSearchParams({
         name,
-        parent_id: "0",
+        parent_id: String(parentId),
       }),
     },
   );
@@ -622,3 +623,93 @@ export const listTransfers = Effect.fn("live.putio.listTransfers")(
   },
   Effect.timeout("60 seconds"),
 );
+
+export const SearchEnvelope = Schema.Struct({
+  status: Schema.Literal("OK"),
+  files: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+  cursor: Cursor,
+  total: Schema.optional(Schema.Number),
+});
+
+const ErrorType = Schema.Struct({ error_type: Schema.String });
+
+export type SearchPage =
+  | {
+      ok: true;
+      files: readonly Record<string, unknown>[];
+      cursor: boolean;
+      total?: number;
+    }
+  | { ok: false; httpStatus: number; errorType?: string };
+
+/** One search page; HTTP 400 is returned as a refused query, not a failure. */
+export const searchFiles = Effect.fn("live.putio.searchFiles")(function* (
+  query: string,
+) {
+  const url = new URL("/v2/files/search", liveVersions.apiBase);
+  url.searchParams.set("query", query);
+  url.searchParams.set("per_page", "100");
+  const response = yield* request(url.href, {});
+  if (response.status === 400) {
+    const refusal = Option.getOrUndefined(
+      Schema.decodeUnknownOption(Schema.fromJsonString(ErrorType))(
+        response.text,
+      ),
+    );
+    return {
+      ok: false,
+      httpStatus: 400,
+      errorType: refusal?.error_type,
+    } satisfies SearchPage;
+  }
+  if (!response.ok)
+    return yield* new PutioFailure({
+      message: `put.io search HTTP ${response.status}`,
+    });
+  const parsed = yield* Effect.try({
+    try: () => JSON.parse(response.text) as unknown,
+    catch: () => new PutioFailure({ message: "put.io returned invalid JSON" }),
+  });
+  const envelope = yield* Schema.decodeUnknownEffect(SearchEnvelope)(
+    parsed,
+  ).pipe(
+    Effect.mapError(
+      () =>
+        new PutioFailure({
+          message: "put.io search response failed schema",
+        }),
+    ),
+  );
+  return {
+    ok: true,
+    files: envelope.files,
+    cursor: Boolean(envelope.cursor),
+    total: envelope.total,
+  } satisfies SearchPage;
+}, Effect.timeout("20 seconds"));
+
+export const fileExists = Effect.fn("live.putio.fileExists")(function* (
+  id: number,
+) {
+  const response = yield* request(`${liveVersions.apiBase}/v2/files/${id}`, {});
+  if (response.status === 404) return false;
+  if (!response.ok)
+    return yield* new PutioFailure({
+      message: `put.io file get HTTP ${response.status}`,
+    });
+  const parsed = yield* Effect.try({
+    try: () => JSON.parse(response.text) as unknown,
+    catch: () => new PutioFailure({ message: "put.io returned invalid JSON" }),
+  });
+  const envelope = yield* Schema.decodeUnknownEffect(FileEnvelope)(parsed).pipe(
+    Effect.mapError(
+      () =>
+        new PutioFailure({ message: "put.io file get response failed schema" }),
+    ),
+  );
+  if (envelope.file.id !== id)
+    return yield* new PutioFailure({
+      message: "put.io file get returned a different file",
+    });
+  return true;
+}, Effect.timeout("20 seconds"));

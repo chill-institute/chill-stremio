@@ -13,6 +13,7 @@ import { Effect } from "effect";
 import {
   accountInfo,
   downloadUrl,
+  fileExists,
   hlsCueText,
   uploadFile,
 } from "../harness/live/putio.ts";
@@ -134,6 +135,19 @@ test("put.io download URLs must be HTTPS", async () => {
     if (url.startsWith("https:")) assert.equal(await resolved, url);
     else await assert.rejects(resolved, /not HTTPS/);
   }
+});
+
+test("put.io file reads fail when another file answers", async () => {
+  vi.stubEnv(liveVersions.putioTokenEnv, "synthetic-test-token");
+  const answers = [
+    new Response("", { status: 404 }),
+    Response.json({ status: "OK", file: { id: 7, name: "fixture" } }),
+    Response.json({ status: "OK", file: { id: 8, name: "fixture" } }),
+  ];
+  vi.stubGlobal("fetch", async () => answers.shift());
+  assert.equal(await Effect.runPromise(fileExists(7)), false);
+  assert.equal(await Effect.runPromise(fileExists(7)), true);
+  await assert.rejects(Effect.runPromise(fileExists(7)), /different file/);
 });
 
 const rfcSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
