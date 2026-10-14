@@ -38,9 +38,14 @@ export interface LiveOutcome {
     files: CleanupEvidence;
     transfers: CleanupEvidence;
     pendingAcquisitions: number;
+    /** Independently checked absence, kept apart from acknowledgement. */
+    verification?: Verification;
+    reconcileError?: string;
     recoveryError?: string;
   };
 }
+
+export type Verification = "not-needed" | "verified" | "present" | "unverified";
 
 export const createLiveAttempt = (): LiveAttempt => ({
   files: [],
@@ -103,8 +108,12 @@ export const trackAcquisition = Effect.fn("live.trackAcquisition")(function* <
 });
 
 interface LifecycleOperations {
+  /** Attributes resources a lost response left pending, before any cleanup. */
+  reconcile?: Effect.Effect<void, unknown>;
   cancelTransfers: (ids: readonly number[]) => Effect.Effect<void, unknown>;
   deleteFiles: (ids: readonly number[]) => Effect.Effect<void, unknown>;
+  /** Confirms after cleanup that put.io no longer lists the owned resources. */
+  verify?: Effect.Effect<Verification, unknown>;
   checkpoint: Effect.Effect<void, unknown>;
   publish: (outcome: LiveOutcome) => Effect.Effect<void, unknown>;
 }
@@ -152,6 +161,14 @@ export const withLiveLifecycle = Effect.fn("live.withLiveLifecycle")(function* <
                   : "failed",
               error: failureMessage(exit.cause),
             };
+        const reconciled = operations.reconcile
+          ? yield* Effect.exit(
+              operations.reconcile.pipe(
+                Effect.interruptible,
+                Effect.timeout("2 minutes"),
+              ),
+            )
+          : Exit.void;
         const transfers = yield* cleanupResource(
           attempt.transfers,
           operations.cancelTransfers,
@@ -160,19 +177,35 @@ export const withLiveLifecycle = Effect.fn("live.withLiveLifecycle")(function* <
           attempt.files,
           operations.deleteFiles,
         );
+        const verification = operations.verify
+          ? yield* operations.verify.pipe(
+              Effect.interruptible,
+              Effect.timeout("2 minutes"),
+              Effect.orElseSucceed((): Verification => "unverified"),
+            )
+          : undefined;
         const uncertain =
+          Exit.isFailure(reconciled) ||
           transfers.status === "uncertain" ||
           files.status === "uncertain" ||
           attempt.pending.length > 0;
         const outcome: LiveOutcome = {
           status:
-            primary.status === "passed" && !uncertain ? "passed" : "failed",
+            primary.status === "passed" &&
+            !uncertain &&
+            (verification === undefined || verification === "verified")
+              ? "passed"
+              : "failed",
           primary,
           cleanup: {
             status: uncertain ? "uncertain" : "acknowledged",
             files,
             transfers,
             pendingAcquisitions: attempt.pending.length,
+            ...(verification ? { verification } : {}),
+            ...(Exit.isFailure(reconciled)
+              ? { reconcileError: failureMessage(reconciled.cause) }
+              : {}),
           },
         };
         attempt.outcome = outcome;

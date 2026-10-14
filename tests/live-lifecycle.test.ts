@@ -215,3 +215,64 @@ test("live journal failure blocks acquisition and still publishes a terminal out
     /journal unavailable/,
   );
 });
+
+for (const verification of ["verified", "present", "fails"] as const)
+  test(`live verification ${verification} is recorded apart from acknowledgement`, async () => {
+    const attempt = createLiveAttempt();
+    const calls: string[] = [];
+    const published: LiveOutcome[] = [];
+    await Effect.runPromiseExit(
+      withLiveLifecycle(attempt, Effect.void, {
+        // A transfer a lost response left unattributed is owned before cleanup.
+        reconcile: Effect.sync(() => {
+          calls.push("reconcile");
+          attempt.transfers.push(22);
+        }),
+        cancelTransfers: (ids) =>
+          Effect.sync(() => {
+            calls.push(`cancel ${ids.join()}`);
+          }),
+        deleteFiles: () => Effect.void,
+        verify: Effect.suspend(() => {
+          calls.push("verify");
+          return verification === "fails"
+            ? Effect.fail(new Error("put.io HTTP 500"))
+            : Effect.succeed(verification);
+        }),
+        checkpoint: Effect.void,
+        publish: (outcome) =>
+          Effect.sync(() => {
+            published.push(outcome);
+          }),
+      }),
+    );
+    assert.deepEqual(calls, ["reconcile", "cancel 22", "verify"]);
+    assert.equal(published[0]?.cleanup.status, "acknowledged");
+    assert.equal(
+      published[0]?.cleanup.verification,
+      verification === "fails" ? "unverified" : verification,
+    );
+    assert.equal(
+      published[0]?.status,
+      verification === "verified" ? "passed" : "failed",
+    );
+  });
+
+test("a failed reconciliation leaves cleanup uncertain", async () => {
+  const published: LiveOutcome[] = [];
+  await Effect.runPromiseExit(
+    withLiveLifecycle(createLiveAttempt(), Effect.void, {
+      reconcile: Effect.fail(new Error("put.io HTTP 500")),
+      cancelTransfers: () => Effect.void,
+      deleteFiles: () => Effect.void,
+      checkpoint: Effect.void,
+      publish: (outcome) =>
+        Effect.sync(() => {
+          published.push(outcome);
+        }),
+    }),
+  );
+  assert.equal(published[0]?.status, "failed");
+  assert.equal(published[0]?.cleanup.status, "uncertain");
+  assert.match(published[0]?.cleanup.reconcileError ?? "", /HTTP 500/);
+});

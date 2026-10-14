@@ -30,17 +30,13 @@ export const allowanceLimits = (ledger: {
   approvedLimits?: typeof ApprovedLimits.Type;
 }) => ledger.approvedLimits ?? liveVersions;
 
+// Usage may pass the cap after a charge; reserve then refuses until rollover.
 const LedgerSchema = Schema.Struct({
   day: Day,
   reservedTransfers: Count,
   reservedBytes: Count,
   approvedLimits: Schema.optional(ApprovedLimits),
-}).check(
-  Schema.makeFilter((ledger) => {
-    const limits = allowanceLimits(ledger);
-    return ledger.reservedBytes <= limits.byteLimit;
-  }),
-);
+});
 export type Ledger = typeof LedgerSchema.Type;
 
 export const utcDay = (now = new Date()) => now.toISOString().slice(0, 10);
@@ -147,6 +143,35 @@ export async function reserve(
         throw new AllowanceFailure(
           `Reservation exceeds the ${limits.byteLimit}-byte budget for ${current.day} UTC or safe accounting range`,
         );
+      await writeLedger(directory, path, next);
+      return next;
+    },
+    options,
+  );
+}
+
+/** Records bytes a provider used beyond a reservation, even past the cap. */
+export async function charge(
+  directory: string,
+  bytes: number,
+  now: Date | (() => Date) = () => new Date(),
+  options: LockOptions = {},
+) {
+  if (!Number.isSafeInteger(bytes) || bytes < 1)
+    throw new AllowanceFailure("Charge must be a positive safe byte count");
+  return withAllowanceLock(
+    directory,
+    async (path) => {
+      const current = await readLedger(
+        path,
+        typeof now === "function" ? now() : now,
+      );
+      const next: Ledger = {
+        ...current,
+        reservedBytes: current.reservedBytes + bytes,
+      };
+      if (!Number.isSafeInteger(next.reservedBytes))
+        throw new AllowanceFailure("Charge exceeds the safe accounting range");
       await writeLedger(directory, path, next);
       return next;
     },

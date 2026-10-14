@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { test } from "vite-plus/test";
 import {
   AllowanceFailure,
+  charge,
   readLedger,
   reserve,
   withAllowanceLock,
@@ -391,7 +392,34 @@ test("an owner-approved daily extension preserves usage, stays bounded and expir
       await assert.rejects(() => reserve(root, 4, 34, now), AllowanceFailure);
     }
     await seed(root, 14, liveVersions.byteLimit + 1);
-    await assert.rejects(() => readLedger(path, now), AllowanceFailure);
+    await assert.rejects(() => reserve(root, 1, 0, now), AllowanceFailure);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a charge records usage past the cap, which then refuses every reservation until rollover", async () => {
+  const root = await mkdtemp(join(tmpdir(), "live-charge-"));
+  try {
+    const path = join(root, "allowance.json");
+    await seed(root, 1, liveVersions.byteLimit - 10);
+    await reserve(root, 1, 10, now);
+    assert.deepEqual(await charge(root, 34, now), {
+      day,
+      reservedTransfers: 2,
+      reservedBytes: liveVersions.byteLimit + 34,
+    });
+    assert.equal(
+      (await readLedger(path, now)).reservedBytes,
+      liveVersions.byteLimit + 34,
+    );
+    await assert.rejects(() => reserve(root, 1, 0, now), AllowanceFailure);
+    for (const invalid of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])
+      await assert.rejects(() => charge(root, invalid, now), AllowanceFailure);
+    assert.deepEqual(
+      await reserve(root, 1, 10, new Date("2026-09-14T12:00:00Z")),
+      { day: "2026-09-14", reservedTransfers: 1, reservedBytes: 10 },
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
