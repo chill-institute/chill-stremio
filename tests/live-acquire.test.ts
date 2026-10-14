@@ -565,10 +565,7 @@ for (const [label, pin] of [
   ["a zero byte limit", { imdbId, releaseId, maxBytes: "0" }],
   ["a fractional byte limit", { imdbId, releaseId, maxBytes: "1.5" }],
   ["a negative byte limit", { imdbId, releaseId, maxBytes: "-1" }],
-  [
-    "a byte limit above 4 GiB",
-    { imdbId, releaseId, maxBytes: String(4 * 1024 ** 3 + 1) },
-  ],
+  ["an unsafe byte limit", { imdbId, releaseId, maxBytes: "9007199254740993" }],
 ] as const)
   test(`${label} fails at configuration before any call`, async () => {
     const run = await runLane({}, { pin });

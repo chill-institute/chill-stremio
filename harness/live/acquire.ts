@@ -26,8 +26,6 @@ class AcquireProbeFailure extends Schema.TaggedError<AcquireProbeFailure>()(
 ) {}
 
 const gib = 1024 ** 3;
-/** The largest release the lane may acquire. */
-export const acquireByteCeiling = 4 * gib;
 
 const Pin = Schema.Struct({
   imdbId: Schema.String.check(Schema.isPattern(/^tt[0-9]{1,10}$/)),
@@ -37,8 +35,8 @@ const Pin = Schema.Struct({
     ),
   ),
   maxBytes: Schema.String.check(
-    Schema.isPattern(/^[1-9][0-9]{0,9}$/),
-    Schema.makeFilter((value) => Number(value) <= acquireByteCeiling),
+    Schema.isPattern(/^[1-9][0-9]*$/),
+    Schema.makeFilter((value) => Number.isSafeInteger(Number(value))),
   ),
 });
 
@@ -104,11 +102,7 @@ const providerTime = (value: string | null | undefined) => {
 };
 
 const sizeBucket = (bytes: number) =>
-  bytes < gib
-    ? "under-1-gib"
-    : bytes <= acquireByteCeiling
-      ? "up-to-4-gib"
-      : "over-4-gib";
+  bytes < gib ? "under-1-gib" : bytes <= 4 * gib ? "up-to-4-gib" : "over-4-gib";
 
 const finished = new Set(["COMPLETED", "SEEDING"]);
 

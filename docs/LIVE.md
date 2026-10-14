@@ -323,7 +323,7 @@ private pin for the one release the account owner approved:
 | ------------------------- | ----------------------------------------------------- |
 | `LIVE_ACQUIRE_IMDB_ID`    | the movie's IMDb ID, `tt` and digits                  |
 | `LIVE_ACQUIRE_RELEASE_ID` | the release ID in the adapter row's media URL, a UUID |
-| `LIVE_ACQUIRE_MAX_BYTES`  | the largest size accepted, a positive integer ≤ 4 GiB |
+| `LIVE_ACQUIRE_MAX_BYTES`  | the largest size accepted, a positive integer         |
 
 Keep the pin in the private process environment, never in this checkout. A
 missing or malformed pin fails at stage `configuration` before any request.
