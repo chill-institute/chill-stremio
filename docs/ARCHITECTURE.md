@@ -117,8 +117,10 @@ hosted process bounds concurrent work per process and per add-on link; see
 [capacity](./HOSTED.md#capacity).
 Discovery RPCs give Engine the time left until the first of the request
 deadline, a selection's wait window and the current 10-second discovery step,
-less 500 ms to receive the answer and at most 10 seconds. A spent deadline
-fails without calling Engine.
+less 500 ms to receive the answer and at most 10 seconds. `AddTransfer` gets
+up to 21 seconds of the selection's window instead, outlasting the 20 seconds
+Engine gives a shared add after its caller leaves. A spent deadline fails
+without calling Engine.
 
 Ready library streams include Engine's validated subtitle tracks, and the
 subtitles resource returns the same tracks for library files. Selected-release

@@ -38,7 +38,7 @@ export class DiscoveryEngine extends Context.Service<
   }
 >()("chill-stremio/DiscoveryEngine") {}
 
-/** Epoch milliseconds after which the caller no longer waits for discovery. */
+/** Epoch milliseconds after which the caller no longer waits for Engine. */
 export const DiscoveryDeadline = Context.Reference<number>(
   "chill-stremio/DiscoveryDeadline",
   { defaultValue: () => Number.POSITIVE_INFINITY },
@@ -46,6 +46,21 @@ export const DiscoveryDeadline = Context.Reference<number>(
 
 // Kept back from the caller's deadline to receive Engine's answer.
 const responseReserveMs = 500;
+
+/** The time an Engine RPC may take: at most `limitMs`, and within the caller's deadline. */
+export const engineTimeout = Effect.fn("Engine.timeout")(function* (
+  limitMs: number,
+) {
+  const remaining =
+    (yield* DiscoveryDeadline) -
+    (yield* Clock.currentTimeMillis) -
+    responseReserveMs;
+  const timeoutMs = Math.floor(Math.min(limitMs, remaining));
+  // Connect sends no deadline at all for a timeout below one.
+  if (timeoutMs < 1)
+    return yield* new EngineError({ code: "deadline_exceeded" });
+  return timeoutMs;
+});
 
 export function discoveryEngineLayer(configuration: EngineAuth) {
   return Layer.effect(
@@ -60,14 +75,7 @@ export function discoveryEngineLayer(configuration: EngineAuth) {
           timeoutMs: number;
         }) => Promise<A>,
       ) {
-        const remaining =
-          (yield* DiscoveryDeadline) -
-          (yield* Clock.currentTimeMillis) -
-          responseReserveMs;
-        const timeoutMs = Math.floor(Math.min(engineTimeoutMs, remaining));
-        // Connect sends no deadline at all for a timeout below one.
-        if (timeoutMs < 1)
-          return yield* new EngineError({ code: "deadline_exceeded" });
+        const timeoutMs = yield* engineTimeout(engineTimeoutMs);
         return yield* rpc.call((options) => run({ ...options, timeoutMs }));
       });
       // Hosted routes build this layer per request, so the catalog is reused

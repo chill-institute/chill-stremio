@@ -76,7 +76,7 @@ export type EngineAuth =
   | { baseUrl: string; credential: string };
 
 const maxResponseBytes = 1024 * 1024;
-/** No Engine RPC waits longer than this. */
+/** No Engine RPC except `AddTransfer` waits longer than this. */
 export const engineTimeoutMs = 10_000;
 
 const boundedFetch: typeof globalThis.fetch = async (input, init) => {

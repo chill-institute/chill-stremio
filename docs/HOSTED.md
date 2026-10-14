@@ -160,8 +160,9 @@ Engine then returns the account's existing transfer for that source instead of
 adding another, unless it failed or its finished file is gone
 ([transfer reuse probe](./LIVE.md#transfer-reuse-probe)). Under capacity pressure the oldest idle entries may be dropped before
 their window ends. A submission does not depend on the requesting client staying
-connected. A failed, lost or timed-out submission response is never retried and
-reports `unknown`.
+connected. It waits up to 21 seconds of its window for Engine's answer, longer
+than Engine takes to finish an add. A failed, lost or timed-out submission
+response is never retried and reports `unknown`.
 
 After submission the adapter polls `GetTransfer`, finds the downloaded video
 with `GetFolder` and resolves it with `ResolvePlayback`. A still-pending

@@ -1,5 +1,10 @@
 import { Context, Effect, Layer, Schema } from "effect";
+import { engineTimeout } from "./discovery-engine.ts";
 import { createEngineRpc, EngineError, type EngineAuth } from "./engine.ts";
+
+// Engine finishes a shared add within 20 seconds even after its caller leaves,
+// so waiting slightly longer receives the outcome instead of losing it.
+const addTransferTimeoutMs = 21_000;
 
 const PositiveId = Schema.BigInt.check(
   Schema.isBetweenBigInt({ minimum: 1n, maximum: 9223372036854775807n }),
@@ -172,10 +177,11 @@ export function acquisitionEngineLayer(configuration: EngineAuth) {
           const url = yield* Schema.decodeUnknownEffect(TransferUrl)(
             input,
           ).pipe(Effect.mapError(invalidConfig));
+          const timeoutMs = yield* engineTimeout(addTransferTimeoutMs);
           // Once submitted, even a transport/decoding failure can mean the provider accepted it.
           return yield* decodeTransfer(
             yield* rpc.call((options) =>
-              rpc.client.addTransfer({ url }, options),
+              rpc.client.addTransfer({ url }, { ...options, timeoutMs }),
             ),
           );
         }),

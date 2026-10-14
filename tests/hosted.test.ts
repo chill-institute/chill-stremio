@@ -1718,6 +1718,38 @@ test("release searches tell Engine the time left before their route's deadline",
   }
 });
 
+test("selections wait for Engine's shared add within their window", async () => {
+  // Freeze the wall clock so Engine time is exact; sockets and timers stay real.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  // Each selection gets its own server, since identical selections share one submission.
+  const addTimeout = async (path: string, searchMs: number) => {
+    const f = await fixture();
+    try {
+      f.state.elapsedMs = { Search: searchMs };
+      await (
+        await fetch(`${f.base()}${path}`, { redirect: "manual" })
+      ).arrayBuffer();
+      return f.calls.find(({ method }) => method === "AddTransfer")?.timeout;
+    } finally {
+      await f.close();
+    }
+  };
+  try {
+    // Engine keeps a shared add running for 20 seconds after its caller leaves.
+    assert.equal(
+      await addTimeout("/play/movie/tt1234567/fixture-release.mp4", 0),
+      "21000",
+    );
+    // An HLS selection's 25-second window, less its search, still bounds it.
+    assert.equal(
+      await addTimeout("/play/movie/tt1234567/fixture-release.m3u8", 9_000),
+      "15500",
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("library subtitle resources return the file's tracks without starting downloads", async () => {
   const f = await fixture();
   try {
