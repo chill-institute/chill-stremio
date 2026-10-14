@@ -148,7 +148,12 @@ const request = Effect.fn("live.putio.request")(function* (
     try: () => response.text(),
     catch: (cause) => new PutioFailure({ message: redactLive(String(cause)) }),
   });
-  return { ok: response.ok, status: response.status, text };
+  return {
+    ok: response.ok,
+    status: response.status,
+    text,
+    date: response.headers.get("date"),
+  };
 });
 
 const requestJson = Effect.fn("live.putio.requestJson")(function* (
@@ -713,6 +718,20 @@ export const FileDetailEnvelope = Schema.Struct({
 });
 
 /** A file's parent and creation time, or `undefined` once put.io answers 404. */
+/** put.io's clock, to the second, from a read-only response's Date header. */
+export const serverTime = Effect.fn("live.putio.serverTime")(function* () {
+  const response = yield* request(
+    `${liveVersions.apiBase}/v2/account/info`,
+    {},
+  );
+  const time = response.date ? Date.parse(response.date) : Number.NaN;
+  if (!response.ok || !Number.isFinite(time))
+    return yield* new PutioFailure({
+      message: `put.io clock read HTTP ${response.status}`,
+    });
+  return time;
+}, Effect.timeout("20 seconds"));
+
 export const getFile = Effect.fn("live.putio.getFile")(function* (id: number) {
   const response = yield* request(`${liveVersions.apiBase}/v2/files/${id}`, {});
   if (response.status === 404) return undefined;

@@ -48,6 +48,8 @@ export interface AcquireProvider {
   accountInfo: () => Effect.Effect<{ username: string }, unknown>;
   listFolderIds: (id: number) => Effect.Effect<readonly number[], unknown>;
   listTransfers: () => Effect.Effect<readonly ProviderTransfer[], unknown>;
+  /** put.io's own clock in epoch milliseconds, read without mutation. */
+  serverTime: () => Effect.Effect<number, unknown>;
   getTransfer: (id: number) => Effect.Effect<ProviderTransfer, unknown>;
   cancelTransfers: (ids: readonly number[]) => Effect.Effect<void, unknown>;
   getFile: (
@@ -125,7 +127,8 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
   const timing = { ...defaultTiming, ...options.timing };
   const mediaOrigin = options.mediaOrigin ?? liveVersions.apiBase;
   const attempt = createLiveAttempt();
-  const runStart = Math.floor(Date.now() / 1000) * 1000;
+  // Replaced by put.io's clock before the baseline; created_at uses that clock.
+  let runStart = Number.POSITIVE_INFINITY;
   const baselineTransfers = new Set<number>();
   const baselineFiles = new Set<number>();
   const freshTransfers = new Set<number>();
@@ -136,7 +139,6 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     resolution: FileResolution;
   }[] = [];
   const recovery: Record<string, unknown> = {
-    runStart: new Date(runStart).toISOString(),
     baselineTransfers: [] as number[],
     freshTransfers: [] as number[],
     transferFiles,
@@ -156,6 +158,11 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
   let attributed: number | undefined;
   let sizeSeen = false;
   let charged = false;
+  // Set once more than one candidate was seen; nothing is then attributed by
+  // baseline difference, so cleanup stays uncertain rather than guessing.
+  let ambiguous = false;
+  // Set once the transfer finished or served media, so it must have a file.
+  let fileExpected = false;
   let pin = { imdbId: "", releaseId: "", maxBytes: 0 };
   let ledgerDirectory = "";
   const cancelled = new Set<number>();
@@ -219,6 +226,20 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     );
   };
 
+  /** Charges bytes put.io reported past the pin, once, even past the cap. */
+  const chargeExcess = (size: number) =>
+    Effect.gen(function* () {
+      proof.sizeExceeded = true;
+      if (charged) return;
+      charged = true;
+      proof.excessCharged = yield* Effect.tryPromise(() =>
+        charge(ledgerDirectory, size - pin.maxBytes),
+      ).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
+    });
+
   // Re-lists transfers and records the attributed transfer's file before any
   // cancellation can drop it from the list. Runs on every exit after the GET.
   const record = Effect.gen(function* () {
@@ -231,10 +252,13 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
       )
         freshTransfers.add(transfer.id);
     recovery.freshTransfers = [...freshTransfers];
+    if (freshTransfers.size > 1) ambiguous = true;
+    recovery.ambiguous = ambiguous;
     if (attributed === undefined) {
       if (statusId !== undefined) {
         if (!baselineTransfers.has(statusId)) attributed = statusId;
-      } else if (freshTransfers.size === 1) attributed = [...freshTransfers][0];
+      } else if (!ambiguous && freshTransfers.size === 1)
+        attributed = [...freshTransfers][0];
     }
     recovery.statusTransfer = statusId;
     recovery.attributedTransfer = attributed;
@@ -245,20 +269,30 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
       attempt.pending = attempt.pending.filter(
         (item) => item.kind !== "transfer",
       );
-    for (const transfer of listed)
+    const own = listed.find((transfer) => transfer.id === attributed);
+    if (own) {
+      if (finished.has(own.status.trim().toUpperCase())) fileExpected = true;
       if (
-        transfer.id === attributed &&
-        typeof transfer.file_id === "number" &&
-        transfer.file_id > 0 &&
-        !transferFiles.some((entry) => entry.file === transfer.file_id)
+        typeof own.file_id === "number" &&
+        own.file_id > 0 &&
+        !transferFiles.some((entry) => entry.file === own.file_id)
       )
         transferFiles.push({
-          transfer: transfer.id,
-          file: transfer.file_id,
-          saveParent: transfer.save_parent_id ?? null,
+          transfer: own.id,
+          file: own.file_id,
+          saveParent: own.save_parent_id ?? null,
           resolution: "unresolved",
         });
+    }
     yield* checkpoint;
+    // Exits before any size read (notices, timeouts) still pay for the excess.
+    if (
+      own &&
+      typeof own.size === "number" &&
+      Number.isSafeInteger(own.size) &&
+      own.size > pin.maxBytes
+    )
+      yield* chargeExcess(own.size);
     for (const entry of transferFiles) {
       if (entry.resolution !== "unresolved") continue;
       if (baselineFiles.has(entry.file) || entry.saveParent === null) {
@@ -283,27 +317,22 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
   ) {
     const status = transfer.status.trim().toUpperCase();
     if (/^[A-Z_]{1,32}$/.test(status)) proof.providerStatus = status;
-    if (finished.has(status) && proof.selectionToCompletionMs === undefined)
-      proof.selectionToCompletionMs = since();
+    if (finished.has(status)) {
+      fileExpected = true;
+      proof.selectionToCompletionMs ??= since();
+    }
     const size = transfer.size;
     if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 1)
       return;
     sizeSeen = true;
     proof.sizeBucket = sizeBucket(size);
     if (size <= pin.maxBytes) return;
-    proof.sizeExceeded = true;
-    yield* Effect.ignore(record);
-    yield* Effect.ignore(cancelOnce([transfer.id]));
-    if (!charged) {
-      charged = true;
-      const excess = size - pin.maxBytes;
-      proof.excessCharged = yield* Effect.tryPromise(() =>
-        charge(ledgerDirectory, excess),
-      ).pipe(
-        Effect.as(true),
-        Effect.orElseSucceed(() => false),
-      );
-    }
+    // Without a recorded file the lifecycle reconciles before it cancels.
+    yield* record.pipe(
+      Effect.andThen(cancelOnce([transfer.id])),
+      Effect.ignore,
+    );
+    yield* chargeExcess(size);
     return yield* fail("size-exceeded");
   });
 
@@ -391,6 +420,8 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     if (!playUrl) return yield* fail("pinned-row-missing");
 
     stage = "baseline";
+    runStart = Math.floor((yield* provider.serverTime()) / 1000) * 1000;
+    recovery.runStart = new Date(runStart).toISOString();
     for (const transfer of yield* provider.listTransfers()) {
       baselineTransfers.add(transfer.id);
       if (typeof transfer.file_id === "number")
@@ -444,6 +475,9 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
             !baselineTransfers.has(item.id) && createdSince(item.created_at),
         );
         proof.freshTransfers = fresh.length;
+        for (const item of fresh) freshTransfers.add(item.id);
+        recovery.freshTransfers = [...freshTransfers];
+        if (fresh.length > 1) ambiguous = true;
         const only = fresh.length === 1 ? fresh[0] : undefined;
         if (!only) return yield* fail("attribution");
         attributed = only.id;
@@ -492,6 +526,7 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     const media = mediaLocation(302, location, mediaOrigin);
     Object.assign(proof, media.checks);
     if (!media.ok) return yield* fail(stage);
+    fileExpected = true;
     proof.selectionToMediaMs = since();
 
     stage = "completion";
@@ -536,11 +571,19 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
   const verify = Effect.gen(function* () {
     if (
       attempt.pending.length > 0 ||
+      (fileExpected && transferFiles.length === 0) ||
       transferFiles.some((entry) =>
         ["unresolved", "retained"].includes(entry.resolution),
       )
     )
       return "unverified" satisfies Verification;
+    // A 404 while recording may have been transient; it must still hold.
+    for (const entry of transferFiles)
+      if (
+        entry.resolution === "absent" &&
+        !(yield* provider.fileAbsent(entry.file))
+      )
+        return "unverified" satisfies Verification;
     if (attempt.transfers.length === 0 && attempt.files.length === 0)
       return "not-needed" satisfies Verification;
     for (let round = 1; round <= timing.verifyAttempts; round++) {

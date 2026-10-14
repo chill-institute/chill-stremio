@@ -33,8 +33,6 @@ const strayTransfer = 73_101_702;
 const newFile = 73_101_801;
 const seededBytes = 100;
 
-const providerNow = () => new Date().toISOString().slice(0, 19);
-
 interface FakeTransfer {
   id: number;
   status: string;
@@ -44,7 +42,23 @@ interface FakeTransfer {
   created_at: string;
 }
 
-function fakePutio() {
+interface FakeOptions {
+  /** How far put.io's clock is ahead of this host's. */
+  skewMs?: number;
+  /** Runs before each transfer listing; "fail" answers it with an error. */
+  onList?: (
+    call: number,
+    transfers: Map<number, FakeTransfer>,
+  ) => "fail" | undefined;
+  /** How many reads of the new file answer 404 before it appears. */
+  fileMisses?: number;
+}
+
+function fakePutio(options: FakeOptions = {}) {
+  const providerNow = () =>
+    new Date(Date.now() + (options.skewMs ?? 0)).toISOString().slice(0, 19);
+  let lists = 0;
+  let fileMisses = options.fileMisses ?? 0;
   const files = new Map<number, { parent: number; created: string }>([
     [folder, { parent: 0, created: "2020-01-01T00:00:00" }],
     [baselineFile, { parent: folder, created: "2020-01-01T00:00:00" }],
@@ -76,10 +90,15 @@ function fakePutio() {
         [...files].filter(([, file]) => file.parent === id).map(([id]) => id),
       ),
     listTransfers: () =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         events.push("list");
-        return [...transfers.values()].map((transfer) => ({ ...transfer }));
+        if (options.onList?.(++lists, transfers) === "fail")
+          return Effect.fail(new Error("put.io HTTP 502"));
+        return Effect.succeed(
+          [...transfers.values()].map((transfer) => ({ ...transfer })),
+        );
       }),
+    serverTime: () => Effect.sync(() => Date.now() + (options.skewMs ?? 0)),
     getTransfer: (id) =>
       Effect.suspend(() => {
         const transfer = transfers.get(id);
@@ -97,6 +116,10 @@ function fakePutio() {
     getFile: (id) =>
       Effect.sync(() => {
         const file = files.get(id);
+        if (file && id === newFile && fileMisses > 0) {
+          fileMisses--;
+          return undefined;
+        }
         return file
           ? { id, parentId: file.parent, createdAt: file.created }
           : undefined;
@@ -334,10 +357,11 @@ async function runLane(
     decode?: Decode;
     reservedBytes?: number;
     acquisitionMs?: number;
+    putio?: FakeOptions;
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "live-acquire-"));
-  const putio = fakePutio();
+  const putio = fakePutio(options.putio);
   const services = await fakeServices(putio, script);
   const decoded: string[] = [];
   const decode = options.decode ?? 240;
@@ -623,6 +647,89 @@ test("a transfer larger than the pin is cancelled and its excess charged past th
   await assert.rejects(run.reserveAgain, AllowanceFailure);
   assertPreexistingUntouched(run);
   assertPrivateReceipt(run.receiptText);
+});
+
+test("an excess put.io reports only after a notice is still charged", async () => {
+  const size = 1_234_567;
+  const run = await runLane({ play: "lost", size });
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "adapter-unknown");
+  assert.equal(run.receipt.proof.sizeExceeded, true);
+  assert.equal(run.receipt.proof.excessCharged, true);
+  assert.equal(run.ledger.reservedBytes, seededBytes + size);
+  assert.deepEqual(run.putio.cancelled, [[newTransfer]]);
+});
+
+test("an oversized finished transfer is cancelled only after its file is recorded", async () => {
+  const size = Number(maxBytes) + 5000;
+  const run = await runLane(
+    { play: "direct", size },
+    // The size gate's own listing fails; the lifecycle lists again.
+    { putio: { onList: (call) => (call === 3 ? "fail" : undefined) } },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "size-exceeded");
+  assert.equal(run.receipt.proof.excessCharged, true);
+  assertCleaned(run);
+});
+
+test("a finished transfer whose file was never recorded leaves cleanup unverified", async () => {
+  const size = Number(maxBytes) + 5000;
+  const run = await runLane(
+    { play: "direct", size },
+    {
+      putio: {
+        onList: (call) => (call === 3 || call === 4 ? "fail" : undefined),
+      },
+    },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "size-exceeded");
+  assert.deepEqual(run.putio.deleted, []);
+  assert.ok(run.putio.files.has(newFile));
+  assert.equal(run.receipt.cleanup.status, "uncertain");
+  assert.equal(run.receipt.cleanup.verification, "unverified");
+});
+
+test("an attribution judged ambiguous is not resolved again at cleanup", async () => {
+  const run = await runLane(
+    { play: "direct-ambiguous" },
+    {
+      // Only the stray candidate is still listed when cleanup reconciles.
+      putio: {
+        onList: (call, transfers) => {
+          if (call === 3) transfers.delete(newTransfer);
+          return undefined;
+        },
+      },
+    },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "attribution");
+  assert.deepEqual(run.putio.cancelled, []);
+  assert.deepEqual(run.putio.deleted, []);
+  assert.ok(run.putio.transfers.has(strayTransfer));
+  assert.equal(run.receipt.cleanup.pendingAcquisitions, 1);
+  assert.equal(run.receipt.cleanup.status, "uncertain");
+  assert.notEqual(run.receipt.cleanup.verification, "verified");
+});
+
+test("ownership uses put.io's clock, not this host's", async () => {
+  const run = await runLane(
+    { hops: ["media"] },
+    { putio: { skewMs: -30_000 } },
+  );
+  assert.ok(Exit.isSuccess(run.exit));
+  assert.equal(run.receipt.status, "passed");
+  assertCleaned(run);
+});
+
+test("a file put.io briefly answered 404 for is checked again before verifying", async () => {
+  const run = await runLane({ hops: ["media"] }, { putio: { fileMisses: 1 } });
+  assert.equal(run.receipt.status, "failed");
+  assert.equal(run.receipt.cleanup.verification, "unverified");
+  assert.deepEqual(run.putio.deleted, []);
+  assert.ok(run.putio.files.has(newFile));
 });
 
 for (const reuse of [

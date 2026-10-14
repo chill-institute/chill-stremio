@@ -335,7 +335,8 @@ The probe then:
 2. reads the movie's stream list once and requires a **Download to put.io**
    row whose media URL names the pinned release; otherwise it fails at
    `pinned-row-missing` with nothing reserved. It never selects another row
-3. lists every put.io transfer as the baseline, kept only in the journal
+3. reads put.io's clock as the run start and lists every put.io transfer as
+   the baseline, kept only in the journal
 4. reserves one creation and `LIVE_ACQUIRE_MAX_BYTES`
 5. sends HEAD, which must answer `200`, then GET to the row's media URL exactly
    once. It follows only same-origin redirects to that link's
@@ -345,11 +346,13 @@ The probe then:
    read. Any other status clip fails at `adapter-<kind>`
 6. attributes the transfer the status URL names, or else the one transfer not
    in the baseline and created during the run. A pre-existing transfer or more
-   than one candidate fails at `attribution`; the probe then cancels and
-   deletes nothing it did not create
+   than one candidate fails at `attribution`; once more than one candidate is
+   seen, cleanup never attributes by baseline difference, so the probe cancels
+   and deletes nothing it did not create
 7. reads the transfer between status reads. When put.io reports a size above
-   the pin, it cancels the transfer, charges the excess bytes to the ledger and
-   fails at `size-exceeded`
+   the pin, it records the transfer's file, cancels the transfer, charges the
+   excess bytes to the ledger and fails at `size-exceeded`. Every exit after
+   the GET charges an excess the final transfer listing reports
 8. requires the final redirect to be an HLS playlist on the put.io API origin,
    as the owned video probe does, not a status clip, and put.io to have
    reported the transfer's size, or fails at `size-unknown`
@@ -361,12 +364,14 @@ Every exit after the GET records the transfer's file before cancelling. Cleanup
 cancels only the attributed transfer and deletes its file only when that file
 is not in the baseline, sits in the transfer's save folder and was created
 during the run. Afterwards put.io must no longer list the transfer and must
-answer `404` for the file. The receipt's `cleanup.verification` is `verified`
-only then; `acknowledged` alone does not pass. A recorded file the run cannot
-prove it created stays in place and leaves verification `unverified`; a GET
-with no attributable transfer leaves cleanup `uncertain`. As in the owned video probe, the playlist
-URL is a signed media grant on FFmpeg's command line; run the lane only on a
-host reserved for the operator.
+answer `404` for the file, including a file that already answered `404` when
+it was recorded. The receipt's `cleanup.verification` is `verified` only then;
+`acknowledged` alone does not pass. A recorded file the run cannot prove it
+created, or a finished transfer whose file was never recorded, leaves
+verification `unverified`; a GET with no attributable transfer leaves cleanup
+`uncertain`. As in the owned video probe, the playlist URL is a signed media
+grant on FFmpeg's command line; run the lane only on a host reserved for the
+operator.
 
 The private `.cache/live/recovery/acquire-<timestamp>.json` journal keeps the
 run start, the baseline, candidate and attributed transfer IDs and the file
