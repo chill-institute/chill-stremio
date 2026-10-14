@@ -175,7 +175,9 @@ export function createSelection(options: { base: string }) {
     return (
       playback.case === "ready"
         ? { url: playback.url }
-        : { status: playback.case }
+        : {
+            status: playback.case === "pending" ? "preparing" : playback.case,
+          }
     ) satisfies PlaybackResult;
   });
   return { streams, submit, status, owned };

@@ -9,6 +9,11 @@ export const statusMessages = {
     "Select the release again",
     "to keep waiting.",
   ],
+  preparing: [
+    "Video not ready yet",
+    "put.io is preparing it.",
+    "Select it again soon.",
+  ],
   unknown: [
     "Download status unknown",
     "Check put.io library in Stremio",

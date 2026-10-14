@@ -2381,7 +2381,7 @@ test("a video already in put.io plays without a transfer or status URL", async (
     for (const format of ["m3u8", "mp4"])
       assert.equal(
         await location(ownedSelection(f, "77", format)),
-        `${f.base()}/notice/pending.${format}`,
+        `${f.base()}/notice/preparing.${format}`,
       );
     f.state.playbackPending = false;
     assert.equal(await location(ownedSelection(f, "77")), media);

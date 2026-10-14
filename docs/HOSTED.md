@@ -282,7 +282,7 @@ Selecting a row requests `/s/<credential>/play/<type>/<id>/owned:<fileId>.m3u8`.
 The adapter calls `ResolvePlayback` for that file within the request's 10-second
 deadline and redirects to the media URL Engine returns. It never searches,
 submits a transfer, shares a submission or redirects to a status URL. Playback
-still being prepared plays the `pending` clip, a file that is gone or has no
+still being prepared plays the `preparing` clip, a file that is gone or has no
 playable source plays `unavailable`, and a rejected credential plays
 `reconnect`; legacy `.mp4` URLs get the matching `.mp4` clips. A malformed file
 ID returns `400`. HEAD and prefetch hints answer as for other selected media,
