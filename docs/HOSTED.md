@@ -161,7 +161,9 @@ every Stremio client.
 
 Identical play requests share one submission while any of them is open and for
 60 seconds after the last one finishes, so a player reopening or retrying the
-selected URL does not submit again. That memory is per process and bounded;
+selected URL does not submit again. A submission that ends in an error before
+any transfer, such as a failed title lookup, is not kept, so selecting the
+release again retries it. That memory is per process and bounded;
 selecting the same release after the window or after a restart submits again.
 Engine then returns the account's existing transfer for that source instead of
 adding another, unless it failed or its finished file is gone

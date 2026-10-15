@@ -1577,6 +1577,28 @@ test("an HLS selection outlasting its window continues at its URL with one submi
   }
 });
 
+test("a submission that fails after its client left is tried again", async () => {
+  const f = await fixture();
+  const lookups = () =>
+    f.calls.filter(({ method }) => method === "GetMovies").length;
+  try {
+    f.state.delayMs = { GetMovies: 300 };
+    f.state.rejection = { status: 500, code: "internal" };
+    const url = `${f.base()}/play/movie/tt1234567/fixture-release.m3u8`;
+    await assert.rejects(
+      fetch(url, { redirect: "manual", signal: AbortSignal.timeout(100) }),
+    );
+    // The submission fails after its only client disconnected.
+    await sleep(500);
+    assert.equal(lookups(), 1);
+    const again = await fetch(url, { redirect: "manual" });
+    await again.arrayBuffer();
+    assert.equal(lookups(), 2, "The failure is not replayed");
+  } finally {
+    await f.close();
+  }
+});
+
 test("capacity pressure keeps a running submission for its continuation", async () => {
   const f = await fixture();
   vi.useFakeTimers({

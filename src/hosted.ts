@@ -507,6 +507,9 @@ export async function startHostedAdapter(options: {
                   created.settled = true;
                   created.failed = true;
                   unit.release();
+                  // A failure no client still waits on is not reused.
+                  if (created.users === 0 && submissions.get(key) === created)
+                    forget(key);
                 },
               );
               shared = created;
