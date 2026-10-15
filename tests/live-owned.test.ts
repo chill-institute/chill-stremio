@@ -674,6 +674,29 @@ for (const failure of [
     web: fakeWeb(() => ({ ...webProof, currentTime: [2, 2] })),
   },
   {
+    name: "a Web step that selected no row",
+    stage: "web-proof",
+    web: fakeWeb(() => ({ ...webProof, selections: 0 })),
+  },
+  {
+    name: "a Web step that saw no put.io playlist",
+    stage: "web-proof",
+    web: fakeWeb(() => ({ ...webProof, playlistResponses: 0 })),
+  },
+  {
+    name: "a Web step that decoded no new frame",
+    stage: "web-proof",
+    web: fakeWeb(() => ({ ...webProof, decodedFrames: [84, 84] })),
+  },
+  {
+    name: "a Web step whose fixture marker did not advance",
+    stage: "web-proof",
+    web: fakeWeb(() => ({
+      ...webProof,
+      fixture: { ...webProof.fixture, markers: [4, 4] },
+    })),
+  },
+  {
     name: "a Web step that left Chromium open",
     stage: "web-cleanup",
     web: fakeWeb(undefined, false),
