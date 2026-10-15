@@ -1672,6 +1672,81 @@ test("a Web page that played more than one put.io file fails", async () => {
   assertCleaned(run);
 });
 
+test("a Web movie selection playing a video outside the new transfer fails at web-played-file and is removed", async () => {
+  const run = await runLane(
+    { hops: ["media"] },
+    {
+      web: fakeWeb({
+        report: (proof) => ({ ...proof, playedFiles: [baselineFile] }),
+      }).web,
+    },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "web-played-file");
+  assert.equal(run.receipt.proof.playedInTransfer, false);
+  assertCleaned(run);
+  assertPrivateReceipt(run.receiptText);
+});
+
+test("a transfer first listed after Web playback still fails at web-transfers", async () => {
+  let reported = false;
+  let listsSince = 0;
+  const run = await runLane(
+    { hops: ["media"] },
+    {
+      putio: {
+        onList: (_call, transfers) => {
+          if (!reported || ++listsSince !== 2) return;
+          transfers.set(strayTransfer, {
+            id: strayTransfer,
+            status: "DOWNLOADING",
+            size: 4321,
+            file_id: null,
+            save_parent_id: folder,
+            created_at: new Date().toISOString().slice(0, 19),
+          });
+        },
+      },
+      web: fakeWeb({
+        report: (proof) => {
+          reported = true;
+          return proof;
+        },
+      }).web,
+    },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "web-transfers");
+  assert.equal(run.receipt.proof.web?.transfersCreated, 2);
+  assert.ok(run.putio.transfers.has(strayTransfer));
+  assert.ok(!run.putio.transfers.has(newTransfer));
+  assert.equal(run.receipt.cleanup.status, "uncertain");
+  assert.equal(run.receipt.cleanup.pendingAcquisitions, 1);
+  assert.notEqual(run.receipt.cleanup.verification, "verified");
+  assertPreexistingUntouched(run);
+});
+
+test("Stremio Web failing after media while put.io lists no file leaves cleanup unverified", async () => {
+  const run = await runLane(
+    { hops: ["media"] },
+    {
+      putio: {
+        onList: (_call, transfers) => {
+          const transfer = transfers.get(newTransfer);
+          if (transfer)
+            Object.assign(transfer, { status: "COMPLETING", file_id: null });
+        },
+      },
+      web: fakeWeb({ failAt: "playback" }).web,
+    },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "web-playback");
+  assert.ok(run.putio.files.has(newFile));
+  assert.equal(run.receipt.cleanup.verification, "unverified");
+  assertPreexistingUntouched(run);
+});
+
 for (const failure of [
   {
     name: "Stremio Web failing while the download runs",

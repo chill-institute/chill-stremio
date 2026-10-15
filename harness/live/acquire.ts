@@ -576,6 +576,24 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
       return yield* fail(stage);
   });
 
+  /** Fails once a second transfer was created since the baseline. */
+  const limitTransfers = Effect.fn("live.acquire.limitTransfers")(function* (
+    web: Record<string, unknown>,
+  ) {
+    web.transfersCreated = freshTransfers.size;
+    if (freshTransfers.size <= 1 && !ambiguous) return;
+    ambiguous = true;
+    recovery.ambiguous = true;
+    if (!unattributed && attributed !== undefined)
+      attempt.pending.push({
+        sequence: attempt.nextSequence++,
+        kind: "transfer",
+      });
+    unattributed = true;
+    yield* checkpoint;
+    return yield* fail("web-transfers");
+  });
+
   /**
    * Counts the transfers created since the baseline and attributes the only
    * one. A second one fails, is never attributed and leaves cleanup uncertain.
@@ -591,19 +609,7 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
       )
         freshTransfers.add(transfer.id);
     recovery.freshTransfers = [...freshTransfers];
-    web.transfersCreated = freshTransfers.size;
-    if (freshTransfers.size > 1) {
-      ambiguous = true;
-      recovery.ambiguous = true;
-      if (!unattributed && attributed !== undefined)
-        attempt.pending.push({
-          sequence: attempt.nextSequence++,
-          kind: "transfer",
-        });
-      unattributed = true;
-      yield* checkpoint;
-      return yield* fail("web-transfers");
-    }
+    yield* limitTransfers(web);
     const [only] = freshTransfers;
     if (attributed !== undefined || only === undefined) return;
     attributed = only;
@@ -682,6 +688,7 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
         }).pipe(Effect.andThen(checkpoint)),
         onMedia: () => {
           mediaReached = true;
+          fileExpected = true;
         },
       }).pipe(
         Effect.timeout(timing.acquisitionMs + timing.webMs),
@@ -697,7 +704,6 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
       ),
       watchWeb(() => mediaReached, web),
     );
-    fileExpected = true;
 
     stage = "web-proof";
     // Copied field by field so nothing else the step returns reaches the receipt.
@@ -737,6 +743,9 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     if (!sizeSeen) return yield* fail("size-unknown");
     stage = "record";
     yield* record;
+    // A transfer first listed by the record counts as well.
+    stage = "web-transfers";
+    yield* limitTransfers(web);
     const files = [...new Set(played.playedFiles)];
     const [playedFile] = files;
     if (files.length !== 1) return yield* fail("web-played-file");
@@ -744,6 +753,15 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
       (entry) => entry.file === playedFile,
     );
     yield* checkEpisode(attributed, playedFile);
+    // Without a status URL only the played file ties playback to this transfer.
+    const saved = transferFiles.find(
+      (entry) => entry.transfer === attributed && entry.resolution === "owned",
+    );
+    proof.playedInTransfer =
+      saved !== undefined &&
+      (savedTrees.get(saved.file)?.some((entry) => entry.id === playedFile) ??
+        false);
+    if (!proof.playedInTransfer) return yield* fail("web-played-file");
     stage = "cancel";
     yield* cancelOnce(attempt.transfers);
     stage = "web-cleanup";
