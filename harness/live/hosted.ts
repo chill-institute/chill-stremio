@@ -668,7 +668,8 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
       if (
         selectionStreams.streams.length !== 1 ||
         !selectedStream ||
-        proxy.calls.addTransfer !== 0
+        proxy.calls.addTransfer !== 0 ||
+        proxy.calls.startPlaybackConversion !== 0
       )
         return yield* new HostedProbeFailure({
           stage,
@@ -690,7 +691,10 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
       yield* Effect.tryPromise((signal) =>
         requestSelectedMedia(origin, selectionPath, "HEAD", signal),
       );
-      if (proxy.calls.addTransfer !== 0)
+      if (
+        proxy.calls.addTransfer !== 0 ||
+        proxy.calls.startPlaybackConversion !== 0
+      )
         return yield* new HostedProbeFailure({
           stage,
           code: "hosted_probe_failed",
