@@ -412,7 +412,10 @@ LIVE_ACQUIRE_RELEASE_ID=pack:00000000-0000-4000-8000-000000000000
 
 Keep the pin in the private process environment, never in this checkout. A
 missing, malformed or inconsistent pin, such as a season pack without an
-episode, fails at stage `configuration` before any request.
+episode, fails at stage `configuration` before any request. Set
+`LIVE_ACQUIRE_WEB=1` to make the selection in
+[Stremio Web](#stremio-web-selection) instead of steps 5 and 8 below; any other
+value or none keeps the probe's own GET.
 
 The probe then:
 
@@ -496,6 +499,59 @@ URL.
 A pass covers one approved movie release, episode release or season pack
 acquired through the deployed adapter and production Engine, decoded by FFmpeg
 rather than a Stremio client.
+
+### Stremio Web selection
+
+With `LIVE_ACQUIRE_WEB=1` the probe runs steps 1 to 4 and the HEAD of step 5
+unchanged, then serves the pinned Stremio Web build from `mise run setup` in a
+fresh headless Chromium guest context and installs the personal manifest as
+the [owned video probe's Web step](#stremio-web-step) does. It opens the
+movie's detail page, or the pinned episode's, and reads the stream list the
+page requests, reading it at most three times, 10 seconds apart, until it
+holds the pinned row by the step 2 rules. Just before the first
+click the selection counts as sent. The page then selects only that row and
+follows the adapter's redirects, status URLs and manifest retries itself. When
+it reaches the pending clip, the probe opens the title's page again once the
+player leaves and selects the same row, which rejoins the download. Any other
+status clip fails at `adapter-<kind>`. Chromium aborts a request for any other
+media URL on the adapter, and the probe fails.
+
+While the page waits, the probe lists transfers every 10 seconds. The one
+transfer not in the baseline and created during the run is attributed; a
+second fails at `web-transfers`, is never attributed, and leaves cleanup
+`uncertain` with the first still cancelled and deleted. The size gate of step
+7 and the 20-minute acquisition limit from the first click apply as before;
+either stops the page. Once the page requests put.io media it must show:
+
+- a GET for the pinned media URL
+- `200` or `206` responses from put.io hosts for at least one playlist and one
+  other media request
+- `readyState` of at least 2, `currentTime` advancing by over a second and
+  more decoded video frames
+- exactly one put.io file named by its put.io API requests; for an episode or
+  season pack, that file passes the identity check of step 10
+- no request carrying the credential to any origin but the adapter's, and none
+  with `Authorization`
+- Chromium, its context and the Web listener closed afterwards
+
+The probe then lists transfers again, reads the transfer's size and records
+its file as in steps 7 and 9, and cancels it. FFmpeg decodes nothing; the page
+supplies the decode proof. Cleanup and verification are unchanged, including
+after a browser failure. Failures in the page carry a `web-` stage prefix. The
+Web step stops after 28 minutes and the whole lane after 30. It captures no
+screenshot, recording or trace, and the page's signed playlist URLs stay inside
+Chromium.
+
+The receipt adds `selectionToTransferMs` and, under `proof.web`, the client
+and browser versions, the stream list reads, row clicks, selected-URL, status
+and pending clip requests, other media requests, put.io playlist and segment
+responses, how many put.io files played, `transfersCreated`, two time and frame
+samples, cleanup booleans and `status`; `locationNamesFile` reports whether
+the played file is the transfer's saved file. It names no file, title, URL or
+ID. Run it in the [browser image](./HARNESS.md#browser-image) on a host without
+Chromium libraries. A pass covers playback of one approved release in the
+pinned Stremio Web client in Chromium after acquisition through the deployed
+adapter and production Engine.
 
 ## HLS audio probe
 

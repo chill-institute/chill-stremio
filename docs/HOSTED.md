@@ -570,8 +570,9 @@ Web; see the [owned video probe](./LIVE.md#owned-video-probe).
 
 `mise run hosted:acquire` selects the one movie release, episode release or
 season pack the account owner approved on the deployed adapter, waits for production Engine's put.io transfer to
-complete, follows the adapter to put.io's HLS playlist, decodes it with FFmpeg
-and removes only what the run created; see the
+complete, follows the adapter to put.io's HLS playlist, decodes it with FFmpeg,
+or with `LIVE_ACQUIRE_WEB=1` selects and plays it in Stremio Web, and removes
+only what the run created; see the
 [real acquisition probe](./LIVE.md#real-acquisition-probe).
 
 The public endpoint depends on the `infra`-owned DNS record and the Engine-owned

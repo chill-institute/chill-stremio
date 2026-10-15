@@ -49,6 +49,19 @@ docker run --rm -it --init --ipc=host \
 Run a lane the same way, for example `pnpm exec vp run hosted:owned`, passing
 its private variables with `-e NAME` so their values stay out of the command
 line. The image has no mise; `pnpm exec vp run` runs the same package scripts.
+The [acquisition probe's Stremio Web selection](./LIVE.md#stremio-web-selection),
+with its credentials and pin already in your environment:
+
+```sh
+docker run --rm -it --init --ipc=host \
+  -u "$(id -u):$(id -g)" -v /etc/passwd:/etc/passwd:ro \
+  -e HOME="$HOME" -v "$HOME:$HOME" -w "$PWD" \
+  -e CHILL_STREMIO_CREDENTIAL -e PUTIO_USERNAME -e PUTIO_TEST_TOKEN \
+  -e LIVE_ACQUIRE_IMDB_ID -e LIVE_ACQUIRE_RELEASE_ID -e LIVE_ACQUIRE_EPISODE \
+  -e LIVE_ACQUIRE_MAX_BYTES -e LIVE_ACQUIRE_WEB=1 \
+  chill-stremio:browser \
+  pnpm exec vp run hosted:acquire
+```
 
 ## Setup and run
 
