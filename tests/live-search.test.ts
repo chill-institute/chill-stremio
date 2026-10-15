@@ -47,6 +47,10 @@ interface FakeOptions {
   typeSettlesAfterSearches?: number;
   /** After this many searches, folder names also match the items inside them. */
   pathsAfterSearches?: number;
+  /** Search reports this parent ID for every item the run created. */
+  unownedParent?: number;
+  /** The file read reports this type instead of the stored one. */
+  readType?: string;
   deletion?: "removes" | "ignored" | "rejected";
   onMutation?: () => Promise<void>;
 }
@@ -133,7 +137,10 @@ function fakePutio(options: FakeOptions = {}) {
           files: matches.map((file) => ({
             id: file.id,
             name: file.name,
-            parent_id: file.parent,
+            parent_id:
+              file.id === foreign.id
+                ? file.parent
+                : (options.unownedParent ?? file.parent),
             file_type: fileType(file),
             is_shared: false,
           })),
@@ -172,7 +179,9 @@ function fakePutio(options: FakeOptions = {}) {
         calls.push("get");
         if (options.failGet) return Effect.fail(new Error("put.io HTTP 502"));
         const file = files.get(id);
-        return Effect.succeed(file && { fileType: fileType(file) });
+        return Effect.succeed(
+          file && { fileType: options.readType ?? fileType(file) },
+        );
       }),
   };
   return { provider, files, calls, queries, deleted };
@@ -532,6 +541,23 @@ test("the re-read records file types after settling apart from the first sightin
     searchFileType: "VIDEO",
   });
   assert.ok((reread.afterMs ?? -1) >= 0);
+});
+
+test("an unowned parent and a non-enum read type stay out of the receipt", async () => {
+  const unownedParent = 424_242;
+  const readType = "sample-type";
+  const run = await runLane({ unownedParent, readType });
+  assert.equal(run.receipt.status, "passed");
+  const items = run.receipt.proof.queries.flatMap((query) => query.items);
+  assert.ok(items.length > 0);
+  for (const item of items) assert.equal(item.parent, "other");
+  for (const fixture of fixtures)
+    assert.equal(
+      run.receipt.proof.reread.fixtures?.[fixture.label]?.fileType,
+      undefined,
+    );
+  assert.ok(!run.receiptText.includes(String(unownedParent)));
+  assert.ok(!run.receiptText.includes(readType));
 });
 
 for (const refusal of [
