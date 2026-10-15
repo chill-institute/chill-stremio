@@ -865,6 +865,10 @@ test("episode releases list only rows whose parsed numbers may hold the episode,
       releaseInfo: { season: 1, episode: 1, episodeEnd: 3 },
     },
     {
+      id: "range-ending",
+      releaseInfo: { season: 1, episode: 1, episodeEnd: 2 },
+    },
+    {
       id: "range-before",
       releaseInfo: { season: 1, episode: 1, episodeEnd: 1 },
     },
@@ -872,6 +876,8 @@ test("episode releases list only rows whose parsed numbers may hold the episode,
     { id: "unnumbered", releaseInfo: { year: 2023 } },
     { id: "other-season-pack", releaseInfo: { season: 2 } },
   ];
+  const rowLink = (id: string) =>
+    `https://api.example/download?download_token=${id}`;
   f.service.search = (query) =>
     Effect.succeed(
       create(SearchResponseSchema, {
@@ -879,6 +885,7 @@ test("episode releases list only rows whose parsed numbers may hold the episode,
         results: rows.map((row) => ({
           ...release,
           ...row,
+          link: rowLink(row.id),
           releaseInfo: row.releaseInfo && {
             title: show.title,
             ...row.releaseInfo,
@@ -896,12 +903,13 @@ test("episode releases list only rows whose parsed numbers may hold the episode,
       "matching",
       "season-only",
       "range-holding",
+      "range-ending",
       "episode-only",
       "unnumbered",
     ],
   );
   for (const { id } of rows)
-    assert.equal((await run(discovery.release(episode, id))).url, release.link);
+    assert.equal((await run(discovery.release(episode, id))).url, rowLink(id));
   const releaseTarget = {
     kind: "release" as const,
     query: "independent",

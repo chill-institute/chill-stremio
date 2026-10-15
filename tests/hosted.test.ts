@@ -44,6 +44,8 @@ const episodeTarget = discoveryTargetId({
 });
 const seasonPackLink =
   "https://engine.fixture.test/download?token=fixture-season-secret";
+const parsedReleaseLink = (id: string) =>
+  `https://engine.fixture.test/download?token=fixture-${id}`;
 const Catalog = Schema.Struct({
   metas: Schema.Array(
     Schema.Struct({ id: Schema.String, name: Schema.String }),
@@ -89,6 +91,7 @@ async function fixture(
     engineDelayMs: 0,
     heldCalls: 0,
     addCredentials: [] as (string | string[] | undefined)[],
+    addUrls: [] as string[],
     transferFinished: true,
     singleFile: false,
     // Folder listings that replace or add to the defaults, by folder ID.
@@ -334,7 +337,7 @@ async function fixture(
                     id,
                     title: `Independent.Series.${id}`,
                     indexer: "Fixture",
-                    link: "https://engine.fixture.test/download?token=fixture-release-secret",
+                    link: parsedReleaseLink(id),
                     size: 12345n,
                     seeders: 2n,
                     releaseInfo: releaseInfo && {
@@ -437,9 +440,11 @@ async function fixture(
             [
               "https://engine.fixture.test/download?token=fixture-release-secret",
               seasonPackLink,
+              ...state.parsedReleases.map(({ id }) => parsedReleaseLink(id)),
             ].includes(url),
           );
           state.addCount++;
+          state.addUrls.push(url);
           state.addCredentials.push(presented);
           if (state.addRejection) {
             const { status, code, engineCode } = state.addRejection;
@@ -2209,7 +2214,7 @@ test("an episode leaves out releases parsed as other episodes, which its play UR
       `${f.base()}/notice/select-file.m3u8`,
       "The multi-file download was submitted",
     );
-    assert.equal(f.state.addCount, 1);
+    assert.deepEqual(f.state.addUrls, [parsedReleaseLink("other-season")]);
   } finally {
     await f.close();
   }
