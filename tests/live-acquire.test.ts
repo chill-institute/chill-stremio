@@ -14,9 +14,14 @@ import {
   utcDay,
 } from "../harness/live/allowance.ts";
 import {
+  acquireWebStep,
+  AcquireWebNotice,
   namedEpisode,
   runAcquisition,
+  type AcquireOptions,
   type AcquireProvider,
+  type AcquireWebInput,
+  type AcquireWebProof,
 } from "../harness/live/acquire.ts";
 import { listFolder, listFolderIds } from "../harness/live/putio.ts";
 import { liveVersions } from "../harness/live/versions.ts";
@@ -210,7 +215,9 @@ function fakePutio(options: FakeOptions = {}) {
       }),
     fileAbsent: (id) => Effect.sync(() => !files.has(id)),
   };
+  // put.io keeps one transfer per source; adding it again changes nothing.
   const createTransfer = (id: number, size: number) =>
+    transfers.has(id) ||
     transfers.set(id, {
       id,
       status: "DOWNLOADING",
@@ -288,21 +295,26 @@ interface Script {
   /** What status reads answer once `hops` runs out. */
   rest?: Hop;
   size?: number;
+  /** A repeated selection creates another transfer instead of rejoining. */
+  retryCreates?: boolean;
 }
 
 async function fakeServices(
   putio: ReturnType<typeof fakePutio>,
   script: Script,
 ) {
-  const requests: { method: string; path: string }[] = [];
+  const requests: { method: string; path: string; client: string }[] = [];
   const hops = [...(script.hops ?? ["media"])];
   let wait = 1;
+  let selections = 0;
   const server = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      const client = request.headers["x-fixture-client"];
       requests.push({
         method: request.method ?? "",
         path: `${url.pathname}${url.search}`,
+        client: typeof client === "string" ? client : "lane",
       });
       const base = `http://${request.headers.host}/s/${credential}`;
       const statusUrl = (wait: number) =>
@@ -404,9 +416,15 @@ async function fakeServices(
           return;
         }
         const size = script.size ?? 4321;
+        selections++;
         switch (script.play ?? "status") {
           case "status":
-            putio.createTransfer(newTransfer, size);
+            putio.createTransfer(
+              script.retryCreates && selections > 1
+                ? strayTransfer
+                : newTransfer,
+              size,
+            );
             return redirect(statusUrl(1));
           case "reuse":
             return redirect(`${base}/status/${baselineTransfer}.m3u8?wait=1`);
@@ -485,6 +503,31 @@ const Receipt = Schema.fromJsonString(
       selectionToFirstStatusMs: Schema.optional(Schema.Number),
       selectionToCompletionMs: Schema.optional(Schema.Number),
       selectionToMediaMs: Schema.optional(Schema.Number),
+      selectionToTransferMs: Schema.optional(Schema.Number),
+      web: Schema.optional(
+        Schema.Struct({
+          status: Schema.optional(Schema.String),
+          client: Schema.optional(Schema.String),
+          browser: Schema.optional(Schema.String),
+          streamListings: Schema.optional(Schema.Number),
+          rowSelections: Schema.optional(Schema.Number),
+          selections: Schema.optional(Schema.Number),
+          otherSelections: Schema.optional(Schema.Number),
+          statusRequests: Schema.optional(Schema.Number),
+          pendingNotices: Schema.optional(Schema.Number),
+          playlistResponses: Schema.optional(Schema.Number),
+          segmentResponses: Schema.optional(Schema.Number),
+          playedFiles: Schema.optional(Schema.Number),
+          transfersCreated: Schema.Number,
+          currentTime: Schema.optional(Schema.Array(Schema.Number)),
+          decodedFrames: Schema.optional(Schema.Array(Schema.Number)),
+          cleanup: Schema.Struct({
+            browserClosed: Schema.Boolean,
+            contextClosed: Schema.Boolean,
+            webClosed: Schema.Boolean,
+          }),
+        }),
+      ),
       transferFilesRecorded: Schema.optional(Schema.Number),
       decode: Schema.optional(
         Schema.Struct({
@@ -519,6 +562,7 @@ async function runLane(
     reservedBytes?: number;
     acquisitionMs?: number;
     putio?: FakeOptions;
+    web?: AcquireOptions["web"];
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "live-acquire-"));
@@ -569,6 +613,7 @@ async function runLane(
           decodeMs: 200,
           verifyIntervalMs: 1,
         },
+        web: options.web,
       }),
     );
     const receiptText = await readFile(
@@ -581,6 +626,7 @@ async function runLane(
       exit,
       putio,
       decoded,
+      origin: services.origin,
       requests: services.requests,
       receiptText,
       receipt: Schema.decodeUnknownSync(Receipt)(receiptText),
@@ -1294,4 +1340,467 @@ test("the folder read returns put.io's entry names and types", async () => {
     fetchMock.mockRestore();
     vi.unstubAllEnvs();
   }
+});
+
+test("Stremio Web makes the selection only when LIVE_ACQUIRE_WEB is 1", async () => {
+  for (const value of [undefined, "", "0", "true", "yes"])
+    assert.equal(acquireWebStep(value), undefined, String(value));
+  assert.equal(typeof acquireWebStep("1"), "function");
+  const run = await runLane(
+    { hops: ["media"] },
+    { web: acquireWebStep(undefined) },
+  );
+  assert.equal(run.receipt.status, "passed");
+  assert.equal(run.receipt.proof.web, undefined);
+  assert.ok(run.requests.every((request) => request.client === "lane"));
+  assert.equal(run.decoded.length, 1);
+});
+
+const WebRows = Schema.Struct({
+  streams: Schema.Array(
+    Schema.Struct({
+      name: Schema.optional(Schema.String),
+      url: Schema.optional(Schema.String),
+    }),
+  ),
+});
+
+interface FakeWebOptions {
+  /** Waits this long after each selection so the lane lists transfers between them. */
+  settleMs?: number;
+  /** Fails with the credential in its message once this stage is reached. */
+  failAt?: "acquisition" | "playback";
+  /** What the step reports; the default reports a played movie. */
+  report?: (proof: AcquireWebProof, input: AcquireWebInput) => AcquireWebProof;
+  closes?: boolean;
+}
+
+/**
+ * Stands in for Stremio Web: it reads the stream list as the page does, picks
+ * the row the lane pinned, and follows the adapter's redirects, selecting the
+ * row again after each pending clip. Its requests carry a marker header.
+ */
+function fakeWeb(options: FakeWebOptions = {}) {
+  const calls: AcquireWebInput[] = [];
+  const web: AcquireOptions["web"] = (input) =>
+    Effect.gen(function* () {
+      calls.push(input);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() =>
+          Object.assign(input.cleanup, {
+            browserClosed: options.closes ?? true,
+            contextClosed: true,
+            webClosed: true,
+          }),
+        ),
+      );
+      const origin = new URL(input.manifestUrl).origin;
+      const get = (url: string) =>
+        Effect.tryPromise(async (signal) => {
+          const response = await fetch(url, {
+            signal,
+            redirect: "manual",
+            headers: { "x-fixture-client": "web" },
+          });
+          return {
+            status: response.status,
+            location: response.headers.get("location") ?? "",
+            body: await response.text(),
+          };
+        });
+      input.onStage("stream-listing");
+      const listing = yield* get(`${origin}${input.streamPath}`);
+      const rows = Schema.decodeUnknownSync(Schema.fromJsonString(WebRows))(
+        listing.body,
+      ).streams.filter((row) => row.name === input.rowName);
+      const row = rows.find((row) => row.url === input.selectedUrl);
+      if (!row?.url) return yield* Effect.fail(new Error("row not listed"));
+      yield* input.beforeSelection;
+      const selectedAt = performance.now();
+      const seen = { rows: 0, selections: 0, status: 0, pending: 0 };
+      let location = "";
+      selection: for (;;) {
+        input.onStage("selection");
+        seen.rows++;
+        seen.selections++;
+        let current = row.url;
+        let response = yield* get(current);
+        input.onStage("acquisition");
+        if (options.settleMs) yield* Effect.sleep(options.settleMs);
+        if (options.failAt === "acquisition")
+          return yield* Effect.fail(new Error(input.manifestUrl));
+        for (;;) {
+          if (response.status === 503) {
+            response = yield* get(current);
+            continue;
+          }
+          location = response.location;
+          const url = new URL(location);
+          if (url.origin !== origin) break selection;
+          const notice = /\/notice\/([a-z-]+)\.m3u8$/.exec(url.pathname)?.[1];
+          if (notice === "pending") {
+            seen.pending++;
+            continue selection;
+          }
+          if (notice) return yield* new AcquireWebNotice({ notice });
+          seen.status++;
+          current = location;
+          response = yield* get(current);
+        }
+      }
+      input.onMedia();
+      input.onStage("playback");
+      if (options.failAt === "playback")
+        return yield* Effect.fail(
+          new Error(`${input.selectedUrl} ${location}`),
+        );
+      const file = /\/v2\/files\/([0-9]+)\//.exec(location)?.[1];
+      const proof: AcquireWebProof = {
+        client: "web-v0",
+        browser: "100.0.0.0",
+        streamListings: 1,
+        rowSelections: seen.rows,
+        selections: seen.selections,
+        otherSelections: 0,
+        statusRequests: seen.status,
+        pendingNotices: seen.pending,
+        playlistResponses: 2,
+        segmentResponses: 3,
+        playedFiles: file ? [Number(file)] : [],
+        currentTime: [1.5, 3.5],
+        decodedFrames: [36, 84],
+        selectionToMediaMs: performance.now() - selectedAt,
+      };
+      return options.report?.(proof, input) ?? proof;
+    }).pipe(Effect.scoped);
+  return { calls, web };
+}
+
+const webRequests = (run: Run, client: string) =>
+  run.requests.filter((request) => request.client === client);
+
+test("with Stremio Web the page, not the lane, selects the pinned row and plays the one new transfer", async () => {
+  const browser = fakeWeb({
+    // Fields the receipt does not name stay out of it.
+    report: (proof, input) => {
+      const played = {
+        ...proof,
+        mediaUrl: input.selectedUrl,
+        manifest: input.manifestUrl,
+      };
+      return played;
+    },
+  });
+  const run = await runLane(
+    { hops: ["status", "pending", "status", "refuse", "media"] },
+    { web: browser.web },
+  );
+  assert.ok(Exit.isSuccess(run.exit));
+  assert.equal(run.receipt.status, "passed");
+  assert.equal(browser.calls.length, 1);
+  const [input] = browser.calls;
+  assert.ok(input);
+  assert.equal(input.credential, credential);
+  assert.equal(
+    input.manifestUrl,
+    `${run.origin}/s/${credential}/manifest.json`,
+  );
+  assert.deepEqual(input.detail, {
+    type: "movie",
+    id: imdbId,
+    videoId: imdbId,
+  });
+  assert.equal(
+    input.streamPath,
+    `/s/${credential}/stream/movie/${imdbId}.json`,
+  );
+  assert.equal(input.rowName, "Download to put.io");
+  assert.equal(
+    input.selectedUrl,
+    `${run.origin}/s/${credential}/play/movie/${imdbId}/${releaseId}.m3u8`,
+  );
+  // The lane only lists and probes; every GET of media comes from the page.
+  assert.deepEqual(
+    playRequests(run, "HEAD").map((request) => request.client),
+    ["lane"],
+  );
+  const gets = playRequests(run, "GET");
+  assert.equal(gets.length, 2);
+  for (const request of gets) {
+    assert.equal(request.client, "web");
+    assert.equal(
+      request.path,
+      `/s/${credential}/play/movie/${imdbId}/${releaseId}.m3u8`,
+    );
+  }
+  assert.ok(
+    webRequests(run, "lane").every(
+      (request) =>
+        !request.path.includes("/status/") &&
+        !request.path.includes("/notice/"),
+    ),
+  );
+  assert.deepEqual(run.decoded, [], "the page decodes, not FFmpeg");
+  assert.equal(run.receipt.proof.attribution, "baseline-difference");
+  assert.equal(run.receipt.proof.decode, undefined);
+  const web = run.receipt.proof.web;
+  assert.ok(web);
+  assert.deepEqual(web, {
+    cleanup: { browserClosed: true, contextClosed: true, webClosed: true },
+    transfersCreated: 1,
+    client: "web-v0",
+    browser: "100.0.0.0",
+    streamListings: 1,
+    rowSelections: 2,
+    selections: 2,
+    otherSelections: 0,
+    statusRequests: 4,
+    pendingNotices: 1,
+    playlistResponses: 2,
+    segmentResponses: 3,
+    playedFiles: 1,
+    currentTime: [1.5, 3.5],
+    decodedFrames: [36, 84],
+    status: "passed",
+  });
+  assert.equal(run.receipt.proof.locationNamesFile, true);
+  for (const timing of [
+    run.receipt.proof.selectionToTransferMs,
+    run.receipt.proof.selectionToCompletionMs,
+    run.receipt.proof.selectionToMediaMs,
+  ])
+    assert.ok(typeof timing === "number" && timing >= 0);
+  assertCleaned(run);
+  assertPrivateReceipt(run.receiptText);
+  assert.ok(!run.receiptText.includes("mediaUrl"));
+  assert.ok(!run.receiptText.includes("manifest"));
+});
+
+test("a Web retry that adds a second transfer fails, removes only the attributed one and leaves cleanup uncertain", async () => {
+  const run = await runLane(
+    { hops: ["pending", "media"], retryCreates: true },
+    { web: fakeWeb({ settleMs: 100 }).web },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "web-transfers");
+  assert.equal(run.receipt.proof.web?.transfersCreated, 2);
+  assert.equal(playRequests(run, "GET").length, 2);
+  for (const ids of run.putio.cancelled) assert.deepEqual(ids, [newTransfer]);
+  assert.ok(run.putio.transfers.has(strayTransfer));
+  assert.ok(!run.putio.transfers.has(newTransfer));
+  assert.equal(run.receipt.cleanup.status, "uncertain");
+  assert.equal(run.receipt.cleanup.pendingAcquisitions, 1);
+  assert.notEqual(run.receipt.cleanup.verification, "verified");
+  assertPreexistingUntouched(run);
+  assertPrivateReceipt(run.receiptText);
+});
+
+test("a Web episode selection checks the played file is the pinned episode inside the new transfer", async () => {
+  const browser = fakeWeb();
+  const run = await runLane(
+    { statusEpisode: true, hops: ["status", "pending", "media"] },
+    { pin: packPin, putio: { saved: "season" }, web: browser.web },
+  );
+  assert.ok(Exit.isSuccess(run.exit));
+  assert.equal(run.receipt.status, "passed");
+  const [input] = browser.calls;
+  assert.deepEqual(input?.detail, {
+    type: "series",
+    id: imdbId,
+    videoId: `${imdbId}:1:2`,
+  });
+  assert.equal(
+    input?.streamPath,
+    `/s/${credential}/stream/series/${imdbId}:1:2.json`,
+  );
+  assert.equal(input?.rowName, "Download season to put.io");
+  assert.deepEqual(
+    playRequests(run, "GET").map((request) => [request.client, request.path]),
+    [
+      ["web", episodeGet(`pack:${packReleaseId}`)],
+      ["web", episodeGet(`pack:${packReleaseId}`)],
+    ],
+  );
+  assert.equal(run.receipt.proof.playedInTransfer, true);
+  assert.equal(run.receipt.proof.playedEpisodeMatches, true);
+  assert.equal(run.receipt.proof.packVideos, 3);
+  assertCleaned(run);
+  for (const id of [packFirstEpisode, packPinnedEpisode, packSampleVideo])
+    assert.ok(!run.putio.files.has(id), String(id));
+  assertPrivateReceipt(run.receiptText);
+});
+
+for (const identity of [
+  {
+    name: "another episode from the pack",
+    putio: { saved: "season", played: packFirstEpisode },
+    inTransfer: true,
+  },
+  {
+    name: "a video outside the new transfer",
+    putio: { saved: "season", played: baselineFile },
+    inTransfer: false,
+  },
+] satisfies { name: string; putio: FakeOptions; inTransfer: boolean }[])
+  test(`a Web episode selection playing ${identity.name} fails at episode-identity and is removed`, async () => {
+    const run = await runLane(
+      { statusEpisode: true, hops: ["media"] },
+      { pin: packPin, putio: identity.putio, web: fakeWeb().web },
+    );
+    assert.ok(Exit.isFailure(run.exit));
+    assert.equal(run.receipt.proof.failureStage, "episode-identity");
+    assert.equal(run.receipt.proof.playedInTransfer, identity.inTransfer);
+    assert.equal(run.receipt.proof.playedEpisodeMatches, false);
+    assertCleaned(run);
+    assertPrivateReceipt(run.receiptText);
+  });
+
+test("a Web page that played more than one put.io file fails", async () => {
+  const run = await runLane(
+    { hops: ["media"] },
+    {
+      web: fakeWeb({
+        report: (proof) => ({
+          ...proof,
+          playedFiles: [newFile, baselineFile],
+        }),
+      }).web,
+    },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "web-played-file");
+  assertCleaned(run);
+});
+
+for (const failure of [
+  {
+    name: "Stremio Web failing while the download runs",
+    failAt: "acquisition",
+    stage: "web-acquisition",
+    hops: ["status", "media"],
+  },
+  {
+    name: "Stremio Web failing during playback",
+    failAt: "playback",
+    stage: "web-playback",
+    hops: ["media"],
+  },
+] satisfies {
+  name: string;
+  failAt: FakeWebOptions["failAt"];
+  stage: string;
+  hops: Hop[];
+}[])
+  test(`${failure.name} still cancels and removes the run's transfer`, async () => {
+    const run = await runLane(
+      { hops: failure.hops },
+      { web: fakeWeb({ failAt: failure.failAt }).web },
+    );
+    assert.ok(Exit.isFailure(run.exit));
+    assert.equal(run.receipt.proof.failureStage, failure.stage);
+    assert.equal(run.receipt.cleanup.pendingAcquisitions, 0);
+    assert.equal(run.receipt.cleanup.verification, "verified");
+    assert.ok(!run.putio.transfers.has(newTransfer));
+    if (failure.failAt === "playback") assertCleaned(run);
+    else assert.deepEqual(run.putio.cancelled, [[newTransfer]]);
+    assert.deepEqual(run.receipt.proof.web?.cleanup, {
+      browserClosed: true,
+      contextClosed: true,
+      webClosed: true,
+    });
+    assertPreexistingUntouched(run);
+    assertPrivateReceipt(run.receiptText);
+  });
+
+for (const failure of [
+  {
+    name: "saw no put.io segment",
+    report: (proof: AcquireWebProof) => ({ ...proof, segmentResponses: 0 }),
+  },
+  {
+    name: "saw no put.io playlist",
+    report: (proof: AcquireWebProof) => ({ ...proof, playlistResponses: 0 }),
+  },
+  {
+    name: "requested the pinned media URL no time",
+    report: (proof: AcquireWebProof) => ({ ...proof, selections: 0 }),
+  },
+  {
+    name: "requested another row's media URL",
+    report: (proof: AcquireWebProof) => ({ ...proof, otherSelections: 1 }),
+  },
+  {
+    name: "saw no time advance",
+    report: (proof: AcquireWebProof) => ({
+      ...proof,
+      currentTime: [2, 2] as const,
+    }),
+  },
+  {
+    name: "decoded no new frame",
+    report: (proof: AcquireWebProof) => ({
+      ...proof,
+      decodedFrames: [84, 84] as const,
+    }),
+  },
+])
+  test(`a Web page that ${failure.name} fails at web-proof and is removed`, async () => {
+    const run = await runLane(
+      { hops: ["media"] },
+      { web: fakeWeb({ report: failure.report }).web },
+    );
+    assert.ok(Exit.isFailure(run.exit));
+    assert.equal(run.receipt.proof.failureStage, "web-proof");
+    assertCleaned(run);
+    assertPrivateReceipt(run.receiptText);
+  });
+
+test("a Web page that left Chromium open fails at web-cleanup", async () => {
+  const run = await runLane(
+    { hops: ["media"] },
+    { web: fakeWeb({ closes: false }).web },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "web-cleanup");
+  assertCleaned(run);
+});
+
+test("a Web selection that reaches a terminal clip fails at its kind and cancels the transfer", async () => {
+  const run = await runLane(
+    { hops: ["status", "notice:failed"] },
+    { web: fakeWeb().web },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "adapter-failed");
+  assert.deepEqual(run.putio.cancelled, [[newTransfer]]);
+  assert.equal(run.receipt.cleanup.verification, "verified");
+});
+
+test("a Web selection that never reaches media times out and cancels the transfer", async () => {
+  const run = await runLane(
+    { hops: ["status"], rest: "pending" },
+    { acquisitionMs: 300, web: fakeWeb({ settleMs: 20 }).web },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "acquisition-timeout");
+  assert.deepEqual(run.putio.cancelled, [[newTransfer]]);
+  assert.equal(run.receipt.cleanup.verification, "verified");
+  assert.deepEqual(run.receipt.proof.web?.cleanup, {
+    browserClosed: true,
+    contextClosed: true,
+    webClosed: true,
+  });
+});
+
+test("a transfer larger than the pin stops Stremio Web and is charged", async () => {
+  const size = Number(maxBytes) + 5000;
+  const run = await runLane(
+    { hops: ["status", "status", "status", "media"], size },
+    { web: fakeWeb({ settleMs: 100 }).web },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "size-exceeded");
+  assert.equal(run.receipt.proof.excessCharged, true);
+  assert.deepEqual(run.putio.cancelled, [[newTransfer]]);
+  assert.equal(run.ledger.reservedBytes, seededBytes + size);
 });

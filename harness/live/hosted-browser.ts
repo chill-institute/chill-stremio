@@ -15,6 +15,11 @@ import {
 import { movieAdvances } from "../native/desktop-contract.ts";
 import { versions } from "../versions.ts";
 import { startWeb } from "../web.ts";
+import {
+  AcquireWebNotice,
+  type AcquireWebInput,
+  type AcquireWebProof,
+} from "./acquire.ts";
 import { proveDecoded } from "./adapter.ts";
 import {
   pollListing,
@@ -403,5 +408,244 @@ export const proveOwnedWebPlayback = Effect.fn("live.owned.web")(
     });
   },
   Effect.timeout("8 minutes"),
+  Effect.scoped,
+);
+
+/** Compares a request path with a decoded path, as Stremio may escape `:`. */
+const samePath = (url: URL, path: string) => {
+  try {
+    return decodeURIComponent(url.pathname) === path;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Selects the pinned release row in the pinned Web client as a fresh guest and
+ * lets the page follow the adapter's redirects, retries and pending clips,
+ * selecting the same row again after each pending clip. The context refuses
+ * any other media URL on the adapter, so no other row can submit. Nothing is
+ * captured to disk.
+ */
+export const proveAcquiredWebPlayback = Effect.fn("live.acquire.web")(
+  function* (input: AcquireWebInput) {
+    const { web, browser, context } = yield* openGuestWeb(input.cleanup);
+    const manifest = new URL(input.manifestUrl);
+    const adapterOrigin = manifest.origin;
+    const personal = manifest.pathname.replace(/manifest\.json$/, "");
+    const selected = new URL(input.selectedUrl);
+    const observed = {
+      selections: 0,
+      otherSelections: 0,
+      statusRequests: 0,
+      pendingNotices: 0,
+      notice: undefined as string | undefined,
+      mediaAt: undefined as number | undefined,
+      playlists: 0,
+      segments: 0,
+      files: new Set<number>(),
+    };
+    let confined = true;
+    const page = yield* Effect.tryPromise(async () => {
+      await context.route("**/*", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        const headers = await request.allHeaders();
+        // Only the adapter may see the credential; nothing sends Authorization.
+        if (
+          headers.authorization ||
+          (url.origin !== adapterOrigin &&
+            (request.url().includes(input.credential) ||
+              JSON.stringify(headers).includes(input.credential)))
+        ) {
+          confined = false;
+          await route.abort();
+        } else if (
+          url.origin === adapterOrigin &&
+          url.pathname.startsWith(`${personal}play/`) &&
+          !(
+            url.pathname === selected.pathname &&
+            /^(?:\?wait=[0-9]{1,2})?$/.test(url.search)
+          )
+        ) {
+          // Another row's media URL never reaches the adapter.
+          observed.otherSelections++;
+          await route.abort();
+        } else if (
+          [web.origin, adapterOrigin, cinemetaOrigin].includes(url.origin) ||
+          isPutioMediaHost(url)
+        )
+          await route.continue();
+        else await route.abort();
+      });
+      context.on("request", (request) => {
+        const url = new URL(request.url());
+        if (isPutioMediaHost(url)) {
+          if (observed.mediaAt === undefined) {
+            observed.mediaAt = performance.now();
+            input.onMedia();
+          }
+          // The API's playlist URL names the file; CDN segment URLs do not.
+          const file = /^\/v2\/files\/([1-9][0-9]{0,15})\//.exec(
+            url.pathname,
+          )?.[1];
+          if (file) observed.files.add(Number(file));
+          return;
+        }
+        if (request.method() !== "GET" || url.origin !== adapterOrigin) return;
+        if (request.url() === input.selectedUrl) observed.selections++;
+        else if (url.pathname.startsWith(`${personal}status/`))
+          observed.statusRequests++;
+        else if (url.pathname.startsWith(`${personal}notice/`)) {
+          const notice = /^([a-z-]{1,32})\.m3u8$/.exec(
+            url.pathname.slice(`${personal}notice/`.length),
+          )?.[1];
+          if (notice === "pending") observed.pendingNotices++;
+          else if (notice) observed.notice ??= notice;
+        }
+      });
+      context.on("response", (response) => {
+        const url = new URL(response.url());
+        if (
+          response.request().method() !== "GET" ||
+          !isPutioMediaHost(url) ||
+          ![200, 206].includes(response.status())
+        )
+          return;
+        if (url.pathname.endsWith(".m3u8")) observed.playlists++;
+        else observed.segments++;
+      });
+      return guestPage(context);
+    });
+    input.onStage("installation");
+    yield* Effect.tryPromise(() =>
+      installAddon(page, web.origin, input.manifestUrl),
+    );
+
+    input.onStage("stream-listing");
+    const detail = `${web.origin}/#/detail/${input.detail.type}/${encodeURIComponent(input.detail.id)}/${encodeURIComponent(input.detail.videoId)}`;
+    let streamListings = 0;
+    // The pinned row's place among the rows with its name, as Stremio lists them.
+    const listed = yield* pollListing(input.listing, (poll) =>
+      Effect.tryPromise(async () => {
+        streamListings = poll;
+        const [response] = await Promise.all([
+          page.waitForResponse(
+            (response) => {
+              const url = new URL(response.url());
+              return (
+                url.origin === adapterOrigin &&
+                samePath(url, input.streamPath) &&
+                response.request().method() === "GET"
+              );
+            },
+            { timeout: 30_000 },
+          ),
+          poll === 1 ? page.goto(detail) : page.reload(),
+        ]);
+        if (response.status() !== 200) return undefined;
+        const rows = Schema.decodeUnknownSync(NamedStreams)(
+          await response.json(),
+        ).streams.filter((row) => row.name === input.rowName);
+        const pinned = rows.flatMap((row, index) =>
+          row.url === input.selectedUrl ? [index] : [],
+        );
+        const [index] = pinned;
+        return pinned.length === 1 && index !== undefined
+          ? { index, count: rows.length }
+          : undefined;
+      }).pipe(Effect.orElseSucceed(() => undefined)),
+    );
+    if (!listed)
+      return yield* Effect.fail(new Error("The pinned row was not listed"));
+
+    yield* input.beforeSelection;
+    return yield* Effect.tryPromise({
+      try: async (signal) => {
+        input.onStage("selection");
+        const rows = page
+          .getByText(input.rowName, { exact: true })
+          .filter({ visible: true });
+        let rowSelections = 0;
+        const select = async () => {
+          await expect(rows).toHaveCount(listed.count, { timeout: 30_000 });
+          await rows.nth(listed.index).click();
+          rowSelections++;
+        };
+        await select();
+        const selectedAt = performance.now();
+        input.onStage("acquisition");
+        let pendingSeen = 0;
+        while (observed.mediaAt === undefined) {
+          signal.throwIfAborted();
+          if (observed.otherSelections > 0) {
+            input.onStage("other-selection");
+            throw new Error("Another media URL was requested");
+          }
+          if (observed.notice !== undefined)
+            throw new AcquireWebNotice({ notice: observed.notice });
+          if (observed.pendingNotices > pendingSeen) {
+            pendingSeen = observed.pendingNotices;
+            // The same row rejoins the download once the clip leaves the
+            // player; the pinned title's page is opened again in case Stremio
+            // moved on to another video.
+            input.onStage("reselection");
+            await expect(page).not.toHaveURL(/#\/player\//, {
+              timeout: 60_000,
+            });
+            if (page.url() !== detail) await page.goto(detail);
+            await select();
+            input.onStage("acquisition");
+          }
+          await page.waitForTimeout(1000);
+        }
+        input.onStage("playback");
+        const video = page.locator("video");
+        const sample = () =>
+          video.evaluate((element: HTMLVideoElement) => ({
+            time: element.currentTime,
+            frames: element.getVideoPlaybackQuality().totalVideoFrames,
+          }));
+        await expect
+          .poll(
+            () =>
+              video
+                .evaluate((element: HTMLVideoElement) => element.readyState)
+                .catch(() => 0),
+            { timeout: 120_000 },
+          )
+          .toBeGreaterThanOrEqual(2);
+        const first = await sample();
+        await expect
+          .poll(async () => (await sample()).time, { timeout: 15_000 })
+          .toBeGreaterThan(first.time + 1);
+        const second = await sample();
+        assert.ok(second.frames > first.frames);
+        await expect
+          .poll(() => observed.playlists > 0 && observed.segments > 0)
+          .toBe(true);
+        assert.equal(observed.otherSelections, 0);
+        assert.equal(confined, true);
+        return {
+          client: versions.web,
+          browser: browser.version(),
+          streamListings,
+          rowSelections,
+          selections: observed.selections,
+          otherSelections: observed.otherSelections,
+          statusRequests: observed.statusRequests,
+          pendingNotices: observed.pendingNotices,
+          playlistResponses: observed.playlists,
+          segmentResponses: observed.segments,
+          playedFiles: [...observed.files],
+          currentTime: [first.time, second.time],
+          decodedFrames: [first.frames, second.frames],
+          selectionToMediaMs: observed.mediaAt - selectedAt,
+        } satisfies AcquireWebProof;
+      },
+      // A terminal notice keeps its type; the lane maps it to a stage.
+      catch: (error) => error,
+    });
+  },
   Effect.scoped,
 );

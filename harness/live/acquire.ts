@@ -14,7 +14,12 @@ import {
   writeRecoveryJournal,
   type Verification,
 } from "./lifecycle.ts";
-import { mediaLocation, validOrigin } from "./owned.ts";
+import {
+  mediaLocation,
+  validOrigin,
+  type Listing,
+  type OwnedWebCleanup,
+} from "./owned.ts";
 import { decodeVideo } from "./playback.ts";
 import * as putio from "./putio.ts";
 import { liveRunnerDirectory } from "./runner.ts";
@@ -101,6 +106,64 @@ export interface AcquireProvider {
   fileAbsent: (id: number) => Effect.Effect<boolean, unknown>;
 }
 
+/** A status clip other than pending that Stremio Web was sent to. */
+export class AcquireWebNotice extends Schema.TaggedError<AcquireWebNotice>()(
+  "AcquireWebNotice",
+  { notice: Schema.String },
+) {}
+
+export interface AcquireWebInput {
+  /** The personal manifest; it carries the credential. */
+  manifestUrl: string;
+  credential: string;
+  /** Stremio's detail route: the movie, or the series and the pinned episode. */
+  detail: { type: "movie" | "series"; id: string; videoId: string };
+  /** The stream list path on the adapter origin. */
+  streamPath: string;
+  rowName: string;
+  /** The pinned row's media URL; no other row may be selected. */
+  selectedUrl: string;
+  listing: Listing;
+  cleanup: OwnedWebCleanup;
+  onStage: (stage: string) => void;
+  /** Runs just before the first click; from then on the selection counts as sent. */
+  beforeSelection: Effect.Effect<void, unknown>;
+  /** Called once when the page first requests put.io media. */
+  onMedia: () => void;
+}
+
+export interface AcquireWebProof {
+  client: string;
+  browser: string;
+  streamListings: number;
+  /** Clicks on the pinned row: the first and one after each pending clip. */
+  rowSelections: number;
+  /** GET requests for the pinned media URL, the page's own retries included. */
+  selections: number;
+  /** Requests for any other media URL on the adapter, each refused. */
+  otherSelections: number;
+  statusRequests: number;
+  pendingNotices: number;
+  playlistResponses: number;
+  segmentResponses: number;
+  /** put.io file IDs the page's media requests name; never in the receipt. */
+  playedFiles: readonly number[];
+  currentTime: readonly [number, number];
+  decodedFrames: readonly [number, number];
+  selectionToMediaMs: number;
+}
+
+/** Stremio Web makes the selection only when `LIVE_ACQUIRE_WEB` is `1`. */
+export const acquireWebStep = (
+  value: string | undefined,
+): AcquireOptions["web"] =>
+  value?.trim() === "1"
+    ? (input) =>
+        Effect.tryPromise(() => import("./hosted-browser.ts")).pipe(
+          Effect.flatMap((browser) => browser.proveAcquiredWebPlayback(input)),
+        )
+    : undefined;
+
 export interface AcquireOptions {
   credential: string;
   /** The deployed adapter's origin. */
@@ -128,6 +191,8 @@ export interface AcquireOptions {
   artifact: string;
   journal: string;
   timing?: Partial<typeof defaultTiming>;
+  /** Selects the pinned row in Stremio Web instead of the lane's own GET. */
+  web?: (input: AcquireWebInput) => Effect.Effect<AcquireWebProof, unknown>;
 }
 
 const defaultTiming = {
@@ -137,6 +202,8 @@ const defaultTiming = {
   decodeMs: 2 * 60_000,
   verifyAttempts: 4,
   verifyIntervalMs: 1_000,
+  /** Stremio Web's time beyond the acquisition limit: setup, listing and playback. */
+  webMs: 8 * 60_000,
 };
 
 /** put.io timestamps carry no zone and are UTC. */
@@ -202,6 +269,9 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
   // Set once more than one candidate was seen; nothing is then attributed by
   // baseline difference, so cleanup stays uncertain rather than guessing.
   let ambiguous = false;
+  // Set once Stremio Web's selection left a transfer beside the attributed
+  // one; it is never attributed, so its acquisition stays pending.
+  let unattributed = false;
   // Set once the transfer finished or served media, so it must have a file.
   let fileExpected = false;
   let pin: {
@@ -368,7 +438,7 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     if (attributed !== undefined && !attempt.transfers.includes(attributed))
       attempt.transfers.push(attributed);
     // The adapter named a transfer, or put.io lists exactly one new one.
-    if (statusId !== undefined || attributed !== undefined)
+    if ((statusId !== undefined || attributed !== undefined) && !unattributed)
       attempt.pending = attempt.pending.filter(
         (item) => item.kind !== "transfer",
       );
@@ -478,6 +548,208 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
         Option.isSome(transfer) ? observe(transfer.value) : Effect.void,
       ),
     );
+
+  /** Checks the played file is the pinned episode inside the run's transfer. */
+  const checkEpisode = Effect.fn("live.acquire.checkEpisode")(function* (
+    transferId: number,
+    played: number | undefined,
+  ) {
+    if (!pin.episode) return;
+    // The adapter picks the episode from what put.io saved; this checks its pick.
+    stage = "episode-identity";
+    const saved = transferFiles.find(
+      (entry) => entry.transfer === transferId && entry.resolution === "owned",
+    );
+    const tree = saved && savedTrees.get(saved.file);
+    if (!tree || played === undefined) return yield* fail(stage);
+    if (pin.pack)
+      proof.packVideos = tree.filter(
+        (entry) => entry.fileType === "VIDEO",
+      ).length;
+    const file = tree.find((entry) => entry.id === played);
+    const named = file && namedEpisode(file.name);
+    proof.playedInTransfer = file !== undefined;
+    proof.playedEpisodeMatches =
+      named?.season === pin.episode.season &&
+      named.episode === pin.episode.episode;
+    if (!proof.playedInTransfer || !proof.playedEpisodeMatches)
+      return yield* fail(stage);
+  });
+
+  /**
+   * Counts the transfers created since the baseline and attributes the only
+   * one. A second one fails, is never attributed and leaves cleanup uncertain.
+   */
+  const checkTransfers = Effect.fn("live.acquire.checkTransfers")(function* (
+    listed: readonly ProviderTransfer[],
+    web: Record<string, unknown>,
+  ) {
+    for (const transfer of listed)
+      if (
+        !baselineTransfers.has(transfer.id) &&
+        createdSince(transfer.created_at)
+      )
+        freshTransfers.add(transfer.id);
+    recovery.freshTransfers = [...freshTransfers];
+    web.transfersCreated = freshTransfers.size;
+    if (freshTransfers.size > 1) {
+      ambiguous = true;
+      recovery.ambiguous = true;
+      if (!unattributed && attributed !== undefined)
+        attempt.pending.push({
+          sequence: attempt.nextSequence++,
+          kind: "transfer",
+        });
+      unattributed = true;
+      yield* checkpoint;
+      return yield* fail("web-transfers");
+    }
+    const [only] = freshTransfers;
+    if (attributed !== undefined || only === undefined) return;
+    attributed = only;
+    proof.attribution = "baseline-difference";
+    proof.selectionToTransferMs = since();
+    recovery.attributedTransfer = only;
+    attempt.transfers.push(only);
+    attempt.pending = attempt.pending.filter(
+      (item) => item.kind !== "transfer",
+    );
+    yield* checkpoint;
+  });
+
+  /**
+   * While Stremio Web waits, lists transfers on the poll interval, gates the
+   * attributed one's size and ends the wait 20 minutes after the selection.
+   * It only ever fails, which stops the page.
+   */
+  const watchWeb = Effect.fn("live.acquire.watchWeb")(function* (
+    mediaReached: () => boolean,
+    web: Record<string, unknown>,
+  ) {
+    for (;;) {
+      yield* Effect.sleep(timing.pollIntervalMs);
+      if (!selectionSent) continue;
+      // A failed listing is read again on the next interval.
+      const listed = yield* Effect.option(provider.listTransfers());
+      if (Option.isSome(listed)) yield* checkTransfers(listed.value, web);
+      if (attributed !== undefined) yield* sizeGate(attributed);
+      if (
+        !mediaReached() &&
+        performance.now() >= selectionStarted + timing.acquisitionMs
+      )
+        return yield* fail("acquisition-timeout");
+    }
+  });
+
+  /** Selects the pinned row in Stremio Web, which follows the adapter's redirects. */
+  const playInWeb = Effect.fn("live.acquire.playInWeb")(function* (
+    step: NonNullable<AcquireOptions["web"]>,
+    playUrl: string,
+  ) {
+    stage = "web";
+    const cleanup = {
+      browserClosed: false,
+      contextClosed: false,
+      webClosed: false,
+    };
+    const web: Record<string, unknown> = { cleanup, transfersCreated: 0 };
+    proof.web = web;
+    let mediaReached = false;
+    const videoId = pin.episode
+      ? `${pin.imdbId}:${pin.episode.season}:${pin.episode.episode}`
+      : pin.imdbId;
+    const type = pin.episode ? "series" : "movie";
+    const played = yield* Effect.raceFirst(
+      step({
+        manifestUrl: `${options.origin}${personal}/manifest.json`,
+        credential: options.credential,
+        detail: { type, id: pin.imdbId, videoId },
+        streamPath: `${personal}/stream/${type}/${videoId}.json`,
+        rowName: pin.pack ? "Download season to put.io" : "Download to put.io",
+        selectedUrl: playUrl,
+        listing: { attempts: 3, intervalMs: timing.pollIntervalMs },
+        cleanup,
+        onStage: (value) => {
+          stage = `web-${value}`;
+        },
+        beforeSelection: Effect.sync(() => {
+          selectionSent = true;
+          selectionStarted = performance.now();
+          attempt.pending.push({
+            sequence: attempt.nextSequence++,
+            kind: "transfer",
+          });
+        }).pipe(Effect.andThen(checkpoint)),
+        onMedia: () => {
+          mediaReached = true;
+        },
+      }).pipe(
+        Effect.timeout(timing.acquisitionMs + timing.webMs),
+        Effect.catch((error) =>
+          Effect.fail(
+            error instanceof AcquireWebNotice
+              ? fail(
+                  `adapter-${statusMediaKinds.find((kind) => kind === error.notice) ?? "notice"}`,
+                )
+              : error,
+          ),
+        ),
+      ),
+      watchWeb(() => mediaReached, web),
+    );
+    fileExpected = true;
+
+    stage = "web-proof";
+    // Copied field by field so nothing else the step returns reaches the receipt.
+    Object.assign(web, {
+      client: played.client,
+      browser: played.browser,
+      streamListings: played.streamListings,
+      rowSelections: played.rowSelections,
+      selections: played.selections,
+      otherSelections: played.otherSelections,
+      statusRequests: played.statusRequests,
+      pendingNotices: played.pendingNotices,
+      playlistResponses: played.playlistResponses,
+      segmentResponses: played.segmentResponses,
+      playedFiles: new Set(played.playedFiles).size,
+      currentTime: [...played.currentTime],
+      decodedFrames: [...played.decodedFrames],
+    });
+    proof.selectionToMediaMs = Math.round(played.selectionToMediaMs);
+    if (
+      played.rowSelections < 1 ||
+      played.selections < 1 ||
+      played.otherSelections !== 0 ||
+      played.playlistResponses < 1 ||
+      played.segmentResponses < 1 ||
+      !(played.currentTime[1] > played.currentTime[0]) ||
+      !(played.decodedFrames[1] > played.decodedFrames[0])
+    )
+      return yield* fail(stage);
+
+    stage = "web-transfers";
+    yield* checkTransfers(yield* provider.listTransfers(), web);
+    if (attributed === undefined) return yield* fail("attribution");
+
+    stage = "completion";
+    yield* observe(yield* provider.getTransfer(attributed));
+    if (!sizeSeen) return yield* fail("size-unknown");
+    stage = "record";
+    yield* record;
+    const files = [...new Set(played.playedFiles)];
+    const [playedFile] = files;
+    if (files.length !== 1) return yield* fail("web-played-file");
+    proof.locationNamesFile = transferFiles.some(
+      (entry) => entry.file === playedFile,
+    );
+    yield* checkEpisode(attributed, playedFile);
+    stage = "cancel";
+    yield* cancelOnce(attempt.transfers);
+    stage = "web-cleanup";
+    if (!Object.values(cleanup).every(Boolean)) return yield* fail(stage);
+    web.status = "passed";
+  });
 
   const started = performance.now();
 
@@ -616,6 +888,12 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     proof.headStatus = head.status;
     if (head.status !== 200) return yield* fail(stage);
 
+    if (options.web) {
+      yield* playInWeb(options.web, playUrl);
+      stage = "done";
+      return;
+    }
+
     stage = "selection";
     let location = "";
     const transfer = yield* trackAcquisition(
@@ -710,31 +988,13 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     proof.locationNamesFile = transferFiles.some((entry) =>
       media.target?.pathname.includes(`/files/${entry.file}/`),
     );
-    if (pin.episode) {
-      // The adapter picks the episode from what put.io saved; this checks its pick.
-      stage = "episode-identity";
-      const saved = transferFiles.find(
-        (entry) =>
-          entry.transfer === transfer.id && entry.resolution === "owned",
-      );
-      const played = /\/files\/([1-9][0-9]{0,15})\//.exec(
-        media.target?.pathname ?? "",
-      )?.[1];
-      const tree = saved && savedTrees.get(saved.file);
-      if (!tree || !played) return yield* fail(stage);
-      if (pin.pack)
-        proof.packVideos = tree.filter(
-          (entry) => entry.fileType === "VIDEO",
-        ).length;
-      const file = tree.find((entry) => entry.id === Number(played));
-      const named = file && namedEpisode(file.name);
-      proof.playedInTransfer = file !== undefined;
-      proof.playedEpisodeMatches =
-        named?.season === pin.episode.season &&
-        named.episode === pin.episode.episode;
-      if (!proof.playedInTransfer || !proof.playedEpisodeMatches)
-        return yield* fail(stage);
-    }
+    const played = /\/files\/([1-9][0-9]{0,15})\//.exec(
+      media.target?.pathname ?? "",
+    )?.[1];
+    yield* checkEpisode(
+      transfer.id,
+      played === undefined ? undefined : Number(played),
+    );
     stage = "cancel";
     yield* cancelOnce(attempt.transfers);
 
@@ -867,6 +1127,7 @@ if (import.meta.main) {
         decodeVideo(url).pipe(Effect.provide(NodeServices.layer)),
       artifact: `artifacts/live-acquire-${stamp}`,
       journal: `.cache/live/recovery/acquire-${stamp}.json`,
+      web: acquireWebStep(env("LIVE_ACQUIRE_WEB")),
     }).pipe(
       Effect.tap((outcome) =>
         Effect.sync(() => {
