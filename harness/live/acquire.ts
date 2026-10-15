@@ -422,6 +422,28 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
         if (item.id !== entry.file) savedFiles.add(item.id);
     }
     recovery.savedFiles = [...savedFiles];
+    // Counts only: what put.io saved, and how many names read as the pinned episode.
+    const savedTypes: Record<string, number> = {};
+    let episodeNames = 0;
+    for (const tree of savedTrees.values())
+      for (const item of tree ?? []) {
+        const type =
+          item.fileType && /^[A-Z_]{1,32}$/.test(item.fileType)
+            ? item.fileType
+            : "unknown";
+        savedTypes[type] = (savedTypes[type] ?? 0) + 1;
+        const named = pin.episode && namedEpisode(item.name);
+        if (
+          named &&
+          named.season === pin.episode?.season &&
+          named.episode === pin.episode.episode
+        )
+          episodeNames++;
+      }
+    if (savedTrees.size) {
+      proof.savedTypes = savedTypes;
+      if (pin.episode) proof.savedEpisodeNames = episodeNames;
+    }
     yield* checkpoint;
   });
 

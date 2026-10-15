@@ -485,6 +485,9 @@ count, and cleanup acknowledgement and verification. `release` is `movie`,
 `episode` or `season-pack`; for an episode `playedInTransfer` and
 `playedEpisodeMatches` record the identity check, and for a season pack
 `packVideos` counts the video files the transfer saved, samples included.
+Once the run has seen what the transfer saved, `savedTypes` counts those
+entries by put.io type and, for an episode pin, `savedEpisodeNames` counts the
+names that read as the pinned episode.
 `locationNamesFile` is `false` when the transfer saved a folder. It holds no
 credential, token, IMDb ID, release ID, title, filename, magnet, info hash, provider ID or
 URL.

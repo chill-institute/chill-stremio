@@ -480,6 +480,8 @@ const Receipt = Schema.fromJsonString(
       playedInTransfer: Schema.optional(Schema.Boolean),
       playedEpisodeMatches: Schema.optional(Schema.Boolean),
       packVideos: Schema.optional(Schema.Number),
+      savedTypes: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
+      savedEpisodeNames: Schema.optional(Schema.Number),
       selectionToFirstStatusMs: Schema.optional(Schema.Number),
       selectionToCompletionMs: Schema.optional(Schema.Number),
       selectionToMediaMs: Schema.optional(Schema.Number),
@@ -1089,6 +1091,12 @@ test("a pinned season pack plays the pinned episode from its folder and removes 
   assert.equal(run.receipt.proof.playedEpisodeMatches, true);
   // Two episodes and the sample.
   assert.equal(run.receipt.proof.packVideos, 3);
+  assert.deepEqual(run.receipt.proof.savedTypes, {
+    VIDEO: 3,
+    FOLDER: 1,
+    FILE: 1,
+  });
+  assert.equal(run.receipt.proof.savedEpisodeNames, 1);
   assert.deepEqual(run.decoded, [
     `${mediaOrigin}/v2/files/${packPinnedEpisode}/hls/media.m3u8?oauth_token=fixture-grant`,
   ]);
