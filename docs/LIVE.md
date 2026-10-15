@@ -451,8 +451,9 @@ The probe then:
    within the adapter's own limits of 32 folders, 8 levels and 5000 entries
 10. for an episode or season pack, reads the file the playlist names. It must
     be the saved file or under the saved folder, and its name must carry the
-    pinned season and episode, as `S01E02` or `1x02`, and not a range, or the
-    probe fails at `episode-identity`
+    pinned season and episode, as `S01E02` or `1x02`, and not a range such as
+    `S01E02E03`, `S01E02.E03`, `S01E02-03` or `1x02-1x03`, or the probe fails
+    at `episode-identity`; a resolution such as `S01E02-720p` is not a range
 11. cancels the transfer to stop seeding, and decodes up to 10 seconds of the
     playlist's video with FFmpeg, which must decode frames
 

@@ -57,17 +57,22 @@ interface SavedEntry {
 
 /**
  * The one season and episode a file name carries as `S01E02` or `1x02`;
- * a multi-episode name carries none.
+ * a multi-episode name carries none. A `-720p` after the episode is a
+ * resolution, not an end episode.
  */
 export function namedEpisode(name: string) {
-  const match =
-    /(?<![a-z0-9])s(\d{1,4})[ ._-]?e(\d{1,4})(?:-?e(\d{1,4})|-(\d{1,4}))?(?![0-9])/i.exec(
+  const groups = (
+    /(?<![a-z0-9])s(?<season>\d{1,4})[ ._-]?e(?<episode>\d{1,4})(?:[ ._-]?e(?<end>\d{1,4})|-(?<last>\d{1,4})(?![0-9pi]))?(?![0-9])/i.exec(
       name,
-    ) ?? /(?<![a-z0-9])(\d{1,2})x(\d{2,3})(?![0-9a-z])/i.exec(name);
-  if (!match) return undefined;
-  const season = Number(match[1]);
-  const episode = Number(match[2]);
-  const end = match[3] ?? match[4];
+    ) ??
+    /(?<![a-z0-9])(?<season>\d{1,2})x(?<episode>\d{2,3})(?:-(?:\d{1,2}x)?(?<end>\d{2,3}))?(?![0-9a-z])/i.exec(
+      name,
+    )
+  )?.groups;
+  if (!groups) return undefined;
+  const season = Number(groups.season);
+  const episode = Number(groups.episode);
+  const end = groups.end ?? groups.last;
   if (end !== undefined && Number(end) !== episode) return undefined;
   return { season, episode };
 }
