@@ -36,8 +36,10 @@ export const submissionBudgetMs =
 
 /** How long a listing waits for its optional lookups once its release rows are ready. */
 const lookupGraceMs = 500;
-/** The least time a listing gives its optional lookups, so a fast release search cannot cut them short. */
+/** The least time a listing gives the owned-video lookup, so a fast release search cannot cut it short. */
 const lookupFloorMs = 2_000;
+/** Engine's season lookup takes seconds with its caches cold, so it gets a later floor. */
+const seasonLookupFloorMs = 5_000;
 
 /** Release IDs with this prefix play a video already in the account, by file ID. */
 export const ownedPrefix = "owned:";
@@ -52,13 +54,12 @@ export function ownedFileId(releaseId: string) {
 const withinGrace = Effect.fn("Selection.withinGrace")(function* <A>(
   lookup: Fiber.Fiber<A> | undefined,
   startedAt: number,
+  floorMs: number,
 ) {
   if (!lookup) return undefined;
   const now = yield* Clock.currentTimeMillis;
   const result = yield* Fiber.join(lookup).pipe(
-    Effect.timeoutOption(
-      Math.max(lookupGraceMs, startedAt + lookupFloorMs - now),
-    ),
+    Effect.timeoutOption(Math.max(lookupGraceMs, startedAt + floorMs - now)),
   );
   yield* Fiber.interrupt(lookup);
   return Option.getOrUndefined(result);
@@ -93,7 +94,10 @@ export function createSelection(options: { base: string }) {
       : undefined;
     const releases = yield* discovery.releases(target, subject);
     const [videos, pack] = yield* Effect.all(
-      [withinGrace(owned, startedAt), withinGrace(lookup, startedAt)],
+      [
+        withinGrace(owned, startedAt, lookupFloorMs),
+        withinGrace(lookup, startedAt, seasonLookupFloorMs),
+      ],
       { concurrency: "unbounded" },
     );
     const rows: Stream[] = (videos ?? []).map((video) => ({

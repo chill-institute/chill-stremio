@@ -104,9 +104,9 @@ Gaps:
   `hosted:live`'s Stremio Web step has no recorded pass since v2.0.0, and
   playing an acquired release in a Stremio client through the deployed adapter
   remains unproven. Owner: chill-institute/chill-stremio.
-- With Engine's caches cold, its season lookup can outlast the episode search
-  and the listing's wait, so a first visit to an episode may list no
-  **Download season to put.io** row; a later visit lists it. Owner: chill-institute/chill-stremio.
+- A cold season lookup slower than the listing's five-second wait still leaves
+  the **Download season to put.io** row out of a first visit to an episode; a
+  later visit lists it. No lane times the cold lookup against production Engine. Owner: chill-institute/chill-stremio.
 - CI artifacts expire after 7 days; archive evidence needed longer. Owner: chill-institute/chill-stremio.
 
 ## Work and verify

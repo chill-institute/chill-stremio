@@ -291,11 +291,12 @@ Engine offers a season pack for that episode's season. Its first line reads
 `Season <n> pack` and the resolution, codec and quality Engine reports; the
 second gives the indexer, seeders and size. The adapter asks Engine with
 `GetTVShowSeasonDownloads` alongside the episode search and, once the episode
-rows are ready, waits at most half a second more, or until two seconds after
-the request began if that is later. A slower, failed or refused
-lookup leaves the row out without changing the episode rows, and so does a pack
-that the episode search already lists. The 100-row limit applies to episode
-rows only. Movies never show the row.
+rows are ready, waits at most half a second more, or until five seconds after
+the request began if that is later, because Engine can take several seconds to
+answer with its caches cold. An earlier answer ends the wait. A slower, failed
+or refused lookup leaves the row out without changing the episode rows, and so
+does a pack that the episode search already lists. The 100-row limit applies to
+episode rows only. Movies never show the row.
 
 Selecting the row asks `GetTVShowSeasonDownloads` again and submits the pack
 only while Engine still offers the same one; otherwise the player shows

@@ -2312,12 +2312,12 @@ test("a season lookup Engine refuses or never answers leaves the episode rows", 
       (await episodeRows(f)).map(({ name }) => name),
       ["Download to put.io"],
     );
-    assert.ok(performance.now() - started < 3_000);
+    assert.ok(performance.now() - started < 5_500);
     await until(() => f.state.abandonedSeasonLookups === 1);
   } finally {
     await f.close();
   }
-});
+}, 10_000);
 
 test("a season lookup slower than the episode search still lists its pack", async () => {
   const f = await fixture();
@@ -2334,6 +2334,46 @@ test("a season lookup slower than the episode search still lists its pack", asyn
     await f.close();
   }
 });
+
+const timedEpisodeRows = async (f: Fixture) => {
+  const started = performance.now();
+  const names = (await episodeRows(f)).map(({ name }) => name);
+  return { names, elapsedMs: performance.now() - started };
+};
+
+test("a cold season lookup still lists its pack within five seconds of the request", async () => {
+  const f = await fixture();
+  try {
+    f.state.seasonPack = seasonPack;
+    // Search answers at once; Engine's cold season lookup takes four seconds.
+    f.state.seasonDelayMs = 4_000;
+    const cold = await timedEpisodeRows(f);
+    assert.deepEqual(cold.names, [
+      "Download to put.io",
+      "Download season to put.io",
+    ]);
+    assert.ok(cold.elapsedMs < 5_500, `${cold.elapsedMs} ms`);
+    f.state.seasonDelayMs = 0;
+    const warm = await timedEpisodeRows(f);
+    assert.deepEqual(warm.names, cold.names);
+    assert.ok(warm.elapsedMs < 1_000, `${warm.elapsedMs} ms`);
+  } finally {
+    await f.close();
+  }
+}, 10_000);
+
+test("a season lookup slower than five seconds is left out", async () => {
+  const f = await fixture();
+  try {
+    f.state.seasonPack = seasonPack;
+    f.state.seasonDelayMs = 7_000;
+    const { names, elapsedMs } = await timedEpisodeRows(f);
+    assert.deepEqual(names, ["Download to put.io"]);
+    assert.ok(elapsedMs < 5_500, `${elapsedMs} ms`);
+  } finally {
+    await f.close();
+  }
+}, 10_000);
 
 test("a season pack plays the one video Engine names as the requested episode", async () => {
   const f = await fixture();
@@ -2700,6 +2740,22 @@ test("an account lookup slower than its grace is left out", async () => {
     await f.close();
   }
 });
+
+test("the account lookup keeps its two seconds while a cold season lookup runs longer", async () => {
+  const f = await fixture();
+  try {
+    f.state.ownedVideos = [ownedVideo(77n)];
+    f.state.seasonPack = seasonPack;
+    f.state.ownedDelayMs = 3_000;
+    f.state.seasonDelayMs = 4_000;
+    assert.deepEqual(
+      (await episodeRows(f)).map(({ name }) => name),
+      ["Download to put.io", "Download season to put.io"],
+    );
+  } finally {
+    await f.close();
+  }
+}, 10_000);
 
 test("a fast release search still gives the account and season lookups two seconds", async () => {
   const f = await fixture();
