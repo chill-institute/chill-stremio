@@ -118,6 +118,17 @@ export class TransferTreeLimit extends Schema.TaggedError<TransferTreeLimit>()(
   {},
 ) {}
 
+/** A finished download still holds a video put.io has not typed yet. */
+export class TransferFilesUntyped extends Schema.TaggedError<TransferFilesUntyped>()(
+  "TransferFilesUntyped",
+  {},
+) {}
+
+// put.io types a new file as a plain file for its first seconds.
+const untypedVideo = (file: { fileType: string; name: string }) =>
+  file.fileType === "FILE" &&
+  /\.(avi|m4v|mkv|mov|mp4|ts|webm|wmv)$/i.test(file.name);
+
 const nameTokens = (name: string) =>
   name
     .toLowerCase()
@@ -230,6 +241,7 @@ export const inspectTransferFiles = Effect.fn(
       (file) => file.id === transfer.fileId,
     );
     if (!result) return [];
+    if (untypedVideo(result)) return yield* new TransferFilesUntyped();
     if (result.fileType === "VIDEO")
       return [
         {
@@ -243,6 +255,7 @@ export const inspectTransferFiles = Effect.fn(
     const visited = new Set<bigint>([transfer.saveParentId]);
     const fileIds = new Set<bigint>();
     const videos: AcquiredVideo[] = [];
+    let untyped = false;
     let fileCount = destination.files.length;
     while (pending.length) {
       const next = pending.shift();
@@ -269,8 +282,10 @@ export const inspectTransferFiles = Effect.fn(
             depth: next.depth + 1,
             sample: next.sample || sampleFolder(file.name),
           });
+        else if (untypedVideo(file)) untyped = true;
       }
     }
+    if (untyped) return yield* new TransferFilesUntyped();
     return videos;
   },
   Effect.timeoutOrElse({

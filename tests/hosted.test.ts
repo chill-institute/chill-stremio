@@ -2328,6 +2328,32 @@ test("a season pack put.io is still completing waits for its files instead of pl
   }
 });
 
+test("a finished download waits while put.io has not typed its videos yet", async () => {
+  const f = await fixture();
+  try {
+    f.state.seasonPack = seasonPack;
+    // put.io types a new file as a plain file for its first seconds.
+    f.state.folders.set(
+      20n,
+      packEpisodes.map((file) => ({ ...file, fileType: "FILE" })),
+    );
+    let responded = false;
+    const status = location(`${f.base()}/status/90/1/2.m3u8`).then((url) => {
+      responded = true;
+      return url;
+    });
+    await sleep(300);
+    assert.equal(responded, false);
+    f.state.folders.set(20n, packEpisodes);
+    assert.equal(
+      await status,
+      "https://media.fixture.test/video-22?token=fixture-playback-secret",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("a season pack asks for a file choice unless exactly one video is the episode", async () => {
   const f = await fixture();
   const status = () => location(`${f.base()}/status/90/1/2.m3u8`);

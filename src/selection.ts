@@ -161,7 +161,12 @@ export function createSelection(options: { base: string }) {
       releaseInfo: episode !== undefined,
     }).pipe(
       Effect.catchTag("TransferTreeLimit", () => Effect.succeed(undefined)),
+      Effect.catchTag("TransferFilesUntyped", () =>
+        Effect.succeed("untyped" as const),
+      ),
     );
+    if (files === "untyped")
+      return { status: "pending" } satisfies PlaybackResult;
     if (!files) return { status: "select-file" } satisfies PlaybackResult;
     const features = files.filter((video) => !video.sample);
     const candidates = episode
