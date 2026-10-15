@@ -446,28 +446,30 @@ The probe then:
 8. requires the final redirect to be an HLS playlist on the put.io API origin,
    as the owned video probe does, not a status clip, and put.io to have
    reported the transfer's size, or fails at `size-unknown`
-9. lists transfers again and records the transfer's file and save folder
-10. for an episode or season pack, reads the file the playlist names and the
-    transfer's saved file or folder tree from put.io, within the adapter's own
-    limits of 32 folders, 8 levels and 5000 entries. The played file must be
-    in that tree and its name must carry the pinned season and episode, as
-    `S01E02` or `1x02`, and not a range, or the probe fails at
-    `episode-identity`
+9. lists transfers again and records the transfer's file and save folder,
+   and, when that file is a folder the run created, every entry under it,
+   within the adapter's own limits of 32 folders, 8 levels and 5000 entries
+10. for an episode or season pack, reads the file the playlist names. It must
+    be the saved file or under the saved folder, and its name must carry the
+    pinned season and episode, as `S01E02` or `1x02`, and not a range, or the
+    probe fails at `episode-identity`
 11. cancels the transfer to stop seeding, and decodes up to 10 seconds of the
     playlist's video with FFmpeg, which must decode frames
 
-Every exit after the GET records the transfer's file before cancelling. Cleanup
-cancels only the attributed transfer, again while put.io still lists it, since
-cancelling a seeding transfer only stops it, and deletes its file only when that file
-is not in the baseline, sits in the transfer's save folder and was created
+Every exit after the GET records the transfer's file, and lists everything
+under a saved folder the run created, before cancelling. Cleanup cancels only
+the attributed transfer, again while put.io still lists it, since cancelling a
+seeding transfer only stops it, and deletes its file only when that file is not
+in the baseline, sits in the transfer's save folder and was created
 during the run. A season pack saves a folder, and deleting it removes the
 tree. Afterwards put.io must no longer list the transfer and must answer `404`
 for the file, including a file that already answered `404` when it was
 recorded, and for every entry the run found under a saved folder. The
 receipt's `cleanup.verification` is `verified` only then;
 `acknowledged` alone does not pass. A recorded file the run cannot prove it
-created, or a finished transfer whose file was never recorded, leaves
-verification `unverified`; a GET with no attributable transfer leaves cleanup
+created, a saved folder whose tree could not be listed within those limits, or
+a finished transfer whose file was never recorded, leaves verification
+`unverified`; a GET with no attributable transfer leaves cleanup
 `uncertain`. As in the owned video probe, the playlist URL is a signed media
 grant on FFmpeg's command line; run the lane only on a host reserved for the
 operator.

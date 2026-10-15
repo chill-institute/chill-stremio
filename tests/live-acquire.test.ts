@@ -77,6 +77,10 @@ interface FakeOptions {
   played?: number;
   /** Deleting a folder leaves its entries behind. */
   orphanEntries?: boolean;
+  /** Folder reads answer with an error. */
+  folderFails?: boolean;
+  /** The transfer saves entries dated before the run, as a retained file is. */
+  savedBefore?: boolean;
 }
 
 interface FakeFile {
@@ -177,11 +181,19 @@ function fakePutio(options: FakeOptions = {}) {
           : undefined;
       }),
     listFolder: (id) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         events.push("folder");
-        return [...files]
-          .filter(([, file]) => file.parent === id)
-          .map(([id, file]) => ({ id, name: file.name, fileType: file.type }));
+        if (options.folderFails)
+          return Effect.fail(new Error("put.io HTTP 502"));
+        return Effect.succeed(
+          [...files]
+            .filter(([, file]) => file.parent === id)
+            .map(([id, file]) => ({
+              id,
+              name: file.name,
+              fileType: file.type,
+            })),
+        );
       }),
     // Deleting a folder deletes everything under it.
     deleteFiles: (ids) =>
@@ -210,7 +222,7 @@ function fakePutio(options: FakeOptions = {}) {
   const complete = (id: number) => {
     const transfer = transfers.get(id);
     if (!transfer || transfer.file_id) return;
-    const created = providerNow();
+    const created = options.savedBefore ? old : providerNow();
     const save = (
       id: number,
       parent: number,
@@ -263,8 +275,12 @@ type Hop =
   | `notice:${string}`;
 
 interface Script {
-  /** "swapped" lists each series release under the other row's name. */
-  rows?: "pinned" | "missing" | "swapped";
+  /**
+   * "swapped" lists each series release under the other row's name;
+   * "other-episode" and "movie-path" list the pinned releases with another
+   * episode's target or under the movie path.
+   */
+  rows?: "pinned" | "missing" | "swapped" | "other-episode" | "movie-path";
   /** Status URLs carry the episode, as the adapter's do for a season pack. */
   statusEpisode?: boolean;
   play?: "status" | "reuse" | "lost" | "direct" | "direct-ambiguous";
@@ -346,14 +362,18 @@ async function fakeServices(
         return;
       }
       if (path === `/stream/series/${imdbId}:1:2.json`) {
-        const play = (release: string) =>
-          `${base}/play/series/${encodeURIComponent(episodeTarget)}/${encodeURIComponent(release)}.m3u8`;
+        const play = (release: string, decoy = false) =>
+          `${base}/play/${!decoy && script.rows === "movie-path" ? "movie" : "series"}/${encodeURIComponent(
+            !decoy && script.rows === "other-episode"
+              ? `chill:episode:${imdbId}:1:3`
+              : episodeTarget,
+          )}/${encodeURIComponent(release)}.m3u8`;
         const swapped = script.rows === "swapped";
         const streams = [
           {
             name: "Download to put.io",
             title: "Decoy",
-            url: play(decoyReleaseId),
+            url: play(decoyReleaseId, true),
           },
           ...(script.rows === "missing"
             ? []
@@ -1093,12 +1113,31 @@ test("a season folder whose entries outlive its deletion leaves cleanup unverifi
   assert.equal(run.receipt.cleanup.verification, "present");
 });
 
-for (const [label, pin] of [
-  ["a season pack", packPin],
-  ["an episode release", episodePin],
+for (const [label, pin, rows] of [
+  ["a season pack pin never selects the other kind of row", packPin, "swapped"],
+  [
+    "an episode release pin never selects the other kind of row",
+    episodePin,
+    "swapped",
+  ],
+  [
+    "a season pack pin never selects another episode's row",
+    packPin,
+    "other-episode",
+  ],
+  [
+    "an episode release pin never selects another episode's row",
+    episodePin,
+    "other-episode",
+  ],
+  [
+    "an episode release pin never selects a movie row",
+    episodePin,
+    "movie-path",
+  ],
 ] as const)
-  test(`${label} pin never selects the other kind of row`, async () => {
-    const run = await runLane({ rows: "swapped" }, { pin });
+  test(label, async () => {
+    const run = await runLane({ rows }, { pin });
     assert.ok(Exit.isFailure(run.exit));
     assert.equal(run.receipt.proof.failureStage, "pinned-row-missing");
     assert.equal(run.receipt.proof.pinnedRow, false);
@@ -1171,6 +1210,47 @@ for (const identity of [
     assertCleaned(run);
     assertPrivateReceipt(run.receiptText);
   });
+
+test("a season pack failing before the identity check still checks every saved entry", async () => {
+  for (const [putio, verification] of [
+    [{ saved: "season" }, "verified"],
+    [{ saved: "season", orphanEntries: true }, "present"],
+    [{ saved: "season", folderFails: true }, "unverified"],
+  ] satisfies [FakeOptions, string][]) {
+    const run = await runLane(
+      { statusEpisode: true, hops: ["media-notice"] },
+      { pin: packPin, putio },
+    );
+    assert.ok(Exit.isFailure(run.exit));
+    assert.equal(run.receipt.proof.failureStage, "location");
+    assert.deepEqual(run.putio.deleted, [[newFile]]);
+    assert.ok(!run.putio.transfers.has(newTransfer));
+    assert.equal(run.receipt.cleanup.verification, verification);
+    assert.equal(
+      run.journal.includes(String(packSampleVideo)),
+      !putio.folderFails,
+    );
+    assertPreexistingUntouched(run);
+  }
+});
+
+test("an episode whose saved file the run did not create fails at episode-identity and deletes nothing", async () => {
+  const run = await runLane(
+    { hops: ["media"] },
+    {
+      pin: episodePin,
+      putio: { videoName: "Fixture.Show.S01E02.1080p.mkv", savedBefore: true },
+    },
+  );
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "episode-identity");
+  assert.equal(run.receipt.proof.playedEpisodeMatches, undefined);
+  assert.deepEqual(run.decoded, []);
+  assert.deepEqual(run.putio.deleted, []);
+  assert.ok(run.putio.files.has(newFile));
+  assert.equal(run.receipt.cleanup.verification, "unverified");
+  assertPreexistingUntouched(run);
+});
 
 test("the folder read returns put.io's entry names and types", async () => {
   vi.stubEnv(liveVersions.putioTokenEnv, "fixture-token");

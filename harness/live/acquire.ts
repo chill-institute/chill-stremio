@@ -208,6 +208,9 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
   } = { imdbId: "", releaseId: "", maxBytes: 0, pack: false };
   // Files found under the transfer's saved folder; deleting it removes them.
   const savedFiles = new Set<number>();
+  // Each owned saved entry's tree as last listed; undefined once a listing
+  // failed or passed the walk limits.
+  const savedTrees = new Map<number, readonly SavedEntry[] | undefined>();
   let ledgerDirectory = "";
   const cancelled = new Set<number>();
   const fail = (at: string) => new AcquireProbeFailure({ stage: at });
@@ -309,8 +312,34 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
       );
     });
 
-  // Re-lists transfers and records the attributed transfer's file before any
-  // cancellation can drop it from the list. Runs on every exit after the GET.
+  /** The transfer's saved file, or every entry under its saved folder, within the adapter's walk limits. */
+  const savedTree = Effect.fn("live.acquire.savedTree")(function* (
+    rootId: number,
+  ) {
+    const root = yield* provider.getFile(rootId);
+    if (!root?.name) return yield* fail(stage);
+    if (root.fileType !== "FOLDER")
+      return [{ id: rootId, name: root.name, fileType: root.fileType }];
+    const entries: SavedEntry[] = [];
+    const pending = [{ id: rootId, depth: 0 }];
+    const visited = new Set<number>();
+    for (let next = pending.shift(); next; next = pending.shift()) {
+      if (visited.has(next.id) || visited.size >= 32 || next.depth > 8)
+        return yield* fail(stage);
+      visited.add(next.id);
+      for (const entry of yield* provider.listFolder(next.id)) {
+        entries.push(entry);
+        if (entries.length > 5000) return yield* fail(stage);
+        if (entry.fileType === "FOLDER")
+          pending.push({ id: entry.id, depth: next.depth + 1 });
+      }
+    }
+    return entries;
+  });
+
+  // Re-lists transfers and records the attributed transfer's file, and what a
+  // saved folder holds, before any cancellation or deletion can drop them.
+  // Runs on every exit after the GET.
   const record = Effect.gen(function* () {
     if (!selectionSent) return;
     const listed = yield* provider.listTransfers();
@@ -378,6 +407,16 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
         if (!attempt.files.includes(entry.file)) attempt.files.push(entry.file);
       } else entry.resolution = "retained";
     }
+    for (const entry of transferFiles) {
+      if (entry.resolution !== "owned") continue;
+      const tree = Option.getOrUndefined(
+        yield* savedTree(entry.file).pipe(Effect.option),
+      );
+      savedTrees.set(entry.file, tree);
+      for (const item of tree ?? [])
+        if (item.id !== entry.file) savedFiles.add(item.id);
+    }
+    recovery.savedFiles = [...savedFiles];
     yield* checkpoint;
   });
 
@@ -403,31 +442,6 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     );
     yield* chargeExcess(size);
     return yield* fail("size-exceeded");
-  });
-
-  /** The transfer's saved file, or every entry under its saved folder, within the adapter's walk limits. */
-  const savedTree = Effect.fn("live.acquire.savedTree")(function* (
-    rootId: number,
-  ) {
-    const root = yield* provider.getFile(rootId);
-    if (!root?.name) return yield* fail(stage);
-    if (root.fileType !== "FOLDER")
-      return [{ id: rootId, name: root.name, fileType: root.fileType }];
-    const entries: SavedEntry[] = [];
-    const pending = [{ id: rootId, depth: 0 }];
-    const visited = new Set<number>();
-    for (let next = pending.shift(); next; next = pending.shift()) {
-      if (visited.has(next.id) || visited.size >= 32 || next.depth > 8)
-        return yield* fail(stage);
-      visited.add(next.id);
-      for (const entry of yield* provider.listFolder(next.id)) {
-        entries.push(entry);
-        if (entries.length > 5000) return yield* fail(stage);
-        if (entry.fileType === "FOLDER")
-          pending.push({ id: entry.id, depth: next.depth + 1 });
-      }
-    }
-    return entries;
   });
 
   const sizeGate = (id: number) =>
@@ -679,12 +693,8 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
       const played = /\/files\/([1-9][0-9]{0,15})\//.exec(
         media.target?.pathname ?? "",
       )?.[1];
-      if (!saved || !played) return yield* fail(stage);
-      const tree = yield* savedTree(saved.file);
-      for (const entry of tree)
-        if (entry.id !== saved.file) savedFiles.add(entry.id);
-      recovery.savedFiles = [...savedFiles];
-      yield* checkpoint;
+      const tree = saved && savedTrees.get(saved.file);
+      if (!tree || !played) return yield* fail(stage);
       if (pin.pack)
         proof.packVideos = tree.filter(
           (entry) => entry.fileType === "VIDEO",
@@ -733,6 +743,7 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     if (
       attempt.pending.length > 0 ||
       (fileExpected && transferFiles.length === 0) ||
+      [...savedTrees.values()].includes(undefined) ||
       transferFiles.some((entry) =>
         ["unresolved", "retained"].includes(entry.resolution),
       )
