@@ -98,10 +98,9 @@ Gaps:
   On 2026-10-15 `hosted:owned` passed for an owned episode and, with
   `LIVE_OWNED_WEB=1`, played the owned movie in Stremio Web, and
   `hosted:acquire` passed for an approved Matroska season pack, playing the
-  pinned episode after put.io converted it. Acquisitions decode with FFmpeg
-  rather than a Stremio client. A single-episode release has no pass: the
-  approved one stayed downloading on put.io for the lane's 20 minutes.
-  `hosted:public` and its canary consume no stream,
+  pinned episode after put.io converted it, and for an approved
+  single-episode release. Acquisitions decode with FFmpeg rather than a
+  Stremio client. `hosted:public` and its canary consume no stream,
   `hosted:live`'s Stremio Web step has no recorded pass since v2.0.0, and
   playing an acquired release in a Stremio client through the deployed adapter
   remains unproven; `LIVE_ACQUIRE_WEB=1` covers it in Stremio Web but has no
