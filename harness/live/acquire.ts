@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Cause, Effect, Option, Schema } from "effect";
+import { Cause, Effect, Option, Schema, Semaphore } from "effect";
 import { isCredential, redactCredentials } from "../../src/credential.ts";
 import { createEngineRpc, EngineError } from "../../src/engine.ts";
 import { statusMediaKinds } from "../../src/status-media.ts";
@@ -252,7 +252,12 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     transferFiles,
   };
   attempt.recovery = recovery;
-  const checkpoint = writeRecoveryJournal(attempt, options.journal);
+  // Stremio Web's step and the transfer watcher would otherwise race on the
+  // journal's temporary file.
+  const journal = Semaphore.makeUnsafe(1);
+  const checkpoint = Semaphore.withPermit(journal)(
+    writeRecoveryJournal(attempt, options.journal),
+  );
   const proof: Record<string, unknown> = {
     source: "approved-release",
     credential: "designated-account",

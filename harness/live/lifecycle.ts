@@ -57,6 +57,8 @@ export const createLiveAttempt = (): LiveAttempt => ({
 
 export const writeRecoveryJournal = Effect.fn("live.writeRecoveryJournal")(
   function* (attempt: LiveAttempt, path: string) {
+    // An interrupted caller still waits for its write, so the write never
+    // races the next one on the temporary file.
     yield* Effect.tryPromise(async () => {
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
       await chmod(dirname(path), 0o700);
@@ -78,7 +80,7 @@ export const writeRecoveryJournal = Effect.fn("live.writeRecoveryJournal")(
       );
       await chmod(temporary, 0o600);
       await rename(temporary, path);
-    });
+    }).pipe(Effect.uninterruptible);
   },
 );
 
