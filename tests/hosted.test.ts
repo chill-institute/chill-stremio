@@ -93,6 +93,7 @@ async function fixture(
     addCredentials: [] as (string | string[] | undefined)[],
     addUrls: [] as string[],
     transferFinished: true,
+    transferStatus: undefined as string | undefined,
     singleFile: false,
     // Folder listings that replace or add to the defaults, by folder ID.
     folders: new Map<
@@ -464,7 +465,9 @@ async function fixture(
                 status: "success",
                 transfer: {
                   id: 90n,
-                  status: state.transferFinished ? "COMPLETED" : "DOWNLOADING",
+                  status:
+                    state.transferStatus ??
+                    (state.transferFinished ? "COMPLETED" : "DOWNLOADING"),
                   isFinished: state.transferFinished,
                   percentDone: state.transferFinished ? 100 : 42,
                   fileId: 20n,
@@ -488,7 +491,9 @@ async function fixture(
               create(proto.GetTransferResponseSchema, {
                 transfer: {
                   id,
-                  status: state.transferFinished ? "COMPLETED" : "DOWNLOADING",
+                  status:
+                    state.transferStatus ??
+                    (state.transferFinished ? "COMPLETED" : "DOWNLOADING"),
                   isFinished: state.transferFinished,
                   percentDone: state.transferFinished ? 100 : 42,
                   fileId: 20n,
@@ -2291,6 +2296,31 @@ test("a season pack plays the one video Engine names as the requested episode", 
     assert.equal(flagged(20n), 0);
     assert.equal(
       await location(`${f.base()}/status/90/1/2.m3u8`),
+      "https://media.fixture.test/video-22?token=fixture-playback-secret",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("a season pack put.io is still completing waits for its files instead of playing unavailable", async () => {
+  const f = await fixture();
+  try {
+    f.state.seasonPack = seasonPack;
+    // put.io names the download's folder before it moves the files in.
+    f.state.transferStatus = "COMPLETING";
+    f.state.folders.set(20n, []);
+    let responded = false;
+    const status = location(`${f.base()}/status/90/1/2.m3u8`).then((url) => {
+      responded = true;
+      return url;
+    });
+    await sleep(300);
+    assert.equal(responded, false);
+    f.state.transferStatus = undefined;
+    f.state.folders.set(20n, packEpisodes);
+    assert.equal(
+      await status,
       "https://media.fixture.test/video-22?token=fixture-playback-secret",
     );
   } finally {

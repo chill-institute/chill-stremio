@@ -141,7 +141,13 @@ const decodeTransfer = Effect.fn("Acquisition.decodeTransfer")(function* (
     Schema.Struct({ transfer: Transfer }),
   )(response).pipe(Effect.mapError(invalidResponse));
   const { errorMessage, ...fields } = transfer;
-  return { ...fields, failed: errorMessage.trim() !== "" };
+  return {
+    ...fields,
+    // Engine counts a transfer with a file as finished, but put.io is still
+    // moving its files in while it reports COMPLETING.
+    isFinished: fields.isFinished && fields.status !== "COMPLETING",
+    failed: errorMessage.trim() !== "",
+  };
 });
 
 export function acquisitionEngineLayer(configuration: EngineAuth) {

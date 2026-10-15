@@ -181,8 +181,9 @@ Without the header, and for any other code, including `putio_rejected`, which
 can mean the transfer already exists, the refusal reports `unknown`.
 
 After submission the adapter polls `GetTransfer`, finds the downloaded video
-with `GetFolder` and resolves it with `ResolvePlayback`. A still-pending
-download redirects to `/s/<credential>/status/<transferId>.m3u8?wait=<n>`, or
+with `GetFolder` and resolves it with `ResolvePlayback`. A download put.io
+still reports as `COMPLETING` counts as pending, since put.io is still moving
+its files into place. A still-pending download redirects to `/s/<credential>/status/<transferId>.m3u8?wait=<n>`, or
 for a season pack to
 `/s/<credential>/status/<transferId>/<season>/<episode>.m3u8?wait=<n>`, where
 the transfer ID is decimal. Status URLs only read; reopening one resumes waiting
