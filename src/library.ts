@@ -127,6 +127,19 @@ const Playback = Schema.Struct({
     }),
     Schema.Struct({
       case: Schema.Literal("unavailable"),
+      value: Schema.Struct({ reason: Schema.Literals([1, 2, 3, 4]) }),
+    }),
+  ]),
+});
+const conversionRequired = 4;
+const Conversion = Schema.Struct({
+  result: Schema.Union([
+    Schema.Struct({
+      case: Schema.Literal("pending"),
+      value: Schema.Struct({ reason: Schema.Literals([0, 1]) }),
+    }),
+    Schema.Struct({
+      case: Schema.Literal("unavailable"),
       value: Schema.Struct({ reason: Schema.Literals([1, 2, 3]) }),
     }),
   ]),
@@ -178,8 +191,11 @@ export const filePlayback = Effect.fn("Library.filePlayback")(function* (
   const playback = yield* Schema.decodeUnknownEffect(Playback)(response).pipe(
     Effect.mapError(invalidResponse),
   );
-  if (playback.result.case !== "ready")
-    return { case: playback.result.case } as const;
+  if (playback.result.case === "pending") return { case: "pending" } as const;
+  if (playback.result.case === "unavailable")
+    return playback.result.value.reason === conversionRequired
+      ? ({ case: "convertible" } as const)
+      : ({ case: "unavailable" } as const);
   const ready = playback.result.value;
   const now = yield* Clock.currentTimeMillis;
   const url = yield* checkExpiry(ready.media, now);
@@ -194,6 +210,21 @@ export const filePlayback = Effect.fn("Library.filePlayback")(function* (
     }),
   );
   return { case: "ready", url, subtitles, format: ready.format } as const;
+});
+
+/**
+ * Asks Engine to make a convertible file streamable. Only a user's choice to
+ * play calls this; listings and previews stay read-only.
+ */
+export const startConversion = Effect.fn("Library.startConversion")(function* (
+  id: bigint,
+) {
+  const engine = yield* Engine;
+  const response = yield* engine.startPlaybackConversion(id);
+  const conversion = yield* Schema.decodeUnknownEffect(Conversion)(
+    response,
+  ).pipe(Effect.mapError(invalidResponse));
+  return { case: conversion.result.case } as const;
 });
 
 export function createLibrary(folderId: bigint, recursive = false) {
@@ -242,10 +273,9 @@ export function createLibrary(folderId: bigint, recursive = false) {
     const id = yield* readId(input);
     const [file] = yield* files((entry) => entry.id === id, 1);
     const streams: Stream[] = [];
-    if (!file) return { streams, pending: false };
+    if (!file) return { streams, state: "unavailable" as const };
     const playback = yield* filePlayback(id);
-    if (playback.case !== "ready")
-      return { streams, pending: playback.case === "pending" };
+    if (playback.case !== "ready") return { streams, state: playback.case };
     const { url, subtitles, format } = playback;
     streams.push({
       name: "chill.institute",
@@ -261,7 +291,7 @@ export function createLibrary(folderId: bigint, recursive = false) {
         ),
       },
     });
-    return { streams, pending: false };
+    return { streams, state: playback.case };
   });
   return {
     catalog: Effect.fn("Library.catalog")(function* (input: {

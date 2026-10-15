@@ -348,6 +348,7 @@ export const runAuthenticatedAdapter = Effect.fn(
                 }),
               ),
             ),
+          startPlaybackConversion: (id) => engine.startPlaybackConversion(id),
         });
       }),
     ).pipe(

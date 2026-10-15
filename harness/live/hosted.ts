@@ -181,6 +181,7 @@ export async function startFixtureDiscoveryProxy(
     getTransfer: 0,
     getFolder: 0,
     resolvePlayback: 0,
+    startPlaybackConversion: 0,
   };
   const transferIds: bigint[] = [];
   const controllers = new Set<AbortController>();
@@ -318,6 +319,23 @@ export async function startFixtureDiscoveryProxy(
               rpc.call((options) =>
                 rpc.client.resolvePlayback(
                   fromJsonString(proto.ResolvePlaybackRequestSchema, body),
+                  options,
+                ),
+              ),
+            ),
+          );
+          return;
+        case "/chill.v4.UserService/StartPlaybackConversion":
+          calls.startPlaybackConversion++;
+          send(
+            proto.StartPlaybackConversionResponseSchema,
+            await run(
+              rpc.call((options) =>
+                rpc.client.startPlaybackConversion(
+                  fromJsonString(
+                    proto.StartPlaybackConversionRequestSchema,
+                    body,
+                  ),
                   options,
                 ),
               ),

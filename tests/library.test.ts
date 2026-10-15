@@ -5,13 +5,18 @@ import {
   PlaybackFormatSchema,
   UserFileSchema,
   ResolvePlaybackResponseSchema,
+  StartPlaybackConversionResponseSchema,
   type GetFolderResponse,
   type ResolvePlaybackResponse,
 } from "@chill-institute/contracts/chill/v4/api_pb";
 import { Effect, Layer } from "effect";
 import { test } from "vite-plus/test";
 import { Engine, EngineError } from "../src/engine.ts";
-import { createLibrary, LibraryError } from "../src/library.ts";
+import {
+  createLibrary,
+  LibraryError,
+  startConversion,
+} from "../src/library.ts";
 
 const largeId = 9223372036854775807n;
 const request = { type: "movie", id: `chill:file:${largeId}` };
@@ -39,7 +44,13 @@ function ready(): ResolvePlaybackResponse {
     },
   });
 }
-function fixture(playback = ready(), listing = folder()) {
+function fixture(
+  playback = ready(),
+  listing = folder(),
+  conversion = create(StartPlaybackConversionResponseSchema, {
+    result: { case: "pending", value: { reason: 1 } },
+  }),
+) {
   const calls: Array<{ method: string; id: bigint }> = [];
   const layer = Layer.succeed(
     Engine,
@@ -53,6 +64,11 @@ function fixture(playback = ready(), listing = folder()) {
         Effect.sync(() => {
           calls.push({ method: "resolvePlayback", id });
           return playback;
+        }),
+      startPlaybackConversion: (id) =>
+        Effect.sync(() => {
+          calls.push({ method: "startPlaybackConversion", id });
+          return conversion;
         }),
     }),
   );
@@ -291,6 +307,66 @@ test("pending and unavailable are empty but malformed states reject", async () =
   }
 });
 
+test("a video put.io must convert lists no stream and starts no conversion", async () => {
+  const f = fixture(
+    create(ResolvePlaybackResponseSchema, {
+      result: { case: "unavailable", value: { reason: 4 } },
+    }),
+  );
+  const library = createLibrary(42n);
+  assert.deepEqual(
+    await Effect.runPromise(
+      library.streams(request).pipe(Effect.provide(f.layer)),
+    ),
+    { streams: [] },
+  );
+  const playback = await Effect.runPromise(
+    library.playback(request).pipe(Effect.provide(f.layer)),
+  );
+  assert.equal(playback.state, "convertible");
+  assert.deepEqual(
+    f.calls.map(({ method }) => method),
+    ["getFolder", "resolvePlayback", "getFolder", "resolvePlayback"],
+  );
+});
+
+test("a conversion request accepts only a pending or unavailable result", async () => {
+  for (const [conversion, expected] of [
+    [{ case: "pending", value: { reason: 1 } }, "pending"],
+    [{ case: "unavailable", value: { reason: 2 } }, "unavailable"],
+  ] as const) {
+    const f = fixture(
+      ready(),
+      folder(),
+      create(StartPlaybackConversionResponseSchema, { result: conversion }),
+    );
+    assert.deepEqual(
+      await Effect.runPromise(
+        startConversion(largeId).pipe(Effect.provide(f.layer)),
+      ),
+      { case: expected },
+    );
+    assert.deepEqual(f.calls, [
+      { method: "startPlaybackConversion", id: largeId },
+    ]);
+  }
+  for (const conversion of [
+    create(StartPlaybackConversionResponseSchema),
+    create(StartPlaybackConversionResponseSchema, {
+      result: { case: "unavailable", value: { reason: 0 } },
+    }),
+    create(StartPlaybackConversionResponseSchema, {
+      result: { case: "unavailable", value: { reason: 4 } },
+    }),
+  ]) {
+    const f = fixture(ready(), folder(), conversion);
+    await assert.rejects(
+      Effect.runPromise(startConversion(largeId).pipe(Effect.provide(f.layer))),
+      { code: "invalid_response" },
+    );
+  }
+});
+
 test("invalid or expired signed URLs reject without exposing them in errors", async () => {
   for (const media of [
     {
@@ -387,6 +463,7 @@ test("Engine auth and provider failures propagate instead of becoming empty play
       Engine.of({
         getFolder: () => Effect.succeed(folder()),
         resolvePlayback: () => Effect.fail(new EngineError({ code })),
+        startPlaybackConversion: () => Effect.die("listings never convert"),
       }),
     );
     await assert.rejects(
@@ -446,6 +523,7 @@ function treeFixture() {
           resolved.push(id);
           return ready();
         }),
+      startPlaybackConversion: () => Effect.die("listings never convert"),
     }),
   );
   const library = createLibrary(0n, true);

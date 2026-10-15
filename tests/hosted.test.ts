@@ -121,6 +121,14 @@ async function fixture(
     ownedRejection: undefined as { status: number; code: string } | undefined,
     ownedDelayMs: 0,
     playbackPending: false,
+    // ResolvePlayback answers that put.io must convert the video first.
+    playbackConvertible: false,
+    conversionResult: "pending" as "pending" | "unavailable",
+    conversionRejection: undefined as
+      | { status: number; code: string }
+      | undefined,
+    // File IDs StartPlaybackConversion was asked to convert, in order.
+    conversions: [] as bigint[],
     rejection: undefined as { status: number; code: string } | undefined,
     // An AddTransfer refusal and the stable code Engine sends with it.
     addRejection: undefined as
@@ -525,6 +533,16 @@ async function fixture(
             );
             return;
           }
+          if (state.playbackConvertible) {
+            response.end(
+              JSON.stringify({
+                unavailable: {
+                  reason: "UNAVAILABLE_REASON_CONVERSION_REQUIRED",
+                },
+              }),
+            );
+            return;
+          }
           response.end(
             toJsonString(
               proto.ResolvePlaybackResponseSchema,
@@ -550,6 +568,33 @@ async function fixture(
                     ],
                   },
                 },
+              }),
+            ),
+          );
+          return;
+        }
+        case "StartPlaybackConversion": {
+          const { fileId } = fromJsonString(
+            proto.StartPlaybackConversionRequestSchema,
+            json,
+          );
+          state.conversions.push(fileId);
+          if (state.conversionRejection) {
+            error(
+              response,
+              state.conversionRejection.status,
+              state.conversionRejection.code,
+            );
+            return;
+          }
+          response.end(
+            toJsonString(
+              proto.StartPlaybackConversionResponseSchema,
+              create(proto.StartPlaybackConversionResponseSchema, {
+                result:
+                  state.conversionResult === "pending"
+                    ? { case: "pending", value: { reason: 1 } }
+                    : { case: "unavailable", value: { reason: 2 } },
               }),
             ),
           );
@@ -2810,5 +2855,138 @@ test("a video already in put.io needs no submission unit of its link", async () 
     const settled = Promise.allSettled(stalled);
     await f.close();
     await settled;
+  }
+});
+
+// Requests Stremio clients make for a media URL without consuming it.
+const readOnlyProbes: RequestInit[] = [
+  { method: "HEAD" },
+  { method: "OPTIONS" },
+  { headers: { purpose: "prefetch" } },
+  { headers: { "sec-purpose": "prefetch" } },
+];
+const playbackResolutions = (f: Fixture) =>
+  f.calls.filter(({ method }) => method === "ResolvePlayback").length;
+
+test("a selected download put.io must convert asks once per read and plays once converted", async () => {
+  const f = await fixture();
+  try {
+    f.state.singleFile = true;
+    f.state.playbackConvertible = true;
+    const url = await releaseSelection(f);
+    for (const init of readOnlyProbes)
+      await (await fetch(url, init)).arrayBuffer();
+    assert.deepEqual(f.state.conversions, []);
+    const selected = location(url);
+    await until(() => f.state.conversions.length === 1);
+    assert.equal(playbackResolutions(f), 1);
+    // put.io finishes converting before the selection reads again.
+    f.state.playbackConvertible = false;
+    assert.equal(
+      await selected,
+      "https://media.fixture.test/video-21?token=fixture-playback-secret",
+    );
+    assert.deepEqual(f.state.conversions, [21n]);
+    assert.equal(playbackResolutions(f), 2);
+    assert.equal(f.state.addCount, 1);
+    f.state.playbackConvertible = true;
+    f.state.conversionResult = "unavailable";
+    for (const format of ["m3u8", "mp4"])
+      assert.equal(
+        await location(`${f.base()}/status/90.${format}`),
+        `${f.base()}/notice/unavailable.${format}`,
+      );
+    assert.deepEqual(f.state.conversions, [21n, 21n, 21n]);
+    f.state.conversionRejection = { status: 403, code: "permission_denied" };
+    assert.equal(
+      await location(`${f.base()}/status/90.m3u8`),
+      `${f.base()}/notice/reconnect.m3u8`,
+    );
+    assert.equal(f.state.addCount, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a video already in put.io that put.io must convert starts converting and plays once converted", async () => {
+  const f = await fixture();
+  const media =
+    "https://media.fixture.test/video-77?token=fixture-playback-secret";
+  try {
+    f.state.ownedVideos = [ownedVideo(77n)];
+    f.state.playbackConvertible = true;
+    const [row] = await movieRows(f);
+    assert.equal(row?.url, ownedSelection(f, "77"));
+    for (const init of readOnlyProbes)
+      await (await fetch(ownedSelection(f, "77"), init)).arrayBuffer();
+    assert.deepEqual(f.state.conversions, []);
+    for (const format of ["m3u8", "mp4"])
+      assert.equal(
+        await location(ownedSelection(f, "77", format)),
+        `${f.base()}/notice/preparing.${format}`,
+      );
+    assert.deepEqual(f.state.conversions, [77n, 77n]);
+    // put.io is converting, then done.
+    f.state.playbackConvertible = false;
+    f.state.playbackPending = true;
+    assert.equal(
+      await location(ownedSelection(f, "77")),
+      `${f.base()}/notice/preparing.m3u8`,
+    );
+    f.state.playbackPending = false;
+    assert.equal(await location(ownedSelection(f, "77")), media);
+    assert.deepEqual(f.state.conversions, [77n, 77n]);
+    f.state.playbackConvertible = true;
+    f.state.conversionResult = "unavailable";
+    assert.equal(
+      await location(ownedSelection(f, "77")),
+      `${f.base()}/notice/unavailable.m3u8`,
+    );
+    f.state.conversionResult = "pending";
+    for (const [rejection, clip] of [
+      [{ status: 404, code: "not_found" }, "unavailable"],
+      [{ status: 401, code: "unauthenticated" }, "reconnect"],
+      [{ status: 403, code: "permission_denied" }, "reconnect"],
+    ] as const) {
+      f.state.conversionRejection = rejection;
+      assert.equal(
+        await location(ownedSelection(f, "77")),
+        `${f.base()}/notice/${clip}.m3u8`,
+      );
+    }
+    f.state.conversionRejection = { status: 503, code: "unavailable" };
+    const failed = await fetch(ownedSelection(f, "77"), { redirect: "manual" });
+    assert.equal(failed.status, 503);
+    await failed.arrayBuffer();
+    assert.equal(f.state.conversions.length, 7);
+    assert.equal(f.state.addCount, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("listing videos put.io must convert never starts a conversion", async () => {
+  const f = await fixture();
+  try {
+    f.state.playbackConvertible = true;
+    f.state.ownedVideos = [ownedVideo(77n)];
+    const resource = (path: string) =>
+      fetch(`${f.base()}/${path}`).then(async (response) => {
+        assert.equal(response.status, 200, path);
+        return response.json();
+      });
+    assert.deepEqual(await resource("stream/movie/chill%3Afile%3A50.json"), {
+      streams: [],
+    });
+    assert.deepEqual(await resource("subtitles/movie/chill%3Afile%3A50.json"), {
+      subtitles: [],
+    });
+    await resource("meta/movie/chill%3Afile%3A50.json");
+    await resource("catalog/movie/library.json");
+    assert.equal((await movieRows(f))[0]?.url, ownedSelection(f, "77"));
+    assert.equal(playbackResolutions(f), 2);
+    assert.deepEqual(f.state.conversions, []);
+  } finally {
+    await f.close();
   }
 });

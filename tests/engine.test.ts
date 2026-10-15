@@ -41,7 +41,9 @@ test("Engine sends regular bearer RPCs and preserves int64 IDs", async () => {
         response.end(
           request.url?.endsWith("GetFolder")
             ? '{"files":[{"id":"9223372036854775807","name":"Movie","fileType":"video"}]}'
-            : '{"ready":{"media":{"url":"https://media.example/video?token=opaque","unknownExpiry":true}}}',
+            : request.url?.endsWith("StartPlaybackConversion")
+              ? '{"pending":{"reason":"PENDING_REASON_PROCESSING"}}'
+              : '{"ready":{"media":{"url":"https://media.example/video?token=opaque","unknownExpiry":true}}}',
         );
       });
     },
@@ -53,6 +55,9 @@ test("Engine sends regular bearer RPCs and preserves int64 IDs", async () => {
           assert.equal(folder.files[0]?.id, 9223372036854775807n);
           const playback = yield* engine.resolvePlayback(9223372036854775807n);
           assert.equal(playback.result.case, "ready");
+          const conversion =
+            yield* engine.startPlaybackConversion(9223372036854775807n);
+          assert.equal(conversion.result.case, "pending");
         }).pipe(Effect.provide(engineLayer({ baseUrl, token }))),
       );
       assert.deepEqual(requests, [
@@ -63,6 +68,10 @@ test("Engine sends regular bearer RPCs and preserves int64 IDs", async () => {
         {
           path: "/chill.v4.UserService/ResolvePlayback",
           body: '{"fileId":"9223372036854775807","delivery":"PLAYBACK_DELIVERY_HLS"}',
+        },
+        {
+          path: "/chill.v4.UserService/StartPlaybackConversion",
+          body: '{"fileId":"9223372036854775807"}',
         },
       ]);
     },

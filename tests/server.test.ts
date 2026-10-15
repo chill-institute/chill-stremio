@@ -28,6 +28,7 @@ test("installation capability protects catalog and rejects malformed keys withou
           return folder;
         }),
       resolvePlayback: () => Effect.succeed(noSource),
+      startPlaybackConversion: () => Effect.die("listings never convert"),
     }),
   );
   const adapter = await startAdapter({ layer, folderId: 0n });
@@ -113,6 +114,7 @@ test("disconnect cancels the active Engine read and cleanup closes its listener"
           catch: () => new EngineError({ code: "canceled" }),
         }),
       resolvePlayback: () => Effect.succeed(noSource),
+      startPlaybackConversion: () => Effect.die("listings never convert"),
     }),
   );
   const adapter = await startAdapter({ layer, folderId: 0n });

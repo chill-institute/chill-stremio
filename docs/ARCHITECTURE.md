@@ -55,7 +55,8 @@ Movie and episode stream lists also ask Engine's `FindOwnedVideos` for
 title and year the release search uses. Discovery resolves that subject once per
 listing and passes it to both lookups, which run together. Engine owns filename
 matching; the adapter never parses filenames. An `owned:<fileId>` row resolves
-through `ResolvePlayback` alone, without `GetFolder`, and never submits.
+through `ResolvePlayback`, without `GetFolder`, and never submits; like a
+selected download, it may [request conversion](#playback-and-failure-behavior).
 The [Engine search contract](https://github.com/chill-institute/chill-engine/blob/main/docs/ARCHITECTURE.md)
 owns stable source identity and its fallback limits. Release artwork association
 must remain separate from this acquisition identity.
@@ -111,15 +112,28 @@ Harness receipts replace credentials with `[credential]`.
 ## Playback and failure behavior
 
 The adapter uses
-[contracts v3.2.0](https://github.com/chill-institute/chill-contracts/releases/tag/v3.2.0)
+[contracts v3.3.0](https://github.com/chill-institute/chill-contracts/releases/tag/v3.3.0)
 and requests HLS through `ResolvePlayback`. Engine checks ownership, resolves a
 download grant, verifies the HLS master anonymously and returns its HTTPS URL.
 The player fetches playlists and media from put.io; the account OAuth token
 stays in Engine.
 
-Resolution is read-only. Existing processing returns pending; missing HLS returns
-unavailable. Neither starts conversion or falls back to the original file.
-Older clients that omit the delivery option retain original-file playback.
+Resolution is read-only and never falls back to the original file. Existing
+processing returns pending. A video put.io streams only once converted returns
+unavailable with `UNAVAILABLE_REASON_CONVERSION_REQUIRED`; other missing HLS
+returns another unavailable reason. Older clients that omit the delivery option
+retain original-file playback.
+
+Conversion is a write, made only when a user plays. When GET on a selected
+release, season pack or `owned:` row resolves to a video needing conversion,
+[selection.ts](../src/selection.ts) calls `StartPlaybackConversion` once for
+that resolution. Its pending result counts as pending playback and its
+unavailable result as unavailable; an RPC failure maps as `ResolvePlayback`
+failures do on that route. Engine treats repeated requests as idempotent, so a
+waiting selection asks again on each read that still needs conversion.
+Catalogs, metadata, stream and subtitle listings, HEAD, OPTIONS and prefetch
+hints never call it, and the [library translator](../src/library.ts) lists such
+a video without a stream.
 
 The [library translator](../src/library.ts) validates media/subtitle URLs and
 expiry. Ready playback returns a direct source; pending/unavailable returns no
@@ -143,8 +157,8 @@ playback has no subtitle lookup; reopening the completed file from the library
 provides its tracks. No subtitle lookup starts a download.
 
 A selected download waits for one verified video, then redirects to its media
-URL. While it is pending, the adapter redirects to a read-only status URL that
-carries the decimal transfer ID. [Playback waiting](../src/playback-wait.ts)
+URL. While it is pending, the adapter redirects to a status URL that
+carries the decimal transfer ID and never submits. [Playback waiting](../src/playback-wait.ts)
 bounds polling; the [hosted routes](../src/hosted.ts) set HLS and legacy request
 windows and the HLS pending limit, after which HLS plays the pending status
 clip; legacy `.mp4` returns `503 download_pending` at its redirect limit.

@@ -15,7 +15,7 @@ import {
 } from "./discovery.ts";
 import { responseReserveMs } from "./discovery-engine.ts";
 import { EngineError } from "./engine.ts";
-import { createLibrary, filePlayback } from "./library.ts";
+import { createLibrary, filePlayback, startConversion } from "./library.ts";
 import type { PlaybackResult } from "./playback-wait.ts";
 
 export type Submission =
@@ -189,13 +189,27 @@ export function createSelection(options: { base: string }) {
       id: `chill:file:${file.id}`,
     });
     const url = playback.streams[0]?.url;
-    return (
-      url ? { url } : { status: playback.pending ? "pending" : "unavailable" }
-    ) satisfies PlaybackResult;
+    if (url) return { url } satisfies PlaybackResult;
+    // Each read of a file put.io must convert asks again; the request is idempotent.
+    const state =
+      playback.state === "convertible"
+        ? (yield* startConversion(file.id)).case
+        : playback.state;
+    return {
+      status: state === "pending" ? "pending" : "unavailable",
+    } satisfies PlaybackResult;
   });
-  /** A video already in the account plays without a transfer. */
+  /**
+   * A video already in the account plays without a transfer. One that put.io
+   * must convert starts converting and plays the preparing clip until ready.
+   */
   const owned = Effect.fn("Selection.owned")(function* (fileId: bigint) {
-    const playback = yield* filePlayback(fileId).pipe(
+    const playback = yield* Effect.gen(function* () {
+      const resolved = yield* filePlayback(fileId);
+      return resolved.case === "convertible"
+        ? yield* startConversion(fileId)
+        : resolved;
+    }).pipe(
       Effect.catchIf(
         (error) => error instanceof EngineError && error.code === "not_found",
         () => Effect.succeed({ case: "unavailable" } as const),

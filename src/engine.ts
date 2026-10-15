@@ -3,6 +3,7 @@ import {
   UserService,
   type GetFolderResponse,
   type ResolvePlaybackResponse,
+  type StartPlaybackConversionResponse,
 } from "@chill-institute/contracts/chill/v4/api_pb";
 import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
@@ -42,6 +43,10 @@ export class Engine extends Context.Service<
     resolvePlayback(
       id: bigint,
     ): Effect.Effect<ResolvePlaybackResponse, EngineError>;
+    /** The only playback write: asks put.io to make a video streamable. */
+    startPlaybackConversion(
+      id: bigint,
+    ): Effect.Effect<StartPlaybackConversionResponse, EngineError>;
   }
 >()("chill-stremio/Engine") {}
 
@@ -219,6 +224,10 @@ export function engineLayer(
               { fileId, delivery: PlaybackDelivery.HLS },
               options,
             ),
+          ),
+        startPlaybackConversion: (fileId) =>
+          rpc.call((options) =>
+            rpc.client.startPlaybackConversion({ fileId }, options),
           ),
       });
     }),

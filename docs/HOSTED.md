@@ -73,8 +73,8 @@ only its shape; a malformed credential returns `404` without contacting Engine.
 Every Engine call for that link sends `X-Chill-Stremio-Credential` and no
 `Authorization` header. Engine accepts the credential for `Search`, `GetMovies`,
 `GetTVShows`, `GetTVShowDetail`, `GetTVShowSeason`, `GetTVShowSeasonDownloads`,
-`FindOwnedVideos`, `GetFolder`, `ResolvePlayback`, `GetTransfer` and
-`AddTransfer`.
+`FindOwnedVideos`, `GetFolder`, `ResolvePlayback`, `StartPlaybackConversion`,
+`GetTransfer` and `AddTransfer`.
 
 Keep your add-on link private: anyone who has it can browse your put.io library,
 play its videos and start downloads to your account. Stremio shows the full link
@@ -151,6 +151,8 @@ through Engine `Search`, or a [season pack](#season-packs) through
 `GetTVShowSeasonDownloads`, and submits the returned link with `AddTransfer`;
 Engine chooses the destination folder. A row for a
 [video already in put.io](#videos-already-in-putio) only resolves its playback.
+Either may ask put.io to [convert](#videos-putio-must-convert) the video it
+plays.
 A release missing from that search plays the `release-unavailable` clip below; a
 legacy `.mp4` selection returns `404`, or `503 unavailable` when an indexer
 reported an error. The adapter omits
@@ -187,7 +189,8 @@ its files into place, and so does a finished one holding a video-named file
 put.io still types as a plain file, as it does for a new file's first seconds. A still-pending download redirects to `/s/<credential>/status/<transferId>.m3u8?wait=<n>`, or
 for a season pack to
 `/s/<credential>/status/<transferId>/<season>/<episode>.m3u8?wait=<n>`, where
-the transfer ID is decimal. Status URLs only read; reopening one resumes waiting
+the transfer ID is decimal. Status URLs never submit, though they may request a
+[conversion](#videos-putio-must-convert); reopening one resumes waiting
 without submitting. HLS waits in 25-second windows and legacy `.mp4` URLs in
 45-second windows, with up to five redirects. Each window starts with the
 request and includes waiting for the submission and status reads, so a
@@ -228,8 +231,29 @@ are rejected.
 
 HLS is the default playback delivery. Engine verifies a put.io master playlist
 using a separate download grant; the player fetches media directly from put.io.
-The account OAuth token remains in Engine. Missing HLS is unavailable rather than
-an automatic conversion request.
+The account OAuth token remains in Engine.
+
+### Videos put.io must convert
+
+put.io streams many videos, including most `.mkv` files, only after converting
+them to MP4. `ResolvePlayback` never starts that; it answers that the video
+needs converting. Choosing to play starts it: when GET on a selected release,
+season pack or **Play from put.io** row resolves to such a video, the adapter
+calls Engine's `StartPlaybackConversion` once for that resolution, and Engine
+asks put.io to convert it. An accepted request counts as pending:
+
+- A selected download keeps waiting in the same windows, redirects and
+  four-minute limit as a download in progress. Each read that still finds the
+  video unconverted asks again, which changes nothing while put.io works on
+  it, and the video plays once put.io's playlist is ready.
+- A **Play from put.io** row plays the `preparing` clip. Selecting it again
+  once put.io has finished plays the video.
+
+A video put.io cannot convert, or that is gone, plays `unavailable`. A failed
+conversion request is handled like a failed `ResolvePlayback` on the same
+route. Catalogs, metadata, stream and subtitle listings, HEAD, OPTIONS and
+prefetch hints never request conversion, so **put.io library** offers no stream
+for such a video until put.io has converted it.
 
 Movie discovery and episode detail retain their verified artwork and descriptions.
 Release search and detail add movie artwork only when the result's IMDb ID matches
@@ -311,7 +335,8 @@ Selecting a row requests `/s/<credential>/play/<type>/<id>/owned:<fileId>.m3u8`.
 The adapter calls `ResolvePlayback` for that file within the request's 10-second
 deadline and redirects to the media URL Engine returns. It never searches,
 submits a transfer, shares a submission or redirects to a status URL. Playback
-still being prepared plays the `preparing` clip, a file that is gone or has no
+still being prepared, or a video put.io must [convert](#videos-putio-must-convert)
+first, plays the `preparing` clip, a file that is gone or has no
 playable source plays `unavailable`, and a rejected credential plays
 `reconnect`; legacy `.mp4` URLs get the matching `.mp4` clips. A malformed file
 ID returns `400`. HEAD and prefetch hints answer as for other selected media,
