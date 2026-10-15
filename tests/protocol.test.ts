@@ -28,7 +28,8 @@ test("official SDK protocol, local media transport, pending and failure recovery
             const verified = verifyProtocol(fixture).finally(() => {
               settled = true;
             });
-            while (!settled && !fixture.metrics.interruptedActive)
+            // Cut the interrupted response only after it has sent bytes.
+            while (!settled && !fixture.metrics.interruptedBytes)
               await delay(5);
             await vi.advanceTimersByTimeAsync(4000);
             return verified;
