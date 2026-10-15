@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { createConnection } from "node:net";
-import { chromium, expect } from "@playwright/test";
+import {
+  chromium,
+  expect,
+  type BrowserContext,
+  type Page,
+} from "@playwright/test";
 import { Effect, Schema } from "effect";
+import { decoded as fixtureDecoded } from "../browser.ts";
 import {
   inspectFrame,
   type FrameEvidence,
@@ -10,10 +16,25 @@ import { movieAdvances } from "../native/desktop-contract.ts";
 import { versions } from "../versions.ts";
 import { startWeb } from "../web.ts";
 import { proveDecoded } from "./adapter.ts";
+import {
+  pollListing,
+  type OwnedWebCleanup,
+  type OwnedWebInput,
+  type OwnedWebProof,
+} from "./owned.ts";
 
 const Streams = Schema.Struct({
   streams: Schema.Array(Schema.Struct({ url: Schema.String })),
 });
+const NamedStreams = Schema.Struct({
+  streams: Schema.Array(
+    Schema.Struct({
+      name: Schema.optional(Schema.String),
+      url: Schema.optional(Schema.String),
+    }),
+  ),
+});
+const cinemetaOrigin = "https://v3-cinemeta.strem.io";
 
 // put.io redirects media requests to its CDN hosts.
 const isPutioMediaHost = (url: URL) =>
@@ -44,6 +65,79 @@ const listenerClosed = (origin: string) =>
     socket.setTimeout(1000, () => finish(false));
   });
 
+/** The pinned Web client and a fresh Chromium context; cleanup records each close. */
+const openGuestWeb = Effect.fn("live.hosted.openGuestWeb")(function* (
+  cleanup: OwnedWebCleanup,
+) {
+  let webOrigin: string | undefined;
+  yield* Effect.addFinalizer(() =>
+    Effect.promise(async () => {
+      if (webOrigin) cleanup.webClosed = await listenerClosed(webOrigin);
+    }),
+  );
+  const web = yield* startWeb;
+  webOrigin = web.origin;
+  const browser = yield* Effect.acquireRelease(
+    Effect.tryPromise(() => chromium.launch({ headless: true })),
+    (browser) =>
+      Effect.tryPromise(async () => {
+        await browser.close();
+        cleanup.browserClosed = !browser.isConnected();
+      }).pipe(
+        Effect.timeout("10 seconds"),
+        Effect.catchCause(() => Effect.void),
+      ),
+  );
+  const context = yield* Effect.acquireRelease(
+    Effect.tryPromise(() =>
+      browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        locale: "en-US",
+        serviceWorkers: "block",
+      }),
+    ),
+    (context) =>
+      Effect.tryPromise(async () => {
+        await context.close();
+        cleanup.contextClosed = true;
+      }).pipe(
+        Effect.timeout("10 seconds"),
+        Effect.catchCause(() => Effect.void),
+      ),
+  );
+  return { web, browser, context };
+});
+
+async function guestPage(context: BrowserContext) {
+  const page = await context.newPage();
+  page.setDefaultTimeout(15_000);
+  page.setDefaultNavigationTimeout(20_000);
+  await page.addLocatorHandler(
+    page.getByText("Don't show again", { exact: true }),
+    async (prompt) => {
+      await prompt.click({ timeout: 1000 }).catch(() => {});
+    },
+    { noWaitAfter: true },
+  );
+  return page;
+}
+
+/** Installs an add-on as a guest through the Add addon dialog. */
+async function installAddon(
+  page: Page,
+  webOrigin: string,
+  manifestUrl: string,
+) {
+  await page.goto(`${webOrigin}/#/addons`);
+  await page.getByTitle("Add addon", { exact: true }).click();
+  await page.getByPlaceholder("Paste addon URL").fill(manifestUrl);
+  await page.getByText("Add", { exact: true }).click();
+  await page
+    .getByText("Install", { exact: true })
+    .filter({ visible: true })
+    .click();
+}
+
 export const proveHostedBrowserPlayback = Effect.fn("live.hosted.browser")(
   function* (input: {
     manifestUrl: string;
@@ -63,43 +157,7 @@ export const proveHostedBrowserPlayback = Effect.fn("live.hosted.browser")(
     onDecoded: (decoded: Awaited<ReturnType<typeof proveDecoded>>) => void;
     onFrames: (frames: readonly FrameEvidence[]) => void;
   }) {
-    let webOrigin: string | undefined;
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(async () => {
-        if (webOrigin)
-          input.cleanup.webClosed = await listenerClosed(webOrigin);
-      }),
-    );
-    const web = yield* startWeb;
-    webOrigin = web.origin;
-    const browser = yield* Effect.acquireRelease(
-      Effect.tryPromise(() => chromium.launch({ headless: true })),
-      (browser) =>
-        Effect.tryPromise(async () => {
-          await browser.close();
-          input.cleanup.browserClosed = !browser.isConnected();
-        }).pipe(
-          Effect.timeout("10 seconds"),
-          Effect.catchCause(() => Effect.void),
-        ),
-    );
-    const context = yield* Effect.acquireRelease(
-      Effect.tryPromise(() =>
-        browser.newContext({
-          viewport: { width: 1280, height: 800 },
-          locale: "en-US",
-          serviceWorkers: "block",
-        }),
-      ),
-      (context) =>
-        Effect.tryPromise(async () => {
-          await context.close();
-          input.cleanup.contextClosed = true;
-        }).pipe(
-          Effect.timeout("10 seconds"),
-          Effect.catchCause(() => Effect.void),
-        ),
-    );
+    const { web, browser, context } = yield* openGuestWeb(input.cleanup);
     const adapterOrigin = new URL(input.manifestUrl).origin;
     const allowedOrigins = new Set([
       web.origin,
@@ -107,9 +165,7 @@ export const proveHostedBrowserPlayback = Effect.fn("live.hosted.browser")(
       ...input.mediaUrls.map((url) => new URL(url).origin),
     ]);
     return yield* Effect.tryPromise(async (signal) => {
-      const page = await context.newPage();
-      page.setDefaultTimeout(15_000);
-      page.setDefaultNavigationTimeout(20_000);
+      const page = await guestPage(context);
       await context.route("**/*", async (route) => {
         const request = route.request();
         const headers = await request.allHeaders();
@@ -132,22 +188,8 @@ export const proveHostedBrowserPlayback = Effect.fn("live.hosted.browser")(
       };
       signal.addEventListener("abort", abort, { once: true });
       try {
-        await page.addLocatorHandler(
-          page.getByText("Don't show again", { exact: true }),
-          async (prompt) => {
-            await prompt.click({ timeout: 1000 }).catch(() => {});
-          },
-          { noWaitAfter: true },
-        );
         input.onStage("installation");
-        await page.goto(`${web.origin}/#/addons`);
-        await page.getByTitle("Add addon", { exact: true }).click();
-        await page.getByPlaceholder("Paste addon URL").fill(input.manifestUrl);
-        await page.getByText("Add", { exact: true }).click();
-        await page
-          .getByText("Install", { exact: true })
-          .filter({ visible: true })
-          .click();
+        await installAddon(page, web.origin, input.manifestUrl);
         input.onStage("stream-listing");
         const [response] = await Promise.all([
           page.waitForResponse((response) => {
@@ -215,5 +257,151 @@ export const proveHostedBrowserPlayback = Effect.fn("live.hosted.browser")(
     });
   },
   Effect.timeout("2 minutes"),
+  Effect.scoped,
+);
+
+/**
+ * Plays an owned movie's Play from put.io row in the pinned Web client as a
+ * fresh guest. The lane plays only the generated fixture, so its size, marker
+ * and identity colour are checked too. Nothing is captured to disk.
+ */
+export const proveOwnedWebPlayback = Effect.fn("live.owned.web")(
+  function* (input: OwnedWebInput) {
+    const { web, browser, context } = yield* openGuestWeb(input.cleanup);
+    const adapterOrigin = new URL(input.manifestUrl).origin;
+    const observed = { selections: 0, playlists: 0, segments: 0 };
+    let confined = true;
+    const page = yield* Effect.tryPromise(async () => {
+      await context.route("**/*", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        const headers = await request.allHeaders();
+        // Only the adapter may see the credential; nothing sends Authorization.
+        if (
+          headers.authorization ||
+          (url.origin !== adapterOrigin &&
+            (request.url().includes(input.credential) ||
+              JSON.stringify(headers).includes(input.credential)))
+        ) {
+          confined = false;
+          await route.abort();
+        } else if (
+          [web.origin, adapterOrigin, cinemetaOrigin].includes(url.origin) ||
+          isPutioMediaHost(url)
+        )
+          await route.continue();
+        else await route.abort();
+      });
+      context.on("request", (request) => {
+        if (request.method() === "GET" && request.url() === input.selectedUrl)
+          observed.selections++;
+      });
+      context.on("response", (response) => {
+        const url = new URL(response.url());
+        if (
+          response.request().method() !== "GET" ||
+          !isPutioMediaHost(url) ||
+          ![200, 206].includes(response.status())
+        )
+          return;
+        if (url.pathname.endsWith(".m3u8")) observed.playlists++;
+        else observed.segments++;
+      });
+      return guestPage(context);
+    });
+    input.onStage("installation");
+    yield* Effect.tryPromise(() =>
+      installAddon(page, web.origin, input.manifestUrl),
+    );
+
+    input.onStage("stream-listing");
+    const detail = `${web.origin}/#/detail/movie/${encodeURIComponent(input.stremioId)}/${encodeURIComponent(input.stremioId)}`;
+    let streamListings = 0;
+    const listed = yield* pollListing(input.listing, (poll) =>
+      Effect.tryPromise(async () => {
+        streamListings = poll;
+        const [response] = await Promise.all([
+          page.waitForResponse(
+            (response) => {
+              const url = new URL(response.url());
+              return (
+                url.origin === adapterOrigin &&
+                url.pathname === input.streamPath &&
+                response.request().method() === "GET"
+              );
+            },
+            { timeout: 30_000 },
+          ),
+          poll === 1 ? page.goto(detail) : page.reload(),
+        ]);
+        if (response.status() !== 200) return undefined;
+        const rows = Schema.decodeUnknownSync(NamedStreams)(
+          await response.json(),
+        ).streams.filter((row) => row.name === "Play from put.io");
+        return rows.length === 1 && rows[0]?.url === input.selectedUrl
+          ? true
+          : undefined;
+      }).pipe(Effect.orElseSucceed(() => undefined)),
+    );
+    assert.equal(listed, true);
+
+    return yield* Effect.tryPromise(async () => {
+      input.onStage("selection");
+      const row = page
+        .getByText("Play from put.io", { exact: true })
+        .filter({ visible: true });
+      await expect(row).toHaveCount(1);
+      await row.click();
+      input.onStage("playback");
+      const video = page.locator("video");
+      const sample = () =>
+        video.evaluate((element: HTMLVideoElement) => ({
+          time: element.currentTime,
+          frames: element.getVideoPlaybackQuality().totalVideoFrames,
+        }));
+      await expect
+        .poll(
+          () =>
+            video
+              .evaluate((element: HTMLVideoElement) => element.readyState)
+              .catch(() => 0),
+          { timeout: 60_000 },
+        )
+        .toBeGreaterThanOrEqual(2);
+      const first = await sample();
+      await expect
+        .poll(async () => (await sample()).time, { timeout: 15_000 })
+        .toBeGreaterThan(first.time + 1);
+      const second = await sample();
+      assert.ok(second.frames > first.frames);
+      await expect
+        .poll(() => observed.playlists > 0 && observed.segments > 0)
+        .toBe(true);
+      input.onStage("fixture-frames");
+      const frames = await fixtureDecoded(
+        page,
+        { origin: web.origin },
+        "movie",
+      );
+      assert.ok(observed.selections > 0);
+      assert.equal(confined, true);
+      return {
+        client: versions.web,
+        browser: browser.version(),
+        streamListings,
+        selections: observed.selections,
+        playlistResponses: observed.playlists,
+        segmentResponses: observed.segments,
+        currentTime: [first.time, second.time],
+        decodedFrames: [first.frames, second.frames],
+        fixture: {
+          width: frames.second.width,
+          height: frames.second.height,
+          markers: [frames.first.marker, frames.second.marker],
+        },
+      } satisfies OwnedWebProof;
+    });
+  },
+  Effect.timeout("8 minutes"),
   Effect.scoped,
 );

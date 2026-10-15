@@ -29,6 +29,78 @@ export const ownedTitle = {
   fileName: "Night.of.the.Living.Dead.1968.1080p.WEB.mkv",
 };
 
+/** An episode of a 1962 series; the uploaded content is the generated fixture. */
+export const ownedEpisode = {
+  imdbId: "tt0055662",
+  season: 1,
+  episode: 2,
+  fileName: "The.Beverly.Hillbillies.S01E02.720p.WEB.mkv",
+};
+
+export interface Listing {
+  attempts: number;
+  intervalMs: number;
+}
+
+/** Reads a stream list up to `attempts` times until `read` finds its row. */
+export const pollListing = Effect.fn("live.pollListing")(function* <A, E, R>(
+  listing: Listing,
+  read: (poll: number) => Effect.Effect<A | undefined, E, R>,
+) {
+  for (let poll = 1; poll <= listing.attempts; poll++) {
+    if (poll > 1) yield* Effect.sleep(listing.intervalMs);
+    const found = yield* read(poll);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+});
+
+export interface OwnedWebCleanup {
+  browserClosed: boolean;
+  contextClosed: boolean;
+  webClosed: boolean;
+}
+
+export interface OwnedWebInput {
+  /** The personal manifest; it carries the credential. */
+  manifestUrl: string;
+  credential: string;
+  stremioId: string;
+  /** The movie's stream list path on the adapter origin. */
+  streamPath: string;
+  /** The row's media URL the stream list must offer. */
+  selectedUrl: string;
+  listing: Listing;
+  cleanup: OwnedWebCleanup;
+  onStage: (stage: string) => void;
+}
+
+export interface OwnedWebProof {
+  client: string;
+  browser: string;
+  streamListings: number;
+  /** GET requests for the selected row's media URL. */
+  selections: number;
+  playlistResponses: number;
+  segmentResponses: number;
+  currentTime: readonly [number, number];
+  decodedFrames: readonly [number, number];
+  fixture: {
+    width: number;
+    height: number;
+    markers: readonly [number, number];
+  };
+}
+
+/** The Stremio Web step runs only when `LIVE_OWNED_WEB` is `1`. */
+export const ownedWebStep = (value: string | undefined): OwnedOptions["web"] =>
+  value?.trim() === "1"
+    ? (input) =>
+        Effect.tryPromise(() => import("./hosted-browser.ts")).pipe(
+          Effect.flatMap((browser) => browser.proveOwnedWebPlayback(input)),
+        )
+    : undefined;
+
 export interface OwnedProvider {
   accountInfo: () => Effect.Effect<{ username: string }, unknown>;
   listFolderIds: (id: number) => Effect.Effect<readonly number[], unknown>;
@@ -62,7 +134,9 @@ export interface OwnedOptions {
   artifact: string;
   journal: string;
   nonce: string;
-  listing?: { attempts: number; intervalMs: number };
+  listing?: Listing;
+  /** Plays the movie's row in Stremio Web; unset skips the step. */
+  web?: (input: OwnedWebInput) => Effect.Effect<OwnedWebProof, unknown>;
 }
 
 const Streams = Schema.Struct({
@@ -112,7 +186,10 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
 ) {
   const { provider } = options;
   const mediaOrigin = options.mediaOrigin ?? liveVersions.apiBase;
-  const listing = options.listing ?? { attempts: 30, intervalMs: 10_000 };
+  const listing: Listing = options.listing ?? {
+    attempts: 30,
+    intervalMs: 10_000,
+  };
   const attempt = createLiveAttempt();
   const folderName = `${liveVersions.folderPrefix}-owned-${options.nonce}`;
   attempt.recovery = { folderName };
@@ -134,6 +211,91 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
     );
   const started = performance.now();
 
+  /** Lists a title until its Play from put.io row names the upload, then plays it. */
+  const playOwned = Effect.fn("live.playOwned")(function* (
+    title: {
+      type: "movie" | "series";
+      id: string;
+      fileId: number;
+      /** Prefix of this title's stage codes. */
+      stages: string;
+    },
+    record: Record<string, unknown>,
+  ) {
+    stage = `${title.stages}listing`;
+    const base = `${options.origin}/s/${options.credential}`;
+    const streams = `${base}/stream/${title.type}/${title.id}.json`;
+    const listedAt = performance.now();
+    const selected = yield* pollListing(listing, (poll) =>
+      Effect.gen(function* () {
+        record.listingPolls = poll;
+        const response = yield* request(streams);
+        if (response.status !== 200) {
+          yield* discard(response);
+          return undefined;
+        }
+        const body = yield* Effect.tryPromise({
+          try: () => response.json(),
+          catch: () => fail(stage),
+        });
+        const rows = (yield* Schema.decodeUnknownEffect(Streams)(body).pipe(
+          Effect.mapError(() => fail(stage)),
+        )).streams.filter((row) => row.name === "Play from put.io");
+        record.ownedRows = rows.length;
+        return rows.find((row) => {
+          if (!row.url || !URL.canParse(row.url)) return false;
+          const url = new URL(row.url);
+          if (
+            url.origin !== options.origin ||
+            !url.pathname.startsWith(
+              `/s/${options.credential}/play/${title.type}/`,
+            )
+          )
+            return false;
+          try {
+            return (
+              decodeURIComponent(url.pathname.split("/").at(-1) ?? "") ===
+              `owned:${title.fileId}.m3u8`
+            );
+          } catch {
+            return false;
+          }
+        })?.url;
+      }),
+    );
+    if (!selected) return yield* fail(stage);
+    record.listedAfterMs = Math.round(performance.now() - listedAt);
+
+    stage = `${title.stages}head`;
+    const head = yield* request(selected, { method: "HEAD" });
+    record.headStatus = head.status;
+    if (head.status !== 200) return yield* fail(stage);
+
+    stage = `${title.stages}redirect`;
+    const selection = yield* request(selected);
+    yield* discard(selection);
+    record.redirectStatus = selection.status;
+    const location = selection.headers.get("location") ?? "";
+    const media = mediaLocation(selection.status, location, mediaOrigin);
+    Object.assign(record, media.checks);
+    record.locationNamesFile =
+      media.target?.pathname.includes(`/files/${title.fileId}/`) ?? false;
+    if (!media.ok) return yield* fail(stage);
+
+    stage = `${title.stages}decode`;
+    const decodeStarted = performance.now();
+    const decoded = yield* options.decode(location);
+    record.decode = {
+      frames: decoded.frames,
+      codec: decoded.codec,
+      width: decoded.width,
+      height: decoded.height,
+      ms: Math.round(performance.now() - decodeStarted),
+    };
+    if (decoded.frames < 1) return yield* fail(stage);
+    return selected;
+  });
+
   const work = Effect.gen(function* () {
     if (!isCredential(options.credential) || !validOrigin(options.origin))
       return yield* fail(stage);
@@ -153,10 +315,11 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
     stage = "source";
     const source = yield* options.source;
     stage = "reservation";
+    // The folder and two uploads of the fixture.
     yield* Effect.tryPromise((signal) =>
-      reserve(ledgerDirectory, 2, source.bytes, undefined, { signal }),
+      reserve(ledgerDirectory, 3, 2 * source.bytes, undefined, { signal }),
     );
-    proof.reservation = { creations: 2, bytes: source.bytes };
+    proof.reservation = { creations: 3, bytes: 2 * source.bytes };
 
     stage = "upload";
     const folder = yield* trackAcquisition(
@@ -165,86 +328,100 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
       provider.createFolder(folderName),
       checkpoint,
     );
-    const file = yield* trackAcquisition(
+    const movie = yield* trackAcquisition(
       attempt,
       "file",
       provider.uploadFile(source.path, ownedTitle.fileName, folder.id),
       checkpoint,
     );
+    const episode = yield* trackAcquisition(
+      attempt,
+      "file",
+      provider.uploadFile(source.path, ownedEpisode.fileName, folder.id),
+      checkpoint,
+    );
     proof.uploaded = true;
 
-    stage = "listing";
     const base = `${options.origin}/s/${options.credential}`;
-    const streams = `${base}/stream/movie/${ownedTitle.imdbId}.json`;
-    const listedAt = performance.now();
-    let selected: string | undefined;
-    for (let poll = 1; poll <= listing.attempts && !selected; poll++) {
-      if (poll > 1) yield* Effect.sleep(listing.intervalMs);
-      proof.listingPolls = poll;
-      const response = yield* request(streams);
-      if (response.status !== 200) {
-        yield* discard(response);
-        continue;
-      }
-      const body = yield* Effect.tryPromise({
-        try: () => response.json(),
-        catch: () => fail(stage),
-      });
-      const rows = (yield* Schema.decodeUnknownEffect(Streams)(body).pipe(
-        Effect.mapError(() => fail(stage)),
-      )).streams.filter((row) => row.name === "Play from put.io");
-      proof.ownedRows = rows.length;
-      selected = rows.find((row) => {
-        if (!row.url || !URL.canParse(row.url)) return false;
-        const url = new URL(row.url);
-        if (
-          url.origin !== options.origin ||
-          !url.pathname.startsWith(`/s/${options.credential}/play/movie/`)
-        )
-          return false;
-        try {
-          return (
-            decodeURIComponent(url.pathname.split("/").at(-1) ?? "") ===
-            `owned:${file.id}.m3u8`
-          );
-        } catch {
-          return false;
-        }
-      })?.url;
+    const moviePath = `/s/${options.credential}/stream/movie/${ownedTitle.imdbId}.json`;
+    const selected = yield* playOwned(
+      {
+        type: "movie",
+        id: ownedTitle.imdbId,
+        fileId: movie.id,
+        stages: "",
+      },
+      proof,
+    );
+    const episodeProof: Record<string, unknown> = {};
+    proof.episode = episodeProof;
+    yield* playOwned(
+      {
+        type: "series",
+        id: `${ownedEpisode.imdbId}:${ownedEpisode.season}:${ownedEpisode.episode}`,
+        fileId: episode.id,
+        stages: "episode-",
+      },
+      episodeProof,
+    );
+
+    if (!options.web) {
+      proof.web = "skipped";
+      stage = "done";
+      return;
     }
-    if (!selected) return yield* fail(stage);
-    proof.listedAfterMs = Math.round(performance.now() - listedAt);
-
-    stage = "head";
-    const head = yield* request(selected, { method: "HEAD" });
-    proof.headStatus = head.status;
-    if (head.status !== 200) return yield* fail(stage);
-
-    stage = "redirect";
-    const selection = yield* request(selected);
-    yield* discard(selection);
-    proof.redirectStatus = selection.status;
-    const location = selection.headers.get("location") ?? "";
-    const media = mediaLocation(selection.status, location, mediaOrigin);
-    Object.assign(proof, media.checks);
-    proof.locationNamesFile =
-      media.target?.pathname.includes(`/files/${file.id}/`) ?? false;
-    if (!media.ok) return yield* fail(stage);
-
-    stage = "decode";
-    const decodeStarted = performance.now();
-    const decoded = yield* options.decode(location);
-    proof.decode = {
-      frames: decoded.frames,
-      codec: decoded.codec,
-      width: decoded.width,
-      height: decoded.height,
-      ms: Math.round(performance.now() - decodeStarted),
+    stage = "web";
+    const cleanup = {
+      browserClosed: false,
+      contextClosed: false,
+      webClosed: false,
     };
-    if (decoded.frames < 1) return yield* fail(stage);
+    const web: Record<string, unknown> = { cleanup };
+    proof.web = web;
+    const played = yield* options.web({
+      manifestUrl: `${base}/manifest.json`,
+      credential: options.credential,
+      stremioId: ownedTitle.imdbId,
+      streamPath: moviePath,
+      selectedUrl: selected,
+      listing,
+      cleanup,
+      onStage: (value) => {
+        stage = `web-${value}`;
+      },
+    });
+    stage = "web-proof";
+    // Copied field by field so nothing else the step returns reaches the receipt.
+    Object.assign(web, {
+      client: played.client,
+      browser: played.browser,
+      streamListings: played.streamListings,
+      selections: played.selections,
+      playlistResponses: played.playlistResponses,
+      segmentResponses: played.segmentResponses,
+      currentTime: [...played.currentTime],
+      decodedFrames: [...played.decodedFrames],
+      fixture: {
+        width: played.fixture.width,
+        height: played.fixture.height,
+        markers: [...played.fixture.markers],
+      },
+    });
+    if (
+      played.selections < 1 ||
+      played.playlistResponses < 1 ||
+      played.segmentResponses < 1 ||
+      !(played.currentTime[1] > played.currentTime[0]) ||
+      !(played.decodedFrames[1] > played.decodedFrames[0]) ||
+      !(played.fixture.markers[1] > played.fixture.markers[0])
+    )
+      return yield* fail(stage);
+    stage = "web-cleanup";
+    if (!Object.values(cleanup).every(Boolean)) return yield* fail(stage);
+    web.status = "passed";
     stage = "done";
   }).pipe(
-    Effect.timeout("10 minutes"),
+    Effect.timeout("20 minutes"),
     Effect.catchCause((cause) => {
       const error = Cause.findErrorOption(cause);
       proof.failureStage =
@@ -330,6 +507,7 @@ if (import.meta.main) {
       artifact: `artifacts/live-owned-${stamp}`,
       journal: `.cache/live/recovery/owned-${stamp}.json`,
       nonce: randomBytes(16).toString("hex"),
+      web: ownedWebStep(process.env.LIVE_OWNED_WEB),
     }).pipe(
       Effect.tap((outcome) =>
         Effect.sync(() => {

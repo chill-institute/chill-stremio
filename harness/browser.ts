@@ -213,11 +213,12 @@ export async function verifySubtitleControls(page: Page, directory: string) {
   };
 }
 
+/** Checks the generated fixture's size, moving marker and identity colour; `path` keeps the last frame. */
 export async function decoded(
   page: Page,
-  fixture: Fixture,
+  fixture: Pick<Fixture, "origin">,
   name: "movie" | "episode1" | "episode2",
-  path: string,
+  path?: string,
 ) {
   await expect
     .poll(

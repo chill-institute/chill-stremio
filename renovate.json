@@ -13,9 +13,15 @@
         "@effect/platform-node",
         "sharp",
         "@playwright/test",
-        "playwright"
+        "playwright",
+        "mcr.microsoft.com/playwright"
       ],
       "automerge": false
+    },
+    {
+      "description": "The browser image must carry the @playwright/test release",
+      "matchPackageNames": ["@playwright/test", "mcr.microsoft.com/playwright"],
+      "groupName": "Playwright"
     }
   ]
 }
