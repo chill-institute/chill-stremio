@@ -123,6 +123,8 @@ async function fixture(
     playbackPending: false,
     // ResolvePlayback answers that put.io must convert the video first.
     playbackConvertible: false,
+    // ResolvePlayback answers unavailable for a reason other than conversion.
+    playbackUnavailable: false,
     conversionResult: "pending" as "pending" | "unavailable",
     conversionRejection: undefined as
       | { status: number; code: string }
@@ -533,11 +535,13 @@ async function fixture(
             );
             return;
           }
-          if (state.playbackConvertible) {
+          if (state.playbackConvertible || state.playbackUnavailable) {
             response.end(
               JSON.stringify({
                 unavailable: {
-                  reason: "UNAVAILABLE_REASON_CONVERSION_REQUIRED",
+                  reason: state.playbackConvertible
+                    ? "UNAVAILABLE_REASON_CONVERSION_REQUIRED"
+                    : "UNAVAILABLE_REASON_UNSUPPORTED_FORMAT",
                 },
               }),
             );
@@ -2902,6 +2906,30 @@ test("a selected download put.io must convert asks once per read and plays once 
       await location(`${f.base()}/status/90.m3u8`),
       `${f.base()}/notice/reconnect.m3u8`,
     );
+    // A transient Engine failure stays an error, never the unavailable clip.
+    f.state.conversionRejection = { status: 503, code: "unavailable" };
+    for (const format of ["m3u8", "mp4"]) {
+      const failed = await fetch(`${f.base()}/status/90.${format}`, {
+        redirect: "manual",
+      });
+      assert.equal(failed.status, 503);
+      assert.equal(failed.headers.get("location"), null);
+      await failed.arrayBuffer();
+    }
+    // Only conversion_required asks for a conversion: not pending, nor
+    // unavailable for another reason.
+    f.state.conversionRejection = undefined;
+    f.state.conversionResult = "pending";
+    f.state.playbackConvertible = false;
+    f.state.playbackPending = true;
+    const conversions = [...f.state.conversions];
+    const resolutions = playbackResolutions(f);
+    const waited = location(`${f.base()}/status/90.m3u8`);
+    await until(() => playbackResolutions(f) >= resolutions + 3);
+    f.state.playbackPending = false;
+    f.state.playbackUnavailable = true;
+    assert.equal(await waited, `${f.base()}/notice/unavailable.m3u8`);
+    assert.deepEqual(f.state.conversions, conversions);
     assert.equal(f.state.addCount, 1);
   } finally {
     await f.close();
