@@ -9,13 +9,19 @@ import {
   createDiscovery,
   discoveryBudgetMs,
   discoveryTargetId,
+  readDiscoveryTarget,
   releaseDescription,
   seasonPackPrefix,
   type SeasonEpisode,
 } from "./discovery.ts";
 import { responseReserveMs } from "./discovery-engine.ts";
 import { EngineError } from "./engine.ts";
-import { createLibrary, filePlayback, startConversion } from "./library.ts";
+import {
+  createLibrary,
+  filePlayback,
+  LibraryError,
+  startConversion,
+} from "./library.ts";
 import type { PlaybackResult } from "./playback-wait.ts";
 
 export type Submission =
@@ -68,6 +74,8 @@ const withinGrace = Effect.fn("Selection.withinGrace")(function* <A>(
 /** Stremio release rows and selected-media playback for one add-on base URL. */
 export function createSelection(options: { base: string }) {
   const discovery = createDiscovery();
+  const selectionUrl = (type: string, id: string, releaseId: string) =>
+    `${options.base}/play/${type}/${encodeURIComponent(id)}/${encodeURIComponent(releaseId)}.m3u8`;
   const streams = Effect.fn("Selection.streams")(function* (input: {
     type: string;
     id: string;
@@ -76,7 +84,7 @@ export function createSelection(options: { base: string }) {
     const target = yield* discovery.resolveTarget(input);
     const canonical = discoveryTargetId(target);
     const play = (releaseId: string) =>
-      `${options.base}/play/${input.type}/${encodeURIComponent(canonical)}/${encodeURIComponent(releaseId)}.m3u8`;
+      selectionUrl(input.type, canonical, releaseId);
     const lookup =
       target.kind === "episode"
         ? yield* discovery.seasonPack(target).pipe(
@@ -207,7 +215,17 @@ export function createSelection(options: { base: string }) {
    * A video already in the account plays without a transfer. One that put.io
    * must convert starts converting and plays the preparing clip until ready.
    */
-  const owned = Effect.fn("Selection.owned")(function* (fileId: bigint) {
+  const owned = Effect.fn("Selection.owned")(function* (input: {
+    type: string;
+    id: string;
+    fileId: bigint;
+  }) {
+    const { fileId } = input;
+    // A library row names its own file; any other row names the page listing it.
+    if (input.id.startsWith("chill:file:")) {
+      if (input.type !== "movie" || input.id !== `chill:file:${fileId}`)
+        return yield* new LibraryError({ code: "invalid_request" });
+    } else yield* readDiscoveryTarget(input);
     const playback = yield* Effect.gen(function* () {
       const resolved = yield* filePlayback(fileId);
       return resolved.case === "convertible"
@@ -227,5 +245,8 @@ export function createSelection(options: { base: string }) {
           }
     ) satisfies PlaybackResult;
   });
-  return { streams, submit, status, owned };
+  /** The selection that plays a library file through `owned`. */
+  const libraryUrl = (fileId: bigint) =>
+    selectionUrl("movie", `chill:file:${fileId}`, `${ownedPrefix}${fileId}`);
+  return { streams, submit, status, owned, libraryUrl };
 }

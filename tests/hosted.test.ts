@@ -2649,6 +2649,12 @@ const movieRows = async (f: Fixture, id = "tt1234567") => {
 };
 const ownedSelection = (f: Fixture, fileId: string, format = "m3u8") =>
   `${f.base()}/play/movie/${encodeURIComponent(target)}/${encodeURIComponent(`owned:${fileId}`)}.${format}`;
+const librarySelection = (
+  f: Fixture,
+  fileId: string,
+  options: { type?: string; id?: string; format?: string } = {},
+) =>
+  `${f.base()}/play/${options.type ?? "movie"}/${encodeURIComponent(options.id ?? `chill:file:${fileId}`)}/${encodeURIComponent(`owned:${fileId}`)}.${options.format ?? "m3u8"}`;
 
 test("videos already in put.io lead the stream list, outside the release limit", async () => {
   const f = await fixture();
@@ -3082,7 +3088,14 @@ test("listing videos put.io must convert never starts a conversion", async () =>
         return response.json();
       });
     assert.deepEqual(await resource("stream/movie/chill%3Afile%3A50.json"), {
-      streams: [],
+      streams: [
+        {
+          name: "Convert and play from put.io",
+          title: "Existing video\nput.io prepares this video before it plays",
+          url: librarySelection(f, "50"),
+          behaviorHints: { notWebReady: false },
+        },
+      ],
     });
     assert.deepEqual(await resource("subtitles/movie/chill%3Afile%3A50.json"), {
       subtitles: [],
@@ -3092,6 +3105,75 @@ test("listing videos put.io must convert never starts a conversion", async () =>
     assert.equal((await movieRows(f))[0]?.url, ownedSelection(f, "77"));
     assert.equal(playbackResolutions(f), 2);
     assert.deepEqual(f.state.conversions, []);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a library video put.io must convert lists a row that converts only when selected", async () => {
+  const f = await fixture();
+  const media =
+    "https://media.fixture.test/video-50?token=fixture-playback-secret";
+  const libraryRows = async () => {
+    const response = await fetch(
+      `${f.base()}/stream/movie/chill%3Afile%3A50.json`,
+    );
+    assert.equal(response.status, 200);
+    return (await decode(response, Rows)).streams;
+  };
+  try {
+    f.state.playbackConvertible = true;
+    const [row, ...others] = await libraryRows();
+    assert.deepEqual(others, []);
+    assert.equal(row?.name, "Convert and play from put.io");
+    assert.equal(row?.url, librarySelection(f, "50"));
+    for (const init of readOnlyProbes)
+      await (await fetch(librarySelection(f, "50"), init)).arrayBuffer();
+    assert.deepEqual(f.state.conversions, []);
+    assert.equal(
+      await location(librarySelection(f, "50")),
+      `${f.base()}/notice/preparing.m3u8`,
+    );
+    assert.deepEqual(f.state.conversions, [50n]);
+    // put.io has converted it: the row plays the video, and the listing offers
+    // the video itself again.
+    f.state.playbackConvertible = false;
+    assert.equal(await location(librarySelection(f, "50")), media);
+    assert.deepEqual(f.state.conversions, [50n]);
+    assert.deepEqual(
+      (await libraryRows()).map(({ url }) => url),
+      [media],
+    );
+    f.state.playbackUnavailable = true;
+    assert.deepEqual(await libraryRows(), []);
+    assert.deepEqual(f.state.conversions, [50n]);
+    assert.equal(f.state.addCount, 0);
+    // A library selection names its own file as a movie; other owned
+    // selections name a page that lists them.
+    f.state.playbackUnavailable = false;
+    f.state.playbackConvertible = true;
+    const calls = f.calls.length;
+    for (const selection of [
+      { id: "chill:file:51" },
+      { id: "chill:file:050" },
+      { type: "series" },
+      { type: "series", format: "mp4" },
+      { id: "chill:files:50" },
+      { id: "fixture-film" },
+      { id: "chill:movie:!" },
+      { type: "series", id: target },
+    ])
+      assert.equal(
+        (
+          await fetch(librarySelection(f, "50", selection), {
+            redirect: "manual",
+          })
+        ).status,
+        400,
+        JSON.stringify(selection),
+      );
+    assert.equal(f.calls.length, calls);
+    assert.deepEqual(f.state.conversions, [50n]);
   } finally {
     await f.close();
   }

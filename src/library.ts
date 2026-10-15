@@ -227,7 +227,17 @@ export const startConversion = Effect.fn("Library.startConversion")(function* (
   return { case: conversion.result.case } as const;
 });
 
-export function createLibrary(folderId: bigint, recursive = false) {
+export function createLibrary(
+  folderId: bigint,
+  recursive = false,
+  options: {
+    /**
+     * The selection URL that plays a file put.io must convert. Listing only
+     * names it; consuming it is what asks put.io to convert.
+     */
+    conversionUrl?: (fileId: bigint) => string;
+  } = {},
+) {
   const files = Effect.fn("Library.files")(function* (
     matches: (file: typeof File.Type) => boolean,
     limit: number,
@@ -275,7 +285,8 @@ export function createLibrary(folderId: bigint, recursive = false) {
     const streams: Stream[] = [];
     if (!file) return { streams, state: "unavailable" as const };
     const playback = yield* filePlayback(id);
-    if (playback.case !== "ready") return { streams, state: playback.case };
+    if (playback.case !== "ready")
+      return { streams, state: playback.case, file };
     const { url, subtitles, format } = playback;
     streams.push({
       name: "chill.institute",
@@ -291,7 +302,7 @@ export function createLibrary(folderId: bigint, recursive = false) {
         ),
       },
     });
-    return { streams, state: playback.case };
+    return { streams, state: playback.case, file };
   });
   return {
     catalog: Effect.fn("Library.catalog")(function* (input: {
@@ -323,7 +334,14 @@ export function createLibrary(folderId: bigint, recursive = false) {
       type: string;
       id: string;
     }) {
-      const { streams } = yield* resolvePlayback(input);
+      const { streams, state, file } = yield* resolvePlayback(input);
+      if (state === "convertible" && file && options.conversionUrl)
+        streams.push({
+          name: "Convert and play from put.io",
+          title: `${file.name}\nput.io prepares this video before it plays`,
+          url: options.conversionUrl(file.id),
+          behaviorHints: { notWebReady: false },
+        });
       return { streams };
     }),
   };

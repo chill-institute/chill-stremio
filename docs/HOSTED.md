@@ -129,7 +129,9 @@ alone is not proof of catalog visibility.
 **Library** tab contains items saved in Stremio, not the connected put.io account.
 The catalog lists and searches videos across the whole account, starting at the
 put.io root and including subfolders. Library read errors do not affect
-discovery or release search.
+discovery or release search. A ready video's source plays it directly; a video
+put.io must [convert](#videos-putio-must-convert) first lists a
+**Convert and play from put.io** source instead.
 
 Library requests traverse folders breadth-first and stop after finding the
 requested page or file. Each request rechecks membership and retains the
@@ -240,7 +242,8 @@ The account OAuth token remains in Engine.
 put.io streams many videos, including most `.mkv` files, only after converting
 them to MP4. `ResolvePlayback` never starts that; it answers that the video
 needs converting. Choosing to play starts it: when GET on a selected release,
-season pack or **Play from put.io** row resolves to such a video, the adapter
+season pack, **Play from put.io** or **Convert and play from put.io** row
+resolves to such a video, the adapter
 calls Engine's `StartPlaybackConversion` once for that resolution, and Engine
 asks put.io to convert it. An accepted request counts as pending:
 
@@ -248,14 +251,23 @@ asks put.io to convert it. An accepted request counts as pending:
   four-minute limit as a download in progress. Each read that still finds the
   video unconverted asks again, which changes nothing while put.io works on
   it, and the video plays once put.io's playlist is ready.
-- A **Play from put.io** row plays the `preparing` clip. Selecting it again
-  once put.io has finished plays the video.
+- A **Play from put.io** or **Convert and play from put.io** row plays the
+  `preparing` clip. Selecting it again once put.io has finished plays the
+  video.
 
 A video put.io cannot convert, or that is gone, plays `unavailable`. A failed
 conversion request is handled like a failed `ResolvePlayback` on the same
 route. Catalogs, metadata, stream and subtitle listings, HEAD, OPTIONS and
-prefetch hints never request conversion, so **put.io library** offers no stream
-for such a video until put.io has converted it.
+prefetch hints never request conversion.
+
+**put.io library** lists such a video with one **Convert and play from put.io**
+source, whose title adds that put.io prepares the video before it plays. It
+selects `/s/<credential>/play/movie/chill:file:<fileId>/owned:<fileId>.m3u8`
+and plays like a [**Play from put.io**](#videos-already-in-putio) row: the type
+must be `movie` and both IDs must name the same file. The source carries no
+subtitles. Once put.io has converted the video, the library lists the video
+itself with its subtitles; while put.io is still converting it, the library
+lists no source.
 
 Movie discovery and episode detail retain their verified artwork and descriptions.
 Release search and detail add movie artwork only when the result's IMDb ID matches
@@ -342,7 +354,8 @@ still being prepared, or a video put.io must [convert](#videos-putio-must-conver
 first, plays the `preparing` clip, a file that is gone or has no
 playable source plays `unavailable`, and a rejected credential plays
 `reconnect`; legacy `.mp4` URLs get the matching `.mp4` clips. A malformed file
-ID returns `400`. HEAD and prefetch hints answer as for other selected media,
+ID, or an `<id>` that is neither a movie or episode page's ID nor, for a movie,
+the same file's `chill:file:<fileId>`, returns `400` without contacting Engine. HEAD and prefetch hints answer as for other selected media,
 and the request counts toward [capacity](#capacity) like any other.
 
 The lookup misses, and **put.io library** still lists by filename:

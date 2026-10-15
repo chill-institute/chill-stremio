@@ -333,9 +333,11 @@ export async function startHostedAdapter(options: {
         discoveryEngineLayer(auth),
         acquisitionEngineLayer(auth),
       );
-      const library = createLibrary(0n, true);
-      const discovery = createDiscovery();
       const selection = createSelection({ base });
+      const library = createLibrary(0n, true, {
+        conversionUrl: selection.libraryUrl,
+      });
+      const discovery = createDiscovery();
       const playRoute =
         /^\/play\/(movie|series)\/([^/]+)\/([^/]+)\.(?:mp4|m3u8)$/.exec(path);
       // A season pack selection carries the episode it plays.
@@ -415,7 +417,9 @@ export async function startHostedAdapter(options: {
           let result: PlaybackResult;
           try {
             result = await run(
-              selection.owned(fileId).pipe(Effect.provide(layer)),
+              selection
+                .owned({ type: choice.type, id: choice.id, fileId })
+                .pipe(Effect.provide(layer)),
             );
           } catch (error) {
             if (!rejected(error)) throw error;

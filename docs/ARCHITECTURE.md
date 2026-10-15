@@ -125,19 +125,23 @@ returns another unavailable reason. Older clients that omit the delivery option
 retain original-file playback.
 
 Conversion is a write, made only when a user plays. When GET on a selected
-release, season pack or `owned:` row resolves to a video needing conversion,
+release, season pack or `owned:` row, including a library file's
+**Convert and play from put.io** row, resolves to a video needing conversion,
 [selection.ts](../src/selection.ts) calls `StartPlaybackConversion` once for
 that resolution. Its pending result counts as pending playback and its
 unavailable result as unavailable; an RPC failure maps as `ResolvePlayback`
 failures do on that route. Engine treats repeated requests as idempotent, so a
 waiting selection asks again on each read that still needs conversion.
 Catalogs, metadata, stream and subtitle listings, HEAD, OPTIONS and prefetch
-hints never call it, and the [library translator](../src/library.ts) lists such
-a video without a stream.
+hints never call it. The [library translator](../src/library.ts) lists such
+a video with a source only when its caller supplies a selection URL: the hosted
+adapter's `owned:<fileId>` play URL under `chill:file:<fileId>`, which the
+selection route accepts only for that same file. The local adapter, which has no
+selection route, lists no source.
 
 The [library translator](../src/library.ts) validates media/subtitle URLs and
 expiry. Ready playback returns a direct source; pending/unavailable returns no
-source. Authentication, malformed responses, timeouts and provider rate limits
+source, and convertible returns the selection source above when there is one. Authentication, malformed responses, timeouts and provider rate limits
 remain errors instead of empty successful catalogs. Requests have finite total
 deadlines and cancel on disconnect. Transfer submission is never retried. The
 hosted process bounds concurrent work per process and per add-on link; see

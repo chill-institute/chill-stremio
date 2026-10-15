@@ -35,7 +35,8 @@ and OPTIONS stay read-only; consuming a selected media URL with GET submits one
 transfer, reused in memory for 60 seconds, and a lost submission response is
 never retried. An `owned:` row plays a [video already in put.io](./docs/HOSTED.md#videos-already-in-putio)
 through `ResolvePlayback` and never submits; Engine, not the adapter,
-matches filenames. `ResolvePlayback` never converts; only GET on selected media,
+matches filenames. A library video put.io must convert lists one such row under
+`chill:file:<fileId>`, accepted only for that same file. `ResolvePlayback` never converts; only GET on selected media,
 status URLs included, calls `StartPlaybackConversion`, once per resolution, for a video put.io
 must [convert](./docs/HOSTED.md#videos-putio-must-convert). HLS terminal states, and waits past the four-minute pending limit
 or an HLS status URL's fifth redirect, redirect to status clips under `/notice/`,
@@ -107,6 +108,8 @@ Gaps:
 - A cold season lookup slower than the listing's five-second wait still leaves
   the **Download season to put.io** row out of a first visit to an episode; a
   later visit lists it. No lane times the cold lookup against production Engine. Owner: chill-institute/chill-stremio.
+- While put.io converts a library video, its **put.io library** page lists no
+  source, so the user waits outside the player and reopens it. Owner: chill-institute/chill-stremio.
 - CI artifacts expire after 7 days; archive evidence needed longer. Owner: chill-institute/chill-stremio.
 
 ## Work and verify
