@@ -252,8 +252,9 @@ asks put.io to convert it. An accepted request counts as pending:
   video unconverted asks again, which changes nothing while put.io works on
   it, and the video plays once put.io's playlist is ready.
 - A **Play from put.io** or **Convert and play from put.io** row plays the
-  `preparing` clip. Selecting it again once put.io has finished plays the
-  video.
+  `preparing` clip. Selecting **Play from put.io** again once put.io has
+  finished plays the video; the library then lists the video in place of
+  **Convert and play from put.io**.
 
 A video put.io cannot convert, or that is gone, plays `unavailable`. A failed
 conversion request is handled like a failed `ResolvePlayback` on the same
