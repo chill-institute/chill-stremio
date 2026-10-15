@@ -201,7 +201,7 @@ async function adapter(
               create(proto.FindOwnedVideosResponseSchema, {
                 videos:
                   title === "Night of the Living Dead" && year === 1968
-                    ? [{ id: 4242n, name: ownedName, fileType: "VIDEO" }]
+                    ? [{ id: 731942617n, name: ownedName, fileType: "VIDEO" }]
                     : [],
               }),
             ),
@@ -298,7 +298,7 @@ for (const [engine, failedStep, outcome] of [
         failedStep,
       );
       for (const text of [run.text, run.output])
-        for (const secret of ["v4.local.", ownedName, "4242"])
+        for (const secret of ["v4.local.", ownedName, "731942617"])
           assert.ok(!text.includes(secret), secret);
       if (!failedStep)
         assert.deepEqual(run.receipt.steps.at(-1), {
