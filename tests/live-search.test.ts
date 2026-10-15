@@ -26,6 +26,7 @@ const fixtures = searchFixtures(words);
 const folderName = "chill-stremio-live-search-fixture";
 const foreign = { id: 5, name: "Neutral Sample.mkv", parent: 0, folder: false };
 const mediaBytes = 13;
+const settleMs = 20;
 
 // Literal tokens: no accent folding, and punctuation only separates.
 const terms = (text: string) =>
@@ -213,6 +214,7 @@ const Receipt = Schema.fromJsonString(
             errorTypes: Schema.Array(Schema.String),
           }),
         ),
+        firstIndexedMs: Schema.optional(Schema.Number),
         allIndexed: Schema.optional(Schema.Boolean),
         notSeen: Schema.optional(Schema.Array(Schema.String)),
       }),
@@ -302,7 +304,7 @@ async function runLane(
         timing: {
           pollIntervalMs: 1,
           indexDeadlineMs: 40,
-          settleMs: 20,
+          settleMs,
           verifyAttempts: 2,
           verifyIntervalMs: 1,
         },
@@ -540,7 +542,10 @@ test("the re-read records file types after settling apart from the first sightin
     searchSeen: true,
     searchFileType: "VIDEO",
   });
-  assert.ok((reread.afterMs ?? -1) >= 0);
+  assert.ok(
+    (reread.afterMs ?? -1) >=
+      (run.receipt.proof.indexing.firstIndexedMs ?? Infinity) + settleMs,
+  );
 });
 
 test("an unowned parent and a non-enum read type stay out of the receipt", async () => {

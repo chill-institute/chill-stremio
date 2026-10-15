@@ -520,6 +520,9 @@ export const runFileSearch = Effect.fn("live.runFileSearch")(function* (
     }
 
     stage = "reread";
+    const settled = firstAt + timing.settleMs;
+    const beforeReread = (yield* Clock.currentTimeMillis) - started;
+    if (beforeReread < settled) yield* Effect.sleep(settled - beforeReread);
     const rereadAt = (yield* Clock.currentTimeMillis) - started;
     const reads: Record<string, RereadObservation> = {};
     for (const fixture of fixtures) {

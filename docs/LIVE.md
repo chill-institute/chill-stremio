@@ -275,7 +275,8 @@ created in. A label in `indexing.notSeen` either was not indexed in time or
 does not match any poll word; the query forms tell which. `indexing.allIndexed`
 ignores the generic names.
 
-After the query forms, stage `reread` reads every label with
+After the query forms, stage `reread` waits until at least one minute has
+passed since the first label appeared, reads every label with
 `GET /v2/files/<id>`, then sends the poll words once more. `reread.fixtures`
 records per label whether the read `found` it, its `fileType`, whether the
 repeated polls returned it (`searchSeen`) and the `searchFileType` they
