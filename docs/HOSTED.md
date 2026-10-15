@@ -263,7 +263,8 @@ Engine offers a season pack for that episode's season. Its first line reads
 `Season <n> pack` and the resolution, codec and quality Engine reports; the
 second gives the indexer, seeders and size. The adapter asks Engine with
 `GetTVShowSeasonDownloads` alongside the episode search and, once the episode
-rows are ready, waits at most half a second more. A slower, failed or refused
+rows are ready, waits at most half a second more, or until two seconds after
+the request began if that is later. A slower, failed or refused
 lookup leaves the row out without changing the episode rows, and so does a pack
 that the episode search already lists. The 100-row limit applies to episode
 rows only. Movies never show the row.
@@ -297,7 +298,8 @@ one put.io file search and returns only videos whose filenames match strictly:
 a movie needs its exact title and year, an episode its exact show title, season
 and episode, with any year in the filename equal to the show's. The adapter
 never reads filenames itself. Once the release rows are ready, the listing
-waits at most half a second more for the lookup. A slower, failed or refused
+waits at most half a second more for the lookup, or until two seconds after the
+request began if that is later, so a fast release search does not cut it short. A slower, failed or refused
 lookup, including `401` or `403`, leaves the page as it would be without it and
 never shows the reconnect source. These rows do not count toward the 100-row
 release limit. Release search results, movies without a year and titles without

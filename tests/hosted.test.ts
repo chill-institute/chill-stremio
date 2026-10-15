@@ -2236,7 +2236,7 @@ test("a season lookup Engine refuses or never answers leaves the episode rows", 
       (await episodeRows(f)).map(({ name }) => name),
       ["Download to put.io"],
     );
-    assert.ok(performance.now() - started < 2_000);
+    assert.ok(performance.now() - started < 3_000);
     await until(() => f.state.abandonedSeasonLookups === 1);
   } finally {
     await f.close();
@@ -2562,13 +2562,34 @@ test("an account lookup slower than its grace is left out", async () => {
   const f = await fixture();
   try {
     f.state.ownedVideos = [ownedVideo(77n)];
-    f.state.ownedDelayMs = 2_000;
+    f.state.ownedDelayMs = 3_000;
     const started = performance.now();
     assert.deepEqual(
       (await movieRows(f)).map(({ name }) => name),
       ["Download to put.io"],
     );
-    assert.ok(performance.now() - started < 1_500);
+    assert.ok(performance.now() - started < 2_800);
+  } finally {
+    await f.close();
+  }
+});
+
+test("a fast release search still gives the account and season lookups two seconds", async () => {
+  const f = await fixture();
+  try {
+    f.state.ownedVideos = [ownedVideo(77n)];
+    f.state.seasonPack = seasonPack;
+    // Search answers at once; both lookups answer after more than its grace.
+    f.state.ownedDelayMs = 1_200;
+    f.state.seasonDelayMs = 1_200;
+    assert.deepEqual(
+      (await movieRows(f)).map(({ name }) => name),
+      ["Play from put.io", "Download to put.io"],
+    );
+    assert.deepEqual(
+      (await episodeRows(f)).map(({ name }) => name),
+      ["Play from put.io", "Download to put.io", "Download season to put.io"],
+    );
   } finally {
     await f.close();
   }

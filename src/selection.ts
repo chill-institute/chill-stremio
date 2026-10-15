@@ -1,4 +1,4 @@
-import { Effect, Fiber, Option } from "effect";
+import { Clock, Effect, Fiber, Option } from "effect";
 import type { Stream } from "stremio-addon-sdk";
 import {
   AcquisitionEngine,
@@ -36,6 +36,8 @@ export const submissionBudgetMs =
 
 /** How long a listing waits for its optional lookups once its release rows are ready. */
 const lookupGraceMs = 500;
+/** The least time a listing gives its optional lookups, so a fast release search cannot cut them short. */
+const lookupFloorMs = 2_000;
 
 /** Release IDs with this prefix play a video already in the account, by file ID. */
 export const ownedPrefix = "owned:";
@@ -49,10 +51,14 @@ export function ownedFileId(releaseId: string) {
 // A late or failed optional lookup leaves its rows out.
 const withinGrace = Effect.fn("Selection.withinGrace")(function* <A>(
   lookup: Fiber.Fiber<A> | undefined,
+  startedAt: number,
 ) {
   if (!lookup) return undefined;
+  const now = yield* Clock.currentTimeMillis;
   const result = yield* Fiber.join(lookup).pipe(
-    Effect.timeoutOption(lookupGraceMs),
+    Effect.timeoutOption(
+      Math.max(lookupGraceMs, startedAt + lookupFloorMs - now),
+    ),
   );
   yield* Fiber.interrupt(lookup);
   return Option.getOrUndefined(result);
@@ -65,6 +71,7 @@ export function createSelection(options: { base: string }) {
     type: string;
     id: string;
   }) {
+    const startedAt = yield* Clock.currentTimeMillis;
     const target = yield* discovery.resolveTarget(input);
     const canonical = discoveryTargetId(target);
     const play = (releaseId: string) =>
@@ -86,7 +93,7 @@ export function createSelection(options: { base: string }) {
       : undefined;
     const releases = yield* discovery.releases(target, subject);
     const [videos, pack] = yield* Effect.all(
-      [withinGrace(owned), withinGrace(lookup)],
+      [withinGrace(owned, startedAt), withinGrace(lookup, startedAt)],
       { concurrency: "unbounded" },
     );
     const rows: Stream[] = (videos ?? []).map((video) => ({
