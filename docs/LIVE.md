@@ -382,39 +382,58 @@ Chromium libraries.
 
 ## Real acquisition probe
 
-`mise run hosted:acquire` checks that selecting a release on the deployed
-adapter makes production Engine create a put.io transfer, that put.io completes
-it and that the adapter then redirects to its HLS media. Supply
-`CHILL_STREMIO_CREDENTIAL`, `PUTIO_USERNAME` and `PUTIO_TEST_TOKEN` as for the
-[owned video probe](#owned-video-probe), with the same
-`CHILL_PUBLIC_STREMIO_ORIGIN` and `CHILL_ENGINE_BASE_URL` overrides, plus the
-private pin for the one release the account owner approved:
+`mise run hosted:acquire` checks that selecting a movie release, an episode
+release or a season pack on the deployed adapter makes production Engine create
+a put.io transfer, that put.io completes it and that the adapter then redirects
+to its HLS media. Supply `CHILL_STREMIO_CREDENTIAL`, `PUTIO_USERNAME` and
+`PUTIO_TEST_TOKEN` as for the [owned video probe](#owned-video-probe), with the
+same `CHILL_PUBLIC_STREMIO_ORIGIN` and `CHILL_ENGINE_BASE_URL` overrides, plus
+the private pin for the one release the account owner approved:
 
-| Variable                  | Value                                                 |
-| ------------------------- | ----------------------------------------------------- |
-| `LIVE_ACQUIRE_IMDB_ID`    | the movie's IMDb ID, `tt` and digits                  |
-| `LIVE_ACQUIRE_RELEASE_ID` | the release ID in the adapter row's media URL, a UUID |
-| `LIVE_ACQUIRE_MAX_BYTES`  | the largest size accepted, a positive integer         |
+| Variable                  | Value                                                                                          |
+| ------------------------- | ---------------------------------------------------------------------------------------------- |
+| `LIVE_ACQUIRE_IMDB_ID`    | the movie's or series' IMDb ID, `tt` and digits                                                |
+| `LIVE_ACQUIRE_RELEASE_ID` | the release ID in the adapter row's media URL: a UUID, or `pack:` and a UUID for a season pack |
+| `LIVE_ACQUIRE_EPISODE`    | optional; `<season>:<episode>`, each 1 to 9999 without leading zeros, for an episode           |
+| `LIVE_ACQUIRE_MAX_BYTES`  | the largest size accepted, a positive integer                                                  |
+
+Without `LIVE_ACQUIRE_EPISODE` the pin names a movie release. With it, a UUID
+names that episode's single release and `pack:<uuid>` its season pack, which
+requires the episode it plays. For example, with neutral values:
+
+```sh
+# An episode release: season 1, episode 2
+LIVE_ACQUIRE_EPISODE=1:2
+LIVE_ACQUIRE_RELEASE_ID=00000000-0000-4000-8000-000000000000
+# The same episode played from its season pack
+LIVE_ACQUIRE_RELEASE_ID=pack:00000000-0000-4000-8000-000000000000
+```
 
 Keep the pin in the private process environment, never in this checkout. A
-missing or malformed pin fails at stage `configuration` before any request.
+missing, malformed or inconsistent pin, such as a season pack without an
+episode, fails at stage `configuration` before any request.
 
 The probe then:
 
 1. requires the credential and the token to list the same put.io root folder,
    and the designated username
-2. reads the movie's stream list once and requires a **Download to put.io**
-   row whose media URL names the pinned release; otherwise it fails at
-   `pinned-row-missing` with nothing reserved. It never selects another row
+2. reads the stream list once, the movie's or, with an episode, that
+   episode's `/stream/series/<imdb>:<season>:<episode>.json`, and requires a
+   **Download to put.io** row, or for a season pack the **Download season to
+   put.io** row, whose media URL names the pinned release and, for an
+   episode, the pinned episode; otherwise it fails at `pinned-row-missing`
+   with nothing reserved. It never selects another row
 3. reads put.io's clock as the run start and lists every put.io transfer as
    the baseline, kept only in the journal
 4. reserves one creation and `LIVE_ACQUIRE_MAX_BYTES`
 5. sends HEAD, which must answer `200`, then GET to the row's media URL exactly
    once. It follows only same-origin redirects to that link's
-   `/status/<id>.m3u8`. When the adapter redirects to the pending clip, the
-   probe reads the last status URL again, at most every 10 seconds, until 20
-   minutes after the selection; a `503` capacity refusal repeats the same
-   read. Any other status clip fails at `adapter-<kind>`
+   `/status/<id>.m3u8`, or for a season pack
+   `/status/<id>/<season>/<episode>.m3u8` naming the pinned episode. When the
+   adapter redirects to the pending clip, the probe reads the last status URL
+   again, at most every 10 seconds, until 20 minutes after the selection; a
+   `503` capacity refusal repeats the same read. Any other status clip fails
+   at `adapter-<kind>`
 6. attributes the transfer the status URL names, or else the one transfer not
    in the baseline and created during the run. A pre-existing transfer or more
    than one candidate fails at `attribution`; once more than one candidate is
@@ -427,17 +446,25 @@ The probe then:
 8. requires the final redirect to be an HLS playlist on the put.io API origin,
    as the owned video probe does, not a status clip, and put.io to have
    reported the transfer's size, or fails at `size-unknown`
-9. lists transfers again and records the transfer's file and save folder,
-   cancels the transfer to stop seeding, and decodes up to 10 seconds of the
-   playlist's video with FFmpeg, which must decode frames
+9. lists transfers again and records the transfer's file and save folder
+10. for an episode or season pack, reads the file the playlist names and the
+    transfer's saved file or folder tree from put.io, within the adapter's own
+    limits of 32 folders, 8 levels and 5000 entries. The played file must be
+    in that tree and its name must carry the pinned season and episode, as
+    `S01E02` or `1x02`, and not a range, or the probe fails at
+    `episode-identity`
+11. cancels the transfer to stop seeding, and decodes up to 10 seconds of the
+    playlist's video with FFmpeg, which must decode frames
 
 Every exit after the GET records the transfer's file before cancelling. Cleanup
 cancels only the attributed transfer, again while put.io still lists it, since
 cancelling a seeding transfer only stops it, and deletes its file only when that file
 is not in the baseline, sits in the transfer's save folder and was created
-during the run. Afterwards put.io must no longer list the transfer and must
-answer `404` for the file, including a file that already answered `404` when
-it was recorded. The receipt's `cleanup.verification` is `verified` only then;
+during the run. A season pack saves a folder, and deleting it removes the
+tree. Afterwards put.io must no longer list the transfer and must answer `404`
+for the file, including a file that already answered `404` when it was
+recorded, and for every entry the run found under a saved folder. The
+receipt's `cleanup.verification` is `verified` only then;
 `acknowledged` alone does not pass. A recorded file the run cannot prove it
 created, or a finished transfer whose file was never recorded, leaves
 verification `unverified`; a GET with no attributable transfer leaves cleanup
@@ -446,17 +473,22 @@ grant on FFmpeg's command line; run the lane only on a host reserved for the
 operator.
 
 The private `.cache/live/recovery/acquire-<timestamp>.json` journal keeps the
-run start, the baseline, candidate and attributed transfer IDs and the file
-and save folder IDs. The receipt at
+run start, the baseline, candidate and attributed transfer IDs, the file
+and save folder IDs and the IDs found under a saved folder. The receipt at
 `artifacts/live-acquire-<timestamp>/results.json` keeps stage codes, booleans,
 counts, timings from selection to the first status URL, to completion and to
 media, the status read count, a size bucket, the decoded codec, size and frame
-count, and cleanup acknowledgement and verification. It holds no credential,
-token, IMDb ID, release ID, title, filename, magnet, info hash, provider ID or
+count, and cleanup acknowledgement and verification. `release` is `movie`,
+`episode` or `season-pack`; for an episode `playedInTransfer` and
+`playedEpisodeMatches` record the identity check, and for a season pack
+`packVideos` counts the video files the transfer saved, samples included.
+`locationNamesFile` is `false` when the transfer saved a folder. It holds no
+credential, token, IMDb ID, release ID, title, filename, magnet, info hash, provider ID or
 URL.
 
-A pass covers one approved movie release acquired through the deployed adapter
-and production Engine, decoded by FFmpeg rather than a Stremio client.
+A pass covers one approved movie release, episode release or season pack
+acquired through the deployed adapter and production Engine, decoded by FFmpeg
+rather than a Stremio client.
 
 ## HLS audio probe
 

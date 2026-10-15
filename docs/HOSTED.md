@@ -525,8 +525,8 @@ each as a **Play from put.io** row, follows each row to put.io's HLS playlist
 and decodes it with FFmpeg, then optionally plays the movie's row in Stremio
 Web; see the [owned video probe](./LIVE.md#owned-video-probe).
 
-`mise run hosted:acquire` selects the one release the account owner approved
-on the deployed adapter, waits for production Engine's put.io transfer to
+`mise run hosted:acquire` selects the one movie release, episode release or
+season pack the account owner approved on the deployed adapter, waits for production Engine's put.io transfer to
 complete, follows the adapter to put.io's HLS playlist, decodes it with FFmpeg
 and removes only what the run created; see the
 [real acquisition probe](./LIVE.md#real-acquisition-probe).
