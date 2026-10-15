@@ -518,8 +518,9 @@ media URL on the adapter, and the probe fails.
 
 While the page waits, the probe lists transfers every 10 seconds. The one
 transfer not in the baseline and created during the run is attributed; a
-second fails at `web-transfers`, is never attributed, and leaves cleanup
-`uncertain` with the first still cancelled and deleted. The size gate of step
+second fails at `web-transfers`, is never attributed and leaves cleanup
+`uncertain`. A transfer already attributed is still cancelled and deleted;
+when both are first listed together, neither is touched. The size gate of step
 7 and the 20-minute acquisition limit from the first click apply as before;
 either stops the page. Once the page requests put.io media it must show:
 
@@ -528,14 +529,17 @@ either stops the page. Once the page requests put.io media it must show:
   other media request
 - `readyState` of at least 2, `currentTime` advancing by over a second and
   more decoded video frames
-- exactly one put.io file named by its put.io API requests; for an episode or
-  season pack, that file passes the identity check of step 10
+- exactly one put.io file named by its put.io API requests, inside the
+  attributed transfer's saved file or folder, or the probe fails at
+  `web-played-file`; for an episode or season pack, that file also passes the
+  identity check of step 10
 - no request carrying the credential to any origin but the adapter's, and none
   with `Authorization`
 - Chromium, its context and the Web listener closed afterwards
 
 The probe then lists transfers again, reads the transfer's size and records
-its file as in steps 7 and 9, and cancels it. FFmpeg decodes nothing; the page
+its file as in steps 7 and 9, and cancels it. A second transfer first seen in
+either listing also fails at `web-transfers`. FFmpeg decodes nothing; the page
 supplies the decode proof. Cleanup and verification are unchanged, including
 after a browser failure. Failures in the page carry a `web-` stage prefix. The
 Web step stops after 28 minutes and the whole lane after 30. It captures no
@@ -547,7 +551,8 @@ and browser versions, the stream list reads, row clicks, selected-URL, status
 and pending clip requests, other media requests, put.io playlist and segment
 responses, how many put.io files played, `transfersCreated`, two time and frame
 samples, cleanup booleans and `status`; `locationNamesFile` reports whether
-the played file is the transfer's saved file. It names no file, title, URL or
+the played file is the transfer's saved file, and `playedInTransfer` whether
+it is inside the transfer's saved tree. It names no file, title, URL or
 ID. Run it in the [browser image](./HARNESS.md#browser-image) on a host without
 Chromium libraries. A pass covers playback of one approved release in the
 pinned Stremio Web client in Chromium after acquisition through the deployed

@@ -93,7 +93,7 @@ description = "Prove a video already in put.io plays through the deployed adapte
 run = "pnpm exec vp run hosted:owned"
 
 [tasks."hosted:acquire"]
-description = "Acquire the one approved release through the deployed adapter, decode it, and clean up"
+description = "Acquire the one approved release through the deployed adapter, play it (FFmpeg, or Stremio Web with LIVE_ACQUIRE_WEB=1), and clean up"
 run = "pnpm exec vp run hosted:acquire"
 
 [tasks."hosted:public"]
