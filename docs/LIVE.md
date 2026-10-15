@@ -348,8 +348,10 @@ Chromium guest context. It installs the personal manifest through the
 **Add addon** dialog as `hosted:live` does, opens the movie's detail page and
 reads the adapter's stream list the page requests. When that list lacks
 exactly one **Play from put.io** row with the media URL the FFmpeg check
-followed, it reloads the page, as often and as far apart as the listing poll.
-It then selects that row and requires:
+followed, it reloads the page on the listing poll's interval, up to its
+attempt count. The Web step stops after 8 minutes and the whole lane after 20,
+so a row that is slow to appear can end the step before the last reload. It
+then selects that row and requires:
 
 - a GET for the row's media URL
 - `200` or `206` responses from put.io hosts for at least one playlist and one
