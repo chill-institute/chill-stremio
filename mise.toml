@@ -49,7 +49,7 @@ description = "Upload the fixture to the designated put.io account, decode it, a
 run = "pnpm exec vp run live:probe"
 
 [tasks."live:search"]
-description = "Measure put.io file search on generated release names in the designated account, and clean up"
+description = "Measure put.io file search on generated release and folder names in the designated account, and clean up"
 run = "pnpm exec vp run live:search"
 
 [tasks."native:desktop:setup"]

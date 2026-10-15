@@ -714,10 +714,10 @@ export const FileDetailEnvelope = Schema.Struct({
     id: Schema.Int,
     parent_id: Schema.optional(Schema.NullOr(Schema.Int)),
     created_at: Schema.optional(Schema.NullOr(Schema.String)),
+    file_type: Schema.optional(Schema.NullOr(Schema.String)),
   }),
 });
 
-/** A file's parent and creation time, or `undefined` once put.io answers 404. */
 /** put.io's clock, to the second, from a read-only response's Date header. */
 export const serverTime = Effect.fn("live.putio.serverTime")(function* () {
   const response = yield* request(
@@ -732,6 +732,7 @@ export const serverTime = Effect.fn("live.putio.serverTime")(function* () {
   return time;
 }, Effect.timeout("20 seconds"));
 
+/** A file's parent, creation time and type, or `undefined` once put.io answers 404. */
 export const getFile = Effect.fn("live.putio.getFile")(function* (id: number) {
   const response = yield* request(`${liveVersions.apiBase}/v2/files/${id}`, {});
   if (response.status === 404) return undefined;
@@ -755,6 +756,7 @@ export const getFile = Effect.fn("live.putio.getFile")(function* (id: number) {
     id,
     parentId: envelope.file.parent_id ?? undefined,
     createdAt: envelope.file.created_at ?? undefined,
+    fileType: envelope.file.file_type ?? undefined,
   };
 }, Effect.timeout("20 seconds"));
 

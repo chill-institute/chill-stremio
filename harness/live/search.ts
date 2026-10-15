@@ -33,6 +33,10 @@ export interface SearchProvider {
   searchFiles: (query: string) => Effect.Effect<putio.SearchPage, unknown>;
   deleteFiles: (ids: readonly number[]) => Effect.Effect<void, unknown>;
   fileExists: (id: number) => Effect.Effect<boolean, unknown>;
+  /** `GET /v2/files/<id>`; `undefined` once put.io answers 404. */
+  getFile: (
+    id: number,
+  ) => Effect.Effect<{ fileType?: string | undefined } | undefined, unknown>;
 }
 
 export interface SearchTiming {
@@ -73,7 +77,7 @@ const titled = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
 
 const acute = "\u00e9";
 
-export const searchNonceBytes = 112;
+export const searchNonceBytes = 144;
 
 export function searchWords(nonce: Uint8Array) {
   if (nonce.length !== searchNonceBytes)
@@ -97,6 +101,10 @@ export function searchWords(nonce: Uint8Array) {
     i: word(88, 8),
     j: word(96, 8),
     k: word(104, 8),
+    l: word(112, 8),
+    m: word(120, 8),
+    n: word(128, 8),
+    o: word(136, 8),
     typo: `${a.slice(0, 3)}${shifted}${a.slice(4)}`,
   };
   if (new Set(Object.values(words)).size !== Object.keys(words).length)
@@ -106,8 +114,18 @@ export function searchWords(nonce: Uint8Array) {
 
 type Words = ReturnType<typeof searchWords>;
 
-export function searchFixtures(words: Words) {
-  const [a, b, c, d, e, long, f, g, h, i, j, k] = [
+export interface SearchFixture {
+  label: string;
+  name: string;
+  /** Label of the folder it is created in; the run folder when omitted. */
+  parent?: string;
+  folder?: true;
+  /** No synthetic word in the name, so no poll can match it by name. */
+  generic?: true;
+}
+
+export function searchFixtures(words: Words): readonly SearchFixture[] {
+  const [a, b, c, d, e, long, f, g, h, i, j, k, l, m, n, o] = [
     words.a,
     words.b,
     words.c,
@@ -120,6 +138,10 @@ export function searchFixtures(words: Words) {
     words.i,
     words.j,
     words.k,
+    words.l,
+    words.m,
+    words.n,
+    words.o,
   ].map(titled);
   return [
     { label: "movie-dotted", name: `${a}.${b}.2001.1080p.WEB.H264.mkv` },
@@ -129,18 +151,48 @@ export function searchFixtures(words: Words) {
     {
       label: "episode-nested",
       name: `${d}.${e}.S01E02.720p.mkv`,
-      nested: true,
+      parent: "season-folder",
     },
     { label: "long-word", name: `${long} (2001).mkv` },
     { label: "apostrophe", name: `${f}'s.${g}.2003.mkv` },
     { label: "ampersand", name: `${h}.&.${i}.2004.mkv` },
     { label: "accent", name: `${j}${acute}.${k}.2005.mkv` },
+    { label: "movie-folder", name: `${n} ${o} (2001)`, folder: true },
+    {
+      label: "movie-folder-file",
+      name: "movie.mkv",
+      parent: "movie-folder",
+      generic: true,
+    },
+    { label: "show-folder", name: `${l} ${m}`, folder: true },
+    {
+      label: "show-folder-season",
+      name: "Season 01",
+      parent: "show-folder",
+      folder: true,
+      generic: true,
+    },
+    {
+      label: "show-folder-episode",
+      name: "S01E02.mkv",
+      parent: "show-folder-season",
+      generic: true,
+    },
   ];
 }
 
 /** Single-word queries polled until uploads appear in search. */
 function searchPolls(words: Words) {
-  return [words.a, words.d, words.long.slice(0, 20), words.g, words.i, words.k];
+  return [
+    words.a,
+    words.d,
+    words.long.slice(0, 20),
+    words.g,
+    words.i,
+    words.k,
+    words.l,
+    words.n,
+  ];
 }
 
 export function searchQueries(words: Words) {
@@ -150,6 +202,7 @@ export function searchQueries(words: Words) {
     { form: "plain-from-me-video", query: `${words.a} ${words.b} ${scope}` },
     { form: "quoted", query: `"${words.a} ${words.b}"` },
     { form: "dotted", query: `${words.a}.${words.b}` },
+    { form: "underscored", query: `${words.a}_${words.b}` },
     { form: "single-word", query: words.a },
     { form: "episode", query: `${words.d} ${words.e}` },
     { form: "episode-from-me-video", query: `${words.d} ${words.e} ${scope}` },
@@ -162,6 +215,8 @@ export function searchQueries(words: Words) {
     { form: "ampersand-omitted", query: `${words.h} ${words.i}` },
     { form: "accent-folded", query: `${words.j}e ${words.k}` },
     { form: "accent-kept", query: `${words.j}${acute} ${words.k}` },
+    { form: "movie-folder", query: `${words.n} ${words.o}` },
+    { form: "show-folder", query: `${words.l} ${words.m}` },
   ];
 }
 
@@ -211,12 +266,29 @@ interface FixtureObservation {
   parentIdMatches?: boolean;
 }
 
+/** One owned search result; `parent` is the label `parent_id` names, or `other`. */
+interface ResultObservation {
+  label: string;
+  fileType?: string;
+  parent?: string;
+}
+
+interface RereadObservation {
+  /** `GET /v2/files/<id>` still found the item. */
+  found: boolean;
+  fileType?: string;
+  /** The repeated poll pass returned the item. */
+  searchSeen: boolean;
+  searchFileType?: string;
+}
+
 interface QueryObservation {
   form: string;
   outcome: "ok" | "refused";
   httpStatus?: number;
   errorType?: string;
   matched: string[];
+  items: ResultObservation[];
   unlabeled: number;
   results: number;
   total?: number;
@@ -252,31 +324,40 @@ export const runFileSearch = Effect.fn("live.runFileSearch")(function* (
   );
   const indexing: Record<string, unknown> = {};
   const results: QueryObservation[] = [];
+  const reread: Record<string, unknown> = {};
   const proof: Record<string, unknown> = {
     source: "self-generated-fixture",
     fixtures: observed,
     indexing,
     queries: results,
+    reread,
   };
   let stage = "configuration";
   const fail = (at: string) => new SearchProbeFailure({ stage: at });
   const labelOf = (id: number) =>
     Object.entries(ids).find(([, owned]) => owned === id)?.[0];
+  const typeOf = (value: string | null | undefined) =>
+    value && enumValue.test(value) ? value : undefined;
 
   const inspected = new Set<string>();
   const observe = (item: typeof ResultItem.Type, label: string) => {
     const fixture = observed[label];
     if (!fixture || inspected.has(label)) return;
     inspected.add(label);
-    if (item.file_type && enumValue.test(item.file_type))
-      fixture.fileType = item.file_type;
+    const fileType = typeOf(item.file_type);
+    if (fileType) fixture.fileType = fileType;
     if (typeof item.is_shared === "boolean") fixture.isShared = item.is_shared;
     if (item.parent_id !== undefined)
       fixture.parentIdMatches = item.parent_id === parents.get(label);
   };
 
-  const classify = (files: readonly Record<string, unknown>[]) => {
+  /** `first` records first sightings; the re-read pass leaves them alone. */
+  const classify = (
+    files: readonly Record<string, unknown>[],
+    first = true,
+  ) => {
     const matched = new Set<string>();
+    const items: ResultObservation[] = [];
     let unlabeled = 0;
     const fields = new Set<string>();
     for (const file of files) {
@@ -289,9 +370,18 @@ export const runFileSearch = Effect.fn("live.runFileSearch")(function* (
         continue;
       }
       matched.add(label);
-      observe(item.value, label);
+      if (first) observe(item.value, label);
+      const { file_type, parent_id } = item.value;
+      const fileType = typeOf(file_type);
+      items.push({
+        label,
+        ...(fileType ? { fileType } : {}),
+        ...(typeof parent_id === "number"
+          ? { parent: labelOf(parent_id) ?? "other" }
+          : {}),
+      });
     }
-    return { matched, unlabeled, fields };
+    return { matched, items, unlabeled, fields };
   };
 
   const work = Effect.gen(function* () {
@@ -303,7 +393,8 @@ export const runFileSearch = Effect.fn("live.runFileSearch")(function* (
       return yield* fail(stage);
     stage = "reservation";
     const creations = 2 + fixtures.length;
-    const bytes = fixtures.length * options.media.bytes;
+    const bytes =
+      fixtures.filter((item) => !item.folder).length * options.media.bytes;
     yield* Effect.tryPromise((signal) =>
       reserve(ledgerDirectory, creations, bytes, undefined, { signal }),
     );
@@ -320,9 +411,15 @@ export const runFileSearch = Effect.fn("live.runFileSearch")(function* (
         Effect.tap((folder) => Effect.sync(() => (ids[label] = folder.id))),
       );
     const folder = yield* create("run-folder", options.folderName, 0);
-    const season = yield* create("season-folder", "Season 01", folder.id);
+    yield* create("season-folder", "Season 01", folder.id);
     for (const fixture of fixtures) {
-      const parent = fixture.nested ? season.id : folder.id;
+      const parent = ids[fixture.parent ?? "run-folder"];
+      if (parent === undefined) return yield* fail(stage);
+      parents.set(fixture.label, parent);
+      if (fixture.folder) {
+        yield* create(fixture.label, fixture.name, parent);
+        continue;
+      }
       const file = yield* trackAcquisition(
         attempt,
         "file",
@@ -330,7 +427,6 @@ export const runFileSearch = Effect.fn("live.runFileSearch")(function* (
         checkpoint,
       );
       ids[fixture.label] = file.id;
-      parents.set(fixture.label, parent);
       yield* checkpoint;
     }
 
@@ -342,10 +438,11 @@ export const runFileSearch = Effect.fn("live.runFileSearch")(function* (
     const refusedStatuses = new Set<number>();
     const refusedTypes = new Set<string>();
     let firstAt: number | undefined;
-    const pending = () =>
+    const unseen = () =>
       fixtures.filter(
         (item) => observed[item.label]?.indexedAfterMs === undefined,
       );
+    const pending = () => unseen().filter((item) => !item.generic);
     while (true) {
       for (const query of pollQueries) {
         const page = yield* provider.searchFiles(query);
@@ -385,7 +482,7 @@ export const runFileSearch = Effect.fn("live.runFileSearch")(function* (
       },
       firstIndexedMs: firstAt,
       allIndexed: pending().length === 0,
-      notSeen: pending().map((item) => item.label),
+      notSeen: unseen().map((item) => item.label),
     });
     if (firstAt === undefined)
       return yield* fail(refused === polls ? "search-refused" : stage);
@@ -400,6 +497,7 @@ export const runFileSearch = Effect.fn("live.runFileSearch")(function* (
           httpStatus: page.httpStatus,
           errorType: errorTypeOf(page),
           matched: [],
+          items: [],
           unlabeled: 0,
           results: 0,
           cursor: false,
@@ -412,6 +510,7 @@ export const runFileSearch = Effect.fn("live.runFileSearch")(function* (
         form,
         outcome: "ok",
         matched: Object.keys(ids).filter((label) => seen.matched.has(label)),
+        items: seen.items,
         unlabeled: seen.unlabeled,
         results: page.files.length,
         total: page.total,
@@ -419,6 +518,41 @@ export const runFileSearch = Effect.fn("live.runFileSearch")(function* (
         fields: [...seen.fields].sort(),
       });
     }
+
+    stage = "reread";
+    const rereadAt = (yield* Clock.currentTimeMillis) - started;
+    const reads: Record<string, RereadObservation> = {};
+    for (const fixture of fixtures) {
+      const id = ids[fixture.label];
+      if (id === undefined) return yield* fail(stage);
+      const file = yield* provider.getFile(id);
+      const fileType = typeOf(file?.fileType);
+      reads[fixture.label] = {
+        found: file !== undefined,
+        ...(fileType ? { fileType } : {}),
+        searchSeen: false,
+      };
+    }
+    let rereadRefused = 0;
+    for (const query of pollQueries) {
+      const page = yield* provider.searchFiles(query);
+      if (!page.ok) {
+        rereadRefused++;
+        continue;
+      }
+      for (const item of classify(page.files, false).items) {
+        const read = reads[item.label];
+        if (!read || read.searchSeen) continue;
+        read.searchSeen = true;
+        if (item.fileType) read.searchFileType = item.fileType;
+      }
+    }
+    Object.assign(reread, {
+      afterMs: rereadAt,
+      searches: pollQueries.length,
+      refused: rereadRefused,
+      fixtures: reads,
+    });
   }).pipe(
     Effect.timeout("8 minutes"),
     Effect.catchCause((cause) => {

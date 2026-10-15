@@ -205,30 +205,37 @@ mise run live:search
 
 Supply `PUTIO_USERNAME` and `PUTIO_TEST_TOKEN` from [setup](#setup).
 `live:search` measures how put.io `GET /v2/files/search` matches
-release-style video names on the designated account. Each run derives twelve
-random lowercase words, never real titles, and uploads the generated
-`movie.mp4` under these labels:
+release-style video and folder names on the designated account. Each run
+derives sixteen random lowercase words, never real titles, and uploads the
+generated `movie.mp4` under these labels, or creates the folders:
 
-| Label               | Name shape                                     |
-| ------------------- | ---------------------------------------------- |
-| `movie-dotted`      | `A.B.2001.1080p.WEB.H264.mkv`                  |
-| `movie-spaced`      | `A B (2001).mkv`                               |
-| `movie-underscored` | `A_B_2001.mkv`                                 |
-| `decoy`             | `A.C.2001.mkv`                                 |
-| `episode-nested`    | `D.E.S01E02.720p.mkv`, in a `Season 01` folder |
-| `long-word`         | a 24-letter word, then ` (2001).mkv`           |
-| `apostrophe`        | `F's.G.2003.mkv`                               |
-| `ampersand`         | `H.&.I.2004.mkv`                               |
-| `accent`            | `Jé.K.2005.mkv`                                |
+| Label                 | Name shape                                     |
+| --------------------- | ---------------------------------------------- |
+| `movie-dotted`        | `A.B.2001.1080p.WEB.H264.mkv`                  |
+| `movie-spaced`        | `A B (2001).mkv`                               |
+| `movie-underscored`   | `A_B_2001.mkv`                                 |
+| `decoy`               | `A.C.2001.mkv`                                 |
+| `episode-nested`      | `D.E.S01E02.720p.mkv`, in a `Season 01` folder |
+| `long-word`           | a 24-letter word, then ` (2001).mkv`           |
+| `apostrophe`          | `F's.G.2003.mkv`                               |
+| `ampersand`           | `H.&.I.2004.mkv`                               |
+| `accent`              | `Jé.K.2005.mkv`                                |
+| `movie-folder`        | folder `N O (2001)`                            |
+| `movie-folder-file`   | `movie.mkv`, in `movie-folder`                 |
+| `show-folder`         | folder `L M`                                   |
+| `show-folder-season`  | folder `Season 01`, in `show-folder`           |
+| `show-folder-episode` | `S01E02.mkv`, in `show-folder-season`          |
 
 After confirming the token's username and before any provider mutation, the
-probe reserves eleven creations (the run folder, the season folder and nine
-uploads) and nine times the media size. Uploads go into one run-unique folder.
+probe reserves sixteen creations (the run folder, the season folder, three
+labelled folders and eleven uploads) and eleven times the media size. Everything
+goes into one run-unique folder.
 
-The probe then polls search for the words `A`, `D`, `G`, `I`, `K` and the first
-20 letters of the long word, with `per_page=100`, every 10 seconds. It waits up
-to three minutes for the first upload to appear and up to one more minute for
-the rest. If nothing appears the run fails at stage `indexing`, or at
+The probe then polls search for the words `A`, `D`, `G`, `I`, `K`, `L`, `N` and
+the first 20 letters of the long word, with `per_page=100`, every 10 seconds.
+It waits up to three minutes for the first label to appear and up to one more
+minute for the rest, except the three generic names, which carry no poll word.
+If nothing appears the run fails at stage `indexing`, or at
 `search-refused` when put.io refused every poll. Afterwards it sends each query
 form once and never follows a cursor:
 
@@ -238,6 +245,7 @@ form once and never follows a cursor:
 | `plain-from-me-video`   | `a b from:me type:video`              |
 | `quoted`                | `"a b"`                               |
 | `dotted`                | `a.b`                                 |
+| `underscored`           | `a_b`                                 |
 | `single-word`           | `a`                                   |
 | `episode`               | `d e`                                 |
 | `episode-from-me-video` | `d e from:me type:video`              |
@@ -250,19 +258,33 @@ form once and never follows a cursor:
 | `ampersand-omitted`     | `h i`                                 |
 | `accent-folded`         | `je k`                                |
 | `accent-kept`           | `jé k`                                |
+| `movie-folder`          | `n o`                                 |
+| `show-folder`           | `l m`                                 |
 
 For each form the receipt keeps only the matched labels, the count of other
 results, the result and `total` counts, whether a cursor came back and the
-field names present on result items. An HTTP 400 is recorded as `refused` with
+field names present on result items. `items` lists each matched label with its
+`file_type`, such as `FOLDER`, and `parent`: the label its `parent_id` names,
+or `other`. A generic name listed under a folder form was found through its
+folder. An HTTP 400 is recorded as `refused` with
 put.io's error type; other HTTP failures stop the run. `indexing.refused`
 counts refused polls with the HTTP statuses and error types seen. Per label the
-receipt records time to first appearance, `file_type`, `is_shared` and whether
-`parent_id` names the folder it was uploaded to. A label in `indexing.notSeen` either was
-not indexed in time or does not match any poll word; the query forms tell
-which.
+receipt records time to first appearance and, from its first search result,
+`file_type`, `is_shared` and whether `parent_id` names the folder it was
+created in. A label in `indexing.notSeen` either was not indexed in time or
+does not match any poll word; the query forms tell which. `indexing.allIndexed`
+ignores the generic names.
 
-Cleanup deletes the run folder and everything the run created in one request,
-then reads each created ID, up to three times, until put.io answers 404. `cleanup.verification` is
+After the query forms, stage `reread` reads every label with
+`GET /v2/files/<id>`, then sends the poll words once more. `reread.fixtures`
+records per label whether the read `found` it, its `fileType`, whether the
+repeated polls returned it (`searchSeen`) and the `searchFileType` they
+reported, apart from the first sighting. `reread.afterMs` is the time since
+the first poll, and `reread.refused` counts refused repeated polls. A failed
+read stops the run.
+
+Cleanup deletes the run folder and every folder and file the run created in
+one request, then reads each created ID, up to three times, until put.io answers 404. `cleanup.verification` is
 `verified` only when every one is gone, `present` when any remains, and
 `unverified` when the check could not finish, including when a read returns a
 different file. A run passes only with a passing primary, acknowledged cleanup
