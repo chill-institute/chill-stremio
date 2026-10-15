@@ -2757,7 +2757,7 @@ test("the account lookup keeps its two seconds while a cold season lookup runs l
   }
 }, 10_000);
 
-test("a fast release search still gives the account and season lookups two seconds", async () => {
+test("a fast release search does not cut the account and season lookups short", async () => {
   const f = await fixture();
   try {
     f.state.ownedVideos = [ownedVideo(77n)];
