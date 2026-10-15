@@ -21,7 +21,34 @@ is only a recording helper and does not satisfy this prerequisite.
 On Linux, install Chromium system libraries with
 `pnpm exec playwright install-deps chromium` after installing repository
 dependencies. This may require administrator access; the Ubuntu CI runner
-performs this step explicitly. macOS runs headless without a GUI or keychain.
+performs this step explicitly. Without it, use the [browser image](#browser-image). macOS runs headless without a GUI or keychain.
+
+## Browser image
+
+On a Linux host without Chromium system libraries, run setup and browser lanes
+in the Dockerfile's `browser` target. It extends the Playwright image matching
+`@playwright/test`, whose Chromium the harness then uses, and adds FFmpeg,
+the DejaVu fonts and the pinned pnpm, so none is downloaded at run time. Run it
+as your own user with your home mounted at the same path: the
+[live lanes](./LIVE.md#setup) refuse a `HOME` other than the account's home,
+and their shared ledger lives there. `--ipc=host` gives Chromium the host's
+shared memory instead of Docker's 64 MB `/dev/shm`, which can crash it; use
+`--shm-size=2g` where host IPC is not allowed. `--init` reaps Chromium's
+child processes. The image's Node must satisfy `engines` in
+[package.json](../package.json); v1.64.0's is 24.21.0.
+
+```sh
+docker build --target browser -t chill-stremio:browser .
+docker run --rm -it --init --ipc=host \
+  -u "$(id -u):$(id -g)" -v /etc/passwd:/etc/passwd:ro \
+  -e HOME="$HOME" -v "$HOME:$HOME" -w "$PWD" \
+  chill-stremio:browser \
+  sh -c 'pnpm install --frozen-lockfile && pnpm exec vp run setup'
+```
+
+Run a lane the same way, for example `pnpm exec vp run hosted:owned`, passing
+its private variables with `-e NAME` so their values stay out of the command
+line. The image has no mise; `pnpm exec vp run` runs the same package scripts.
 
 ## Setup and run
 

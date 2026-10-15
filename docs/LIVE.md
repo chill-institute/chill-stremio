@@ -299,38 +299,82 @@ reconciliation.
 
 ## Owned video probe
 
-`mise run hosted:owned` checks that the deployed adapter lists and plays a
-video the account already holds. Supply `CHILL_STREMIO_CREDENTIAL`,
-`PUTIO_USERNAME` and `PUTIO_TEST_TOKEN` as for the
+`mise run hosted:owned` checks that the deployed adapter lists and plays
+videos the account already holds, on Stremio's movie and episode routes. Supply
+`CHILL_STREMIO_CREDENTIAL`, `PUTIO_USERNAME` and `PUTIO_TEST_TOKEN` as for the
 [transfer reuse probe](#transfer-reuse-probe); `CHILL_PUBLIC_STREMIO_ORIGIN`
 overrides the adapter endpoint and `CHILL_ENGINE_BASE_URL` the Engine endpoint
-used for the account check.
+used for the account check. Set `LIVE_OWNED_WEB=1` to add the
+[Stremio Web step](#stremio-web-step); any other value or none skips it.
 
 Before any provider mutation the probe requires the credential and the token to
-list the same put.io root folder, then reserves two creations and the generated
-movie's size. It creates a run-unique folder and uploads the generated fixture
-movie, `.cache/media/movie.mp4`, into it as
-`Night.of.the.Living.Dead.1968.1080p.WEB.mkv`, named after a 1968
-public-domain film (`tt0063350`). It then polls that film's stream list on the
-deployed adapter, at most 30 times 10 seconds apart, until a
-**Play from put.io** row names the uploaded file. That row's media URL must
-answer HEAD with `200` and GET with a `302` to an HLS playlist on the put.io API
-origin, not a status clip. FFmpeg then decodes up to 10 seconds of that
-playlist's video in memory and must decode frames. The playlist URL is a signed
-media grant passed on FFmpeg's command line, so other local users can read it
-while the decode runs; run the lane only on a host reserved for the operator.
+list the same put.io root folder, then reserves three creations and twice the
+generated movie's size. It creates a run-unique folder and uploads the
+generated fixture movie, `.cache/media/movie.mp4`, into it twice:
 
-Cleanup deletes only the folder and file the run created, then requires put.io
-to report each as gone; otherwise cleanup stays `uncertain`. The private
-`.cache/live/recovery/owned-<timestamp>.json` journal keeps their IDs and the
-folder name. The receipt at `artifacts/live-owned-<timestamp>/results.json`
-keeps stage codes, booleans, counts, timings and the decoded codec and size; it
-holds no credential, token, filename, provider ID or URL.
+| Route                          | Upload name                                   | Named after                    |
+| ------------------------------ | --------------------------------------------- | ------------------------------ |
+| `/stream/movie/tt0063350`      | `Night.of.the.Living.Dead.1968.1080p.WEB.mkv` | a 1968 public-domain film      |
+| `/stream/series/tt0055662:1:2` | `The.Beverly.Hillbillies.S01E02.720p.WEB.mkv` | an episode of a 1962 TV series |
 
-A pass covers one movie title on Stremio's movie route through the deployed
-adapter and production Engine, decoded by FFmpeg rather than a Stremio client.
-It does not cover episodes or the recognition gaps in
-[videos already in put.io](./HOSTED.md#videos-already-in-putio).
+Engine lists an episode only under its exact show title, season and episode,
+and the episode name carries no year; see
+[videos already in put.io](./HOSTED.md#videos-already-in-putio). For the movie,
+then the episode, the probe polls the route's stream list on the deployed
+adapter, at most 30 times 10 seconds apart, until a **Play from put.io** row
+names that upload. That row's media URL must answer HEAD with `200` and GET
+with a `302` to an HLS playlist on the put.io API origin, not a status clip.
+FFmpeg then decodes up to 10 seconds of that playlist's video in memory and
+must decode frames. Episode failures carry an `episode-` stage prefix. The
+playlist URL is a signed media grant passed on FFmpeg's command line, so other
+local users can read it while the decode runs; run the lane only on a host
+reserved for the operator.
+
+Cleanup deletes only the folder and the two files the run created, then
+requires put.io to report each as gone; otherwise cleanup stays `uncertain`.
+The private `.cache/live/recovery/owned-<timestamp>.json` journal keeps their
+IDs and the folder name. The receipt at
+`artifacts/live-owned-<timestamp>/results.json` keeps stage codes, booleans,
+counts, timings and the decoded codec and size, with the episode's under
+`proof.episode` and the Web step's under `proof.web`, which reads `skipped`
+when the step is off; it holds no credential, token, filename, provider ID or
+URL.
+
+### Stremio Web step
+
+With `LIVE_OWNED_WEB=1`, after both FFmpeg decodes the probe serves the pinned
+Stremio Web build from `mise run setup` and opens it in a fresh headless
+Chromium guest context. It installs the personal manifest through the
+**Add addon** dialog as `hosted:live` does, opens the movie's detail page and
+reads the adapter's stream list the page requests. When that list lacks
+exactly one **Play from put.io** row with the media URL the FFmpeg check
+followed, it reloads the page, as often and as far apart as the listing poll.
+It then selects that row and requires:
+
+- a GET for the row's media URL
+- `200` or `206` responses from put.io hosts for at least one playlist and one
+  other media request
+- `readyState` of at least 2, `currentTime` advancing by over a second and
+  more decoded video frames
+- the generated fixture's 640×360 picture, advancing frame marker and identity
+  colour, since this lane plays only that fixture
+- no request carrying the credential to any origin but the adapter's, and none
+  with `Authorization`
+- Chromium, its context and the Web listener closed afterwards
+
+Requests go only to the Web listener, the adapter, Cinemeta and put.io hosts.
+The step captures no screenshot, recording or trace; Stremio shows the
+personal link in its install dialog. Failures carry a `web-` stage prefix, and
+the receipt keeps the request counts, two time and frame samples, the picture
+size and markers.
+
+A pass covers one movie and one episode through the deployed adapter and
+production Engine, decoded by FFmpeg, and with the Web step the movie in the
+pinned Stremio Web client in Chromium. It does not cover other clients, season
+packs or the recognition gaps in
+[videos already in put.io](./HOSTED.md#videos-already-in-putio). Run the
+step in the [browser image](./HARNESS.md#browser-image) on a host without
+Chromium libraries.
 
 ## Real acquisition probe
 
