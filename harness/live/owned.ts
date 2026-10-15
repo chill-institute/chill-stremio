@@ -112,6 +112,9 @@ export interface OwnedProvider {
   ) => Effect.Effect<{ id: number }, unknown>;
   deleteFiles: (ids: readonly number[]) => Effect.Effect<void, unknown>;
   fileAbsent: (id: number) => Effect.Effect<boolean, unknown>;
+  getFile: (
+    id: number,
+  ) => Effect.Effect<{ fileType?: string } | undefined, unknown>;
 }
 
 export interface OwnedOptions {
@@ -263,7 +266,15 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
         })?.url;
       }),
     );
-    if (!selected) return yield* fail(stage);
+    if (!selected) {
+      // Tells an upload put.io typed as something other than a video apart
+      // from a lookup that left it out.
+      const file = yield* Effect.option(provider.getFile(title.fileId));
+      const fileType = Option.getOrUndefined(file)?.fileType;
+      record.uploadFileType =
+        fileType && /^[A-Z_]{1,32}$/.test(fileType) ? fileType : "unknown";
+      return yield* fail(stage);
+    }
     record.listedAfterMs = Math.round(performance.now() - listedAt);
 
     stage = `${title.stages}head`;

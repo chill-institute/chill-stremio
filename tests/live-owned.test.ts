@@ -59,6 +59,8 @@ function fakePutio() {
         }
       }),
     fileAbsent: (id) => Effect.sync(() => !files.has(id)),
+    getFile: (id) =>
+      Effect.sync(() => (files.has(id) ? { fileType: "VIDEO" } : undefined)),
   };
   return { files, deleted, provider };
 }
@@ -286,6 +288,7 @@ const Receipt = Schema.fromJsonString(
       failureStage: Schema.optional(Schema.String),
       uploaded: Schema.optional(Schema.Boolean),
       listingPolls: Schema.optional(Schema.Number),
+      uploadFileType: Schema.optional(Schema.String),
       episode: Schema.optional(
         Schema.Struct({
           listingPolls: Schema.optional(Schema.Number),
@@ -511,6 +514,10 @@ for (const failure of [
     assert.ok(Exit.isFailure(run.exit));
     assert.equal(run.receipt.status, "failed");
     assert.equal(run.receipt.proof.failureStage, failure.stage);
+    assert.equal(
+      run.receipt.proof.uploadFileType,
+      failure.stage === "listing" ? "VIDEO" : undefined,
+    );
     assert.deepEqual(run.decoded, []);
     assertCleaned(run);
     assertPrivateReceipt(run.receiptText);
