@@ -94,16 +94,19 @@ Gaps:
 - On 2026-10-14 `hosted:owned` recorded a pass for one movie's library
   playback through the deployed adapter, and `hosted:acquire` for one approved
   movie release acquired through the deployed adapter and production Engine.
-  The passing acquisition completed at once from put.io's cache; an earlier
-  run covered a six-minute download through pending status clips, then left
-  its stopped transfer listed, since fixed. Both decode with FFmpeg rather
-  than a Stremio client, and no episode or season pack was acquired.
   On 2026-10-15 `hosted:owned` passed for an owned episode and, with
-  `LIVE_OWNED_WEB=1`, played the owned movie in Stremio Web through the
-  deployed adapter. `hosted:public` and its canary consume no stream,
+  `LIVE_OWNED_WEB=1`, played the owned movie in Stremio Web, and
+  `hosted:acquire` passed for an approved Matroska season pack, playing the
+  pinned episode after put.io converted it. Acquisitions decode with FFmpeg
+  rather than a Stremio client. A single-episode release has no pass: the
+  approved one stayed downloading on put.io for the lane's 20 minutes.
+  `hosted:public` and its canary consume no stream,
   `hosted:live`'s Stremio Web step has no recorded pass since v2.0.0, and
   playing an acquired release in a Stremio client through the deployed adapter
   remains unproven. Owner: chill-institute/chill-stremio.
+- With Engine's caches cold, its season lookup can outlast the episode search
+  and the listing's wait, so a first visit to an episode may list no
+  **Download season to put.io** row; a later visit lists it. Owner: chill-institute/chill-stremio.
 - CI artifacts expire after 7 days; archive evidence needed longer. Owner: chill-institute/chill-stremio.
 
 ## Work and verify
