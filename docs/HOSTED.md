@@ -252,9 +252,11 @@ does not include the requested episode. A row without a parsed season stays,
 as does one with the requested season and no episode, such as a season pack
 from Search; selecting that one downloads the whole pack and, like any
 multi-file download, plays `select-file` unless it holds one video that is not
-a sample. The adapter reads only Engine's
-release info, never the release name. Selecting a release by its play URL still
-finds any Search result, so rows listed earlier keep playing.
+a sample. The adapter reads only Engine's release info, never the release name,
+so a multi-season pack Engine parses as its first season lists only there, and
+a multi-episode name parsed as its first episode lists only for that episode.
+Selecting a release by its play URL still finds any Search result, so rows
+listed earlier keep playing.
 
 ## Season packs
 
