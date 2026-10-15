@@ -848,6 +848,76 @@ test("standard IMDb episode cards share the existing episode acquisition identit
   ]);
 });
 
+test("episode releases list only rows whose parsed numbers may hold the episode, and any row stays selectable", async () => {
+  const f = fixture();
+  const rows = [
+    { id: "other-season", releaseInfo: { season: 3, episode: 2 } },
+    { id: "unparsed" },
+    { id: "matching", releaseInfo: { season: 1, episode: 2 } },
+    { id: "other-episode", releaseInfo: { season: 1, episode: 3 } },
+    {
+      id: "range-after",
+      releaseInfo: { season: 1, episode: 3, episodeEnd: 4 },
+    },
+    { id: "season-only", releaseInfo: { season: 1 } },
+    {
+      id: "range-holding",
+      releaseInfo: { season: 1, episode: 1, episodeEnd: 3 },
+    },
+    {
+      id: "range-before",
+      releaseInfo: { season: 1, episode: 1, episodeEnd: 1 },
+    },
+    { id: "episode-only", releaseInfo: { episode: 7 } },
+    { id: "unnumbered", releaseInfo: { year: 2023 } },
+    { id: "other-season-pack", releaseInfo: { season: 2 } },
+  ];
+  f.service.search = (query) =>
+    Effect.succeed(
+      create(SearchResponseSchema, {
+        query,
+        results: rows.map((row) => ({
+          ...release,
+          ...row,
+          releaseInfo: row.releaseInfo && {
+            title: show.title,
+            ...row.releaseInfo,
+          },
+        })),
+      }),
+    );
+  const run = <A, E>(effect: Effect.Effect<A, E, DiscoveryEngine>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(f.layer)));
+  const episode = { kind: "episode" as const, imdbId, season: 1, episode: 2 };
+  assert.deepEqual(
+    (await run(discovery.releases(episode))).map(({ id }) => id),
+    [
+      "unparsed",
+      "matching",
+      "season-only",
+      "range-holding",
+      "episode-only",
+      "unnumbered",
+    ],
+  );
+  for (const { id } of rows)
+    assert.equal((await run(discovery.release(episode, id))).url, release.link);
+  const releaseTarget = {
+    kind: "release" as const,
+    query: "independent",
+    id: "other-season",
+  };
+  assert.deepEqual(
+    (await run(discovery.releases(releaseTarget))).map(({ id }) => id),
+    ["other-season"],
+    "A release search target is not an episode",
+  );
+  assert.equal(
+    (await run(discovery.releases({ kind: "movie", id: movie.id }))).length,
+    rows.length,
+  );
+});
+
 test("malformed standard IDs never reach discovery", async () => {
   for (const input of [
     { type: "movie", id: "tt1234567:1:2" },

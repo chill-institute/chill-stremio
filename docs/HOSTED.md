@@ -243,6 +243,19 @@ subtitles resource. Playback that starts directly from a selected release carrie
 no separate subtitle lookup; reopen the video from **put.io library** to get its
 tracks.
 
+## Episode releases
+
+An episode's **Download to put.io** rows come from Engine `Search` for the
+show's title and `SxxEyy`, in Search order. A row is left out when Engine's
+release info for it names another season, or an episode or episode range that
+does not include the requested episode. A row without a parsed season stays,
+as does one with the requested season and no episode, such as a season pack
+from Search; selecting that one downloads the whole pack and, like any
+multi-file download, plays `select-file` unless it holds one video that is not
+a sample. The adapter reads only Engine's
+release info, never the release name. Selecting a release by its play URL still
+finds any Search result, so rows listed earlier keep playing.
+
 ## Season packs
 
 An episode's stream list ends with one **Download season to put.io** row when

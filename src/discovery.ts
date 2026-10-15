@@ -404,6 +404,25 @@ function movieImdbId(movie: typeof Movie.Type) {
   return /^\/title\/(tt[0-9]{7,10})\/?$/.exec(url.pathname)?.[1];
 }
 
+/**
+ * Whether a release's parsed numbers allow it to hold the episode. Engine
+ * omits numbers it could not parse; a release without a season, or a season
+ * without an episode, may still hold it.
+ */
+function mayHoldEpisode(
+  target: SeasonEpisode,
+  info: (typeof Release.Type)["releaseInfo"],
+) {
+  if (!info?.season) return true;
+  if (info.season !== target.season) return false;
+  if (!info.episode || info.episode === target.episode) return true;
+  return (
+    info.episodeEnd !== undefined &&
+    info.episode <= target.episode &&
+    target.episode <= info.episodeEnd
+  );
+}
+
 function moviesByImdb(catalog: readonly (typeof Movie.Type)[]) {
   const index = new Map<string, (typeof Movie.Type)[]>();
   for (const movie of catalog) {
@@ -655,7 +674,10 @@ export function createDiscovery() {
     input: DiscoveryTarget,
     resolved?: Option.Option<DiscoverySubject>,
   ): Effect.fn.Return<
-    { releases: DiscoveryRelease[]; incomplete: boolean },
+    {
+      releases: { release: DiscoveryRelease; listed: boolean }[];
+      incomplete: boolean;
+    },
     DiscoveryError | EngineError,
     DiscoveryEngine
   > {
@@ -678,12 +700,17 @@ export function createDiscovery() {
       releases: results
         .filter((entry) => target.kind !== "release" || entry.id === target.id)
         .map((entry) => ({
-          id: entry.id,
-          title: entry.title,
-          url: entry.link,
-          indexer: entry.indexer,
-          size: entry.size,
-          seeders: entry.seeders,
+          release: {
+            id: entry.id,
+            title: entry.title,
+            url: entry.link,
+            indexer: entry.indexer,
+            size: entry.size,
+            seeders: entry.seeders,
+          },
+          listed:
+            target.kind !== "episode" ||
+            mayHoldEpisode(target, entry.releaseInfo),
         })),
       incomplete,
     };
@@ -704,14 +731,18 @@ export function createDiscovery() {
     releases: (
       target: DiscoveryTarget,
       resolved?: Option.Option<DiscoverySubject>,
-    ) => Effect.map(candidates(target, resolved), ({ releases }) => releases),
+    ) =>
+      Effect.map(candidates(target, resolved), ({ releases }) =>
+        releases.filter(({ listed }) => listed).map(({ release }) => release),
+      ),
+    // Selection finds any Search result, including rows the listing leaves out.
     release: Effect.fn("Discovery.release")(function* (
       target: DiscoveryTarget,
       id: string,
     ) {
       const { releases, incomplete } = yield* candidates(target);
-      const release = releases.find((entry) => entry.id === id);
-      if (release) return release;
+      const release = releases.find((entry) => entry.release.id === id);
+      if (release) return release.release;
       // A failed indexer may still list it: legacy players may retry, and HLS
       // selection plays the release-unavailable clip.
       return yield* new EngineError({

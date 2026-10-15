@@ -127,7 +127,12 @@ async function fixture(
     // Wall-clock time a method takes, for tests that fake `Date`.
     elapsedMs: {} as Partial<Record<string, number>>,
     releaseMissing: false,
-    // Search results listed after the fixture release.
+    // Search results listed after the fixture release, with release info.
+    parsedReleases: [] as {
+      id: string;
+      releaseInfo?: { season?: number; episode?: number; episodeEnd?: number };
+    }[],
+    // Search results listed after those.
     extraReleases: 0,
     indexerError: "",
   };
@@ -325,6 +330,18 @@ async function fixture(
                     size: 12345n,
                     seeders: 3n,
                   },
+                  ...state.parsedReleases.map(({ id, releaseInfo }) => ({
+                    id,
+                    title: `Independent.Series.${id}`,
+                    indexer: "Fixture",
+                    link: "https://engine.fixture.test/download?token=fixture-release-secret",
+                    size: 12345n,
+                    seeders: 2n,
+                    releaseInfo: releaseInfo && {
+                      title: "Independent Series",
+                      ...releaseInfo,
+                    },
+                  })),
                   ...Array.from({ length: state.extraReleases }, (_, n) => ({
                     id: `fixture-release-${n}`,
                     title: "Independent.Film.720p",
@@ -2157,6 +2174,42 @@ test("an episode lists Engine's season pack after its releases", async () => {
     assert.equal(capped.length, 101, "100 episode releases and the pack");
     assert.equal(capped.at(-1)?.name, "Download season to put.io");
     assert.equal(f.state.addCount, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("an episode leaves out releases parsed as other episodes, which its play URLs still select", async () => {
+  const f = await fixture();
+  try {
+    f.state.seasonPack = seasonPack;
+    f.state.parsedReleases = [
+      { id: "other-season", releaseInfo: { season: 9, episode: 2 } },
+      { id: "other-episode", releaseInfo: { season: 1, episode: 3 } },
+      {
+        id: "episode-range",
+        releaseInfo: { season: 1, episode: 1, episodeEnd: 3 },
+      },
+      { id: "season-pack-release", releaseInfo: { season: 1 } },
+    ];
+    const play = (id: string) =>
+      `${f.base()}/play/series/${encodeURIComponent(episodeTarget)}/${id}.m3u8`;
+    assert.deepEqual(
+      (await episodeRows(f)).map(({ name, url }) => [name, url]),
+      [
+        ["Download to put.io", play("fixture-release")],
+        ["Download to put.io", play("episode-range")],
+        ["Download to put.io", play("season-pack-release")],
+        ["Download season to put.io", packSelection(f)],
+      ],
+    );
+    assert.equal(f.state.addCount, 0);
+    assert.equal(
+      await location(play("other-season")),
+      `${f.base()}/notice/select-file.m3u8`,
+      "The multi-file download was submitted",
+    );
+    assert.equal(f.state.addCount, 1);
   } finally {
     await f.close();
   }

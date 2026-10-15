@@ -44,6 +44,9 @@ Engine search IDs must identify the same source release across repeated searches
 temporary download credentials and changing seed counts must not change that ID.
 The adapter rechecks that exact ID before opening or acquiring a result, using
 the freshly issued link. A vanished release must not be replaced by a title match.
+An episode's stream list leaves out results whose Engine release info names
+another season, or an episode or range without the requested episode; selection
+still finds any result by that ID ([episode releases](./HOSTED.md#episode-releases)).
 An episode's [season pack](./HOSTED.md#season-packs) row instead resolves only
 through Engine's season lookup, `GetTVShowSeasonDownloads`, which must still
 return the same pack ID; it never falls back to the episode search.
