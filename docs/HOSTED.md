@@ -163,8 +163,8 @@ selected URL does not submit again. That memory is per process and bounded;
 selecting the same release after the window or after a restart submits again.
 Engine then returns the account's existing transfer for that source instead of
 adding another, unless it failed or its finished file is gone
-([transfer reuse probe](./LIVE.md#transfer-reuse-probe)). Under capacity pressure the oldest idle entries may be dropped before
-their window ends. A submission depends on neither the requesting client nor its
+([transfer reuse probe](./LIVE.md#transfer-reuse-probe)). Under capacity pressure the oldest settled entries with no open request may be
+dropped before their window ends; a running submission is never dropped. A submission depends on neither the requesting client nor its
 wait window. It has its own 41.5 seconds: 10 seconds each to resolve the title
 and find the release, then 21 seconds for Engine's answer, longer than Engine
 takes to finish an add, and 500 ms to receive it. When an HLS window ends first,

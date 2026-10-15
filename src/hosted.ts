@@ -128,6 +128,7 @@ export async function startHostedAdapter(options: {
     {
       submission: Promise<Submission>;
       users: number;
+      settled: boolean;
       failed: boolean;
       /** When the current automatic wait began; the pending clip restarts it. */
       waitingSince: number;
@@ -466,8 +467,14 @@ export async function startHostedAdapter(options: {
                 refuse(response, unit, true);
                 return;
               }
+              // A running submission may have no open request between a
+              // continuation and its follow-up, so only settled ones go.
               for (const [stale, candidate] of submissions)
-                if (submissions.size >= 256 && candidate.users === 0)
+                if (
+                  submissions.size >= 256 &&
+                  candidate.users === 0 &&
+                  candidate.settled
+                )
                   forget(stale);
               // The submission outlives any single client and window. An
               // interrupted submission may still have created the transfer.
@@ -487,12 +494,17 @@ export async function startHostedAdapter(options: {
                   throw error;
                 }),
                 users: 0,
+                settled: false,
                 failed: false,
                 waitingSince: performance.now(),
               };
               created.submission.then(
-                () => unit.release(),
                 () => {
+                  created.settled = true;
+                  unit.release();
+                },
+                () => {
+                  created.settled = true;
                   created.failed = true;
                   unit.release();
                 },

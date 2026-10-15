@@ -1501,6 +1501,66 @@ test("an HLS selection outlasting its window continues at its URL with one submi
   }
 });
 
+test("capacity pressure keeps a running submission for its continuation", async () => {
+  const f = await fixture();
+  vi.useFakeTimers({
+    toFake: ["setTimeout", "clearTimeout", "Date", "performance"],
+  });
+  const reached = async (condition: () => boolean) => {
+    for (let tries = 0; !condition(); tries++) {
+      assert.ok(tries < 400, "condition not reached");
+      await sleep(5);
+    }
+  };
+  const adds = () =>
+    f.calls.filter(({ method }) => method === "AddTransfer").length;
+  try {
+    f.state.transferFinished = false;
+    f.state.extraReleases = 256;
+    f.state.delayMs = { GetMovies: 9_000, Search: 9_000, AddTransfer: 15_000 };
+    const url = `${f.base()}/play/movie/tt1234567/fixture-release.m3u8`;
+    const first = fetch(url, { redirect: "manual" });
+    for (const [calls, ms] of [
+      [1, 9_000],
+      [2, 9_000],
+      [3, 7_000],
+    ] as const) {
+      await reached(() => f.state.heldCalls === calls);
+      await vi.advanceTimersByTimeAsync(ms);
+    }
+    const continued = await first;
+    assert.equal(continued.headers.get("location"), `${url}?wait=1`);
+    // Other selections fill the shared-submission memory while the add runs.
+    f.state.delayMs = {};
+    f.state.transferFinished = true;
+    for (let n = 0; n < 256; n++)
+      await (
+        await fetch(
+          `${f.base()}/play/movie/tt1234567/fixture-release-${n}.m3u8`,
+          { redirect: "manual" },
+        )
+      ).arrayBuffer();
+    const added = adds();
+    let responded = false;
+    const second = fetch(`${url}?wait=1`, { redirect: "manual" }).then(
+      (response) => {
+        responded = true;
+        return response;
+      },
+    );
+    for (let elapsed = 0; !responded; elapsed += 1_000) {
+      assert.ok(elapsed < 30_000, "the continuation never answered");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await sleep(5);
+    }
+    await (await second).arrayBuffer();
+    assert.equal(adds(), added, "The continuation rejoins the add");
+  } finally {
+    vi.useRealTimers();
+    await f.close();
+  }
+});
+
 test("status clips play from their credential path without reaching Engine", async () => {
   const f = await fixture();
   try {
