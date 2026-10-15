@@ -906,6 +906,7 @@ test("episode releases list only rows whose parsed numbers may hold the episode,
       "range-ending",
       "episode-only",
       "unnumbered",
+      "other-season-pack",
     ],
   );
   for (const { id } of rows)

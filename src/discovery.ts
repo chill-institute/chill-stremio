@@ -406,16 +406,16 @@ function movieImdbId(movie: typeof Movie.Type) {
 
 /**
  * Whether a release's parsed numbers allow it to hold the episode. Engine
- * omits numbers it could not parse; a release without a season, or a season
- * without an episode, may still hold it.
+ * omits numbers it could not parse and parses a multi-season pack as its first
+ * season, so only a release with both a season and an episode is ruled out.
  */
 function mayHoldEpisode(
   target: SeasonEpisode,
   info: (typeof Release.Type)["releaseInfo"],
 ) {
-  if (!info?.season) return true;
+  if (!info?.season || !info.episode) return true;
   if (info.season !== target.season) return false;
-  if (!info.episode || info.episode === target.episode) return true;
+  if (info.episode === target.episode) return true;
   return (
     info.episodeEnd !== undefined &&
     info.episode <= target.episode &&
