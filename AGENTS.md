@@ -99,12 +99,13 @@ Gaps:
   `LIVE_OWNED_WEB=1`, played the owned movie in Stremio Web, and
   `hosted:acquire` passed for an approved Matroska season pack, playing the
   pinned episode after put.io converted it, and for an approved
-  single-episode release. Acquisitions decode with FFmpeg rather than a
-  Stremio client. `hosted:public` and its canary consume no stream,
-  `hosted:live`'s Stremio Web step has no recorded pass since v2.0.0, and
-  playing an acquired release in a Stremio client through the deployed adapter
-  remains unproven; `LIVE_ACQUIRE_WEB=1` covers it in Stremio Web but has no
-  recorded pass. Owner: chill-institute/chill-stremio.
+  single-episode release, which with `LIVE_ACQUIRE_WEB=1` was also selected
+  and played in Stremio Web. put.io finished that release within seconds, so
+  no Web pass has selected a row again after a pending clip; other
+  acquisitions decode with FFmpeg. `hosted:public` and its canary consume no
+  stream, `hosted:live`'s Stremio Web step has no recorded pass since v2.0.0,
+  native clients have not played an acquired release, and the library's
+  **Convert and play from put.io** row has no live pass. Owner: chill-institute/chill-stremio.
 - A cold season lookup slower than the listing's five-second wait still leaves
   the **Download season to put.io** row out of a first visit to an episode; a
   later visit lists it. No lane times the cold lookup against production Engine. Owner: chill-institute/chill-stremio.
