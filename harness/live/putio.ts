@@ -13,6 +13,7 @@ export const PutioFile = Schema.Struct({
   id: Schema.Int,
   name: Schema.String,
   size: Schema.optional(Schema.Number),
+  file_type: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
 export const AccountEnvelope = Schema.Struct({
@@ -579,7 +580,8 @@ export const fileAbsent = Effect.fn("live.putio.fileAbsent")(function* (
   });
 }, Effect.timeout("20 seconds"));
 
-export const listFolderIds = Effect.fn("live.putio.listFolderIds")(function* (
+/** One folder's entries with their names and types, from a single page. */
+export const listFolder = Effect.fn("live.putio.listFolder")(function* (
   parentId: number,
 ) {
   const parsed = yield* requestJson(
@@ -600,8 +602,17 @@ export const listFolderIds = Effect.fn("live.putio.listFolderIds")(function* (
     return yield* new PutioFailure({
       message: "put.io folder list exceeds one page",
     });
-  return envelope.files.map((file) => file.id);
+  return envelope.files.map((file) => ({
+    id: file.id,
+    name: file.name,
+    fileType: file.file_type ?? undefined,
+  }));
 }, Effect.timeout("20 seconds"));
+
+export const listFolderIds = (parentId: number) =>
+  listFolder(parentId).pipe(
+    Effect.map((files) => files.map((file) => file.id)),
+  );
 
 /** Every transfer on the account, up to five pages of 1000. */
 export const listTransfers = Effect.fn("live.putio.listTransfers")(
@@ -712,6 +723,7 @@ export const FileDetailEnvelope = Schema.Struct({
   status: Schema.Literal("OK"),
   file: Schema.Struct({
     id: Schema.Int,
+    name: Schema.optional(Schema.NullOr(Schema.String)),
     parent_id: Schema.optional(Schema.NullOr(Schema.Int)),
     created_at: Schema.optional(Schema.NullOr(Schema.String)),
     file_type: Schema.optional(Schema.NullOr(Schema.String)),
@@ -732,7 +744,7 @@ export const serverTime = Effect.fn("live.putio.serverTime")(function* () {
   return time;
 }, Effect.timeout("20 seconds"));
 
-/** A file's parent, creation time and type, or `undefined` once put.io answers 404. */
+/** A file's name, parent, creation time and type, or `undefined` once put.io answers 404. */
 export const getFile = Effect.fn("live.putio.getFile")(function* (id: number) {
   const response = yield* request(`${liveVersions.apiBase}/v2/files/${id}`, {});
   if (response.status === 404) return undefined;
@@ -754,6 +766,7 @@ export const getFile = Effect.fn("live.putio.getFile")(function* (id: number) {
     });
   return {
     id,
+    name: envelope.file.name ?? undefined,
     parentId: envelope.file.parent_id ?? undefined,
     createdAt: envelope.file.created_at ?? undefined,
     fileType: envelope.file.file_type ?? undefined,

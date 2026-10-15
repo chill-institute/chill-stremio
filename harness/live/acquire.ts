@@ -27,12 +27,19 @@ class AcquireProbeFailure extends Schema.TaggedError<AcquireProbeFailure>()(
 
 const gib = 1024 ** 3;
 
+/** The adapter's release ID prefix for an episode's season pack. */
+const packPrefix = "pack:";
+
 const Pin = Schema.Struct({
   imdbId: Schema.String.check(Schema.isPattern(/^tt[0-9]{1,10}$/)),
   releaseId: Schema.String.check(
     Schema.isPattern(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+      /^(?:pack:)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/,
     ),
+  ),
+  // The adapter's own range for episode stream IDs.
+  episode: Schema.optional(
+    Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,3}:[1-9][0-9]{0,3}$/)),
   ),
   maxBytes: Schema.String.check(
     Schema.isPattern(/^[1-9][0-9]*$/),
@@ -42,6 +49,29 @@ const Pin = Schema.Struct({
 
 type ProviderTransfer = typeof putio.Transfer.Type;
 
+interface SavedEntry {
+  id: number;
+  name: string;
+  fileType?: string | undefined;
+}
+
+/**
+ * The one season and episode a file name carries as `S01E02` or `1x02`;
+ * a multi-episode name carries none.
+ */
+export function namedEpisode(name: string) {
+  const match =
+    /(?<![a-z0-9])s(\d{1,4})[ ._-]?e(\d{1,4})(?:-?e(\d{1,4})|-(\d{1,4}))?(?![0-9])/i.exec(
+      name,
+    ) ?? /(?<![a-z0-9])(\d{1,2})x(\d{2,3})(?![0-9a-z])/i.exec(name);
+  if (!match) return undefined;
+  const season = Number(match[1]);
+  const episode = Number(match[2]);
+  const end = match[3] ?? match[4];
+  if (end !== undefined && Number(end) !== episode) return undefined;
+  return { season, episode };
+}
+
 export interface AcquireProvider {
   accountInfo: () => Effect.Effect<{ username: string }, unknown>;
   listFolderIds: (id: number) => Effect.Effect<readonly number[], unknown>;
@@ -50,12 +80,18 @@ export interface AcquireProvider {
   serverTime: () => Effect.Effect<number, unknown>;
   getTransfer: (id: number) => Effect.Effect<ProviderTransfer, unknown>;
   cancelTransfers: (ids: readonly number[]) => Effect.Effect<void, unknown>;
-  getFile: (
-    id: number,
-  ) => Effect.Effect<
-    { id: number; parentId?: number; createdAt?: string } | undefined,
+  getFile: (id: number) => Effect.Effect<
+    | {
+        id: number;
+        name?: string | undefined;
+        parentId?: number | undefined;
+        createdAt?: string | undefined;
+        fileType?: string | undefined;
+      }
+    | undefined,
     unknown
   >;
+  listFolder: (id: number) => Effect.Effect<readonly SavedEntry[], unknown>;
   deleteFiles: (ids: readonly number[]) => Effect.Effect<void, unknown>;
   fileAbsent: (id: number) => Effect.Effect<boolean, unknown>;
 }
@@ -69,7 +105,13 @@ export interface AcquireOptions {
   mediaOrigin?: string;
   username: string | undefined;
   /** The approved release, supplied privately at run time. */
-  pin: { imdbId?: string; releaseId?: string; maxBytes?: string };
+  pin: {
+    imdbId?: string;
+    releaseId?: string;
+    /** `<season>:<episode>` for an episode or its season pack. */
+    episode?: string;
+    maxBytes?: string;
+  };
   ledgerDirectory: () => Promise<string>;
   provider: AcquireProvider;
   decode: (
@@ -157,7 +199,15 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
   let ambiguous = false;
   // Set once the transfer finished or served media, so it must have a file.
   let fileExpected = false;
-  let pin = { imdbId: "", releaseId: "", maxBytes: 0 };
+  let pin: {
+    imdbId: string;
+    releaseId: string;
+    maxBytes: number;
+    episode?: { season: number; episode: number };
+    pack: boolean;
+  } = { imdbId: "", releaseId: "", maxBytes: 0, pack: false };
+  // Files found under the transfer's saved folder; deleting it removes them.
+  const savedFiles = new Set<number>();
   let ledgerDirectory = "";
   const cancelled = new Set<number>();
   const fail = (at: string) => new AcquireProbeFailure({ stage: at });
@@ -195,8 +245,20 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
       return { kind: "external", url: url.href };
     if (!url.pathname.startsWith(`${personal}/`)) return { kind: "invalid" };
     const rest = url.pathname.slice(personal.length);
-    const status = /^\/status\/([1-9][0-9]{0,14})\.m3u8$/.exec(rest);
-    if (status?.[1] && /^(?:\?wait=[0-5])?$/.test(url.search))
+    // Only a season pack's status URL carries the episode it plays.
+    const status =
+      /^\/status\/([1-9][0-9]{0,14})(\/[1-9][0-9]{0,3}\/[1-9][0-9]{0,3})?\.m3u8$/.exec(
+        rest,
+      );
+    const carried =
+      pin.pack && pin.episode
+        ? `/${pin.episode.season}/${pin.episode.episode}`
+        : undefined;
+    if (
+      status?.[1] &&
+      status[2] === carried &&
+      /^(?:\?wait=[0-5])?$/.test(url.search)
+    )
       return { kind: "status", id: Number(status[1]), url: url.href };
     const notice = /^\/notice\/([a-z-]{1,32})\.m3u8$/.exec(rest);
     if (notice?.[1] && url.search === "")
@@ -343,6 +405,31 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     return yield* fail("size-exceeded");
   });
 
+  /** The transfer's saved file, or every entry under its saved folder, within the adapter's walk limits. */
+  const savedTree = Effect.fn("live.acquire.savedTree")(function* (
+    rootId: number,
+  ) {
+    const root = yield* provider.getFile(rootId);
+    if (!root?.name) return yield* fail(stage);
+    if (root.fileType !== "FOLDER")
+      return [{ id: rootId, name: root.name, fileType: root.fileType }];
+    const entries: SavedEntry[] = [];
+    const pending = [{ id: rootId, depth: 0 }];
+    const visited = new Set<number>();
+    for (let next = pending.shift(); next; next = pending.shift()) {
+      if (visited.has(next.id) || visited.size >= 32 || next.depth > 8)
+        return yield* fail(stage);
+      visited.add(next.id);
+      for (const entry of yield* provider.listFolder(next.id)) {
+        entries.push(entry);
+        if (entries.length > 5000) return yield* fail(stage);
+        if (entry.fileType === "FOLDER")
+          pending.push({ id: entry.id, depth: next.depth + 1 });
+      }
+    }
+    return entries;
+  });
+
   const sizeGate = (id: number) =>
     provider.getTransfer(id).pipe(
       Effect.option,
@@ -362,7 +449,23 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
       !options.username
     )
       return yield* fail(stage);
-    pin = { ...decoded.value, maxBytes: Number(decoded.value.maxBytes) };
+    const [season = 0, episode = 0] =
+      decoded.value.episode?.split(":").map(Number) ?? [];
+    pin = {
+      imdbId: decoded.value.imdbId,
+      releaseId: decoded.value.releaseId,
+      maxBytes: Number(decoded.value.maxBytes),
+      ...(decoded.value.episode !== undefined && {
+        episode: { season, episode },
+      }),
+      pack: decoded.value.releaseId.startsWith(packPrefix),
+    };
+    if (pin.pack && !pin.episode) return yield* fail(stage);
+    proof.release = pin.pack
+      ? "season-pack"
+      : pin.episode
+        ? "episode"
+        : "movie";
     const rpc = yield* createEngineRpc({
       baseUrl: options.engineBaseUrl,
       credential: options.credential,
@@ -381,7 +484,9 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     const listing = yield* Effect.tryPromise({
       try: async (signal) => {
         const response = await fetch(
-          `${options.origin}${personal}/stream/movie/${pin.imdbId}.json`,
+          pin.episode
+            ? `${options.origin}${personal}/stream/series/${pin.imdbId}:${pin.episode.season}:${pin.episode.episode}.json`
+            : `${options.origin}${personal}/stream/movie/${pin.imdbId}.json`,
           { signal, redirect: "manual" },
         );
         return { status: response.status, body: await response.text() };
@@ -402,19 +507,39 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
         }),
       ),
     )(listing.body).pipe(Effect.mapError(() => fail(stage)))).streams.filter(
-      (row) => row.name === "Download to put.io",
+      (row) =>
+        row.name ===
+        (pin.pack ? "Download season to put.io" : "Download to put.io"),
     );
+    const episodePlay = pin.episode
+      ? [
+          `chill:episode:${pin.imdbId}:${pin.episode.season}:${pin.episode.episode}`,
+          `${pin.releaseId}.m3u8`,
+        ]
+      : undefined;
     proof.downloadRows = rows.length;
     const playUrl = rows.find((row) => {
       if (!row.url || !URL.canParse(row.url)) return false;
       const url = new URL(row.url);
+      const prefix = `${personal}/play/${episodePlay ? "series" : "movie"}/`;
       if (
         url.origin !== options.origin ||
         url.search !== "" ||
-        !url.pathname.startsWith(`${personal}/play/movie/`)
+        !url.pathname.startsWith(prefix)
       )
         return false;
       try {
+        if (episodePlay) {
+          const segments = url.pathname
+            .slice(prefix.length)
+            .split("/")
+            .map(decodeURIComponent);
+          return (
+            segments.length === 2 &&
+            segments[0] === episodePlay[0] &&
+            segments[1] === episodePlay[1]
+          );
+        }
         return (
           decodeURIComponent(url.pathname.split("/").at(-1) ?? "") ===
           `${pin.releaseId}.m3u8`
@@ -544,6 +669,35 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
     proof.locationNamesFile = transferFiles.some((entry) =>
       media.target?.pathname.includes(`/files/${entry.file}/`),
     );
+    if (pin.episode) {
+      // The adapter picks the episode from what put.io saved; this checks its pick.
+      stage = "episode-identity";
+      const saved = transferFiles.find(
+        (entry) =>
+          entry.transfer === transfer.id && entry.resolution === "owned",
+      );
+      const played = /\/files\/([1-9][0-9]{0,15})\//.exec(
+        media.target?.pathname ?? "",
+      )?.[1];
+      if (!saved || !played) return yield* fail(stage);
+      const tree = yield* savedTree(saved.file);
+      for (const entry of tree)
+        if (entry.id !== saved.file) savedFiles.add(entry.id);
+      recovery.savedFiles = [...savedFiles];
+      yield* checkpoint;
+      if (pin.pack)
+        proof.packVideos = tree.filter(
+          (entry) => entry.fileType === "VIDEO",
+        ).length;
+      const file = tree.find((entry) => entry.id === Number(played));
+      const named = file && namedEpisode(file.name);
+      proof.playedInTransfer = file !== undefined;
+      proof.playedEpisodeMatches =
+        named?.season === pin.episode.season &&
+        named.episode === pin.episode.episode;
+      if (!proof.playedInTransfer || !proof.playedEpisodeMatches)
+        return yield* fail(stage);
+    }
     stage = "cancel";
     yield* cancelOnce(attempt.transfers);
 
@@ -600,7 +754,7 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
         (id) => !listed.some((transfer) => transfer.id === id),
       );
       const filesGone = (yield* Effect.forEach(
-        attempt.files,
+        [...attempt.files, ...savedFiles],
         provider.fileAbsent,
       )).every(Boolean);
       if (transfersGone && filesGone) return "verified" satisfies Verification;
@@ -666,6 +820,7 @@ if (import.meta.main) {
       pin: {
         imdbId: env("LIVE_ACQUIRE_IMDB_ID"),
         releaseId: env("LIVE_ACQUIRE_RELEASE_ID"),
+        episode: env("LIVE_ACQUIRE_EPISODE"),
         maxBytes: env("LIVE_ACQUIRE_MAX_BYTES"),
       },
       ledgerDirectory: () => liveRunnerDirectory(),

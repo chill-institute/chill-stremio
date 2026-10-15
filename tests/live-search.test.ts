@@ -663,19 +663,25 @@ for (const deletion of ["ignored", "rejected"] as const)
     );
   });
 
-test("the file read returns put.io's file type", async () => {
+test("the file read returns put.io's file name and type", async () => {
   vi.stubEnv(liveVersions.putioTokenEnv, "fixture-token");
   const fetchMock = vi.spyOn(globalThis, "fetch");
   try {
     fetchMock.mockResolvedValueOnce(
       Response.json({
         status: "OK",
-        file: { id: 7, parent_id: 3, file_type: "VIDEO" },
+        file: {
+          id: 7,
+          name: "Fixture.Show.S01E02.mkv",
+          parent_id: 3,
+          file_type: "VIDEO",
+        },
       }),
     );
     fetchMock.mockResolvedValueOnce(new Response("", { status: 404 }));
     assert.deepEqual(await Effect.runPromise(getFile(7)), {
       id: 7,
+      name: "Fixture.Show.S01E02.mkv",
       parentId: 3,
       createdAt: undefined,
       fileType: "VIDEO",

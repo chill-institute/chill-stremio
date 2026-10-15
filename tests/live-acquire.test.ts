@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import * as proto from "@chill-institute/contracts/chill/v4/api_pb";
 import { Effect, Exit, Schema } from "effect";
-import { test } from "vite-plus/test";
+import { test, vi } from "vite-plus/test";
 import {
   AllowanceFailure,
   readLedger,
@@ -14,16 +14,27 @@ import {
   utcDay,
 } from "../harness/live/allowance.ts";
 import {
+  namedEpisode,
   runAcquisition,
   type AcquireProvider,
 } from "../harness/live/acquire.ts";
+import { listFolder, listFolderIds } from "../harness/live/putio.ts";
 import { liveVersions } from "../harness/live/versions.ts";
 
 const credential = `v4.local.${"A".repeat(300)}`;
 const imdbId = "tt0000001";
 const releaseId = "00000000-0000-4000-8000-000000000001";
 const decoyReleaseId = "00000000-0000-4000-8000-000000000002";
+const packReleaseId = "00000000-0000-4000-8000-000000000003";
 const maxBytes = "987654";
+const episodePin = { imdbId, releaseId, episode: "1:2", maxBytes };
+const packPin = {
+  imdbId,
+  releaseId: `pack:${packReleaseId}`,
+  episode: "1:2",
+  maxBytes,
+};
+const episodeTarget = `chill:episode:${imdbId}:1:2`;
 const mediaOrigin = "https://media.fixture.test";
 const folder = 73_101_101;
 const baselineTransfer = 73_101_501;
@@ -31,6 +42,12 @@ const baselineFile = 73_101_601;
 const newTransfer = 73_101_701;
 const strayTransfer = 73_101_702;
 const newFile = 73_101_801;
+// A season folder's entries; the second episode is the pinned one.
+const packFirstEpisode = 73_101_811;
+const packPinnedEpisode = 73_101_812;
+const packSampleFolder = 73_101_813;
+const packSampleVideo = 73_101_814;
+const packInfo = 73_101_815;
 const seededBytes = 100;
 
 interface FakeTransfer {
@@ -52,6 +69,21 @@ interface FakeOptions {
   ) => "fail" | undefined;
   /** How many reads of the new file answer 404 before it appears. */
   fileMisses?: number;
+  /** What the new transfer saves: one video (the default) or a season folder. */
+  saved?: "video" | "season";
+  /** The saved video's name. */
+  videoName?: string;
+  /** The file the adapter plays; defaults to the saved video or pinned episode. */
+  played?: number;
+  /** Deleting a folder leaves its entries behind. */
+  orphanEntries?: boolean;
+}
+
+interface FakeFile {
+  parent: number;
+  created: string;
+  name: string;
+  type: "FOLDER" | "VIDEO" | "FILE";
 }
 
 function fakePutio(options: FakeOptions = {}) {
@@ -59,9 +91,18 @@ function fakePutio(options: FakeOptions = {}) {
     new Date(Date.now() + (options.skewMs ?? 0)).toISOString().slice(0, 19);
   let lists = 0;
   let fileMisses = options.fileMisses ?? 0;
-  const files = new Map<number, { parent: number; created: string }>([
-    [folder, { parent: 0, created: "2020-01-01T00:00:00" }],
-    [baselineFile, { parent: folder, created: "2020-01-01T00:00:00" }],
+  const old = "2020-01-01T00:00:00";
+  const files = new Map<number, FakeFile>([
+    [folder, { parent: 0, created: old, name: "Root entry", type: "FOLDER" }],
+    [
+      baselineFile,
+      {
+        parent: folder,
+        created: old,
+        name: "Fixture.Show.S01E02.720p.mkv",
+        type: "VIDEO",
+      },
+    ],
   ]);
   const transfers = new Map<number, FakeTransfer>([
     [
@@ -126,14 +167,34 @@ function fakePutio(options: FakeOptions = {}) {
           return undefined;
         }
         return file
-          ? { id, parentId: file.parent, createdAt: file.created }
+          ? {
+              id,
+              name: file.name,
+              parentId: file.parent,
+              createdAt: file.created,
+              fileType: file.type,
+            }
           : undefined;
       }),
+    listFolder: (id) =>
+      Effect.sync(() => {
+        events.push("folder");
+        return [...files]
+          .filter(([, file]) => file.parent === id)
+          .map(([id, file]) => ({ id, name: file.name, fileType: file.type }));
+      }),
+    // Deleting a folder deletes everything under it.
     deleteFiles: (ids) =>
       Effect.sync(() => {
         events.push("delete");
         deleted.push([...ids]);
-        for (const id of ids) files.delete(id);
+        const remove = (id: number) => {
+          files.delete(id);
+          if (options.orphanEntries) return;
+          for (const [child, file] of files)
+            if (file.parent === id) remove(child);
+        };
+        for (const id of ids) remove(id);
       }),
     fileAbsent: (id) => Effect.sync(() => !files.has(id)),
   };
@@ -149,9 +210,37 @@ function fakePutio(options: FakeOptions = {}) {
   const complete = (id: number) => {
     const transfer = transfers.get(id);
     if (!transfer || transfer.file_id) return;
-    files.set(newFile, { parent: folder, created: providerNow() });
+    const created = providerNow();
+    const save = (
+      id: number,
+      parent: number,
+      name: string,
+      type: FakeFile["type"],
+    ) => files.set(id, { parent, created, name, type });
+    if (options.saved === "season") {
+      save(newFile, folder, "Fixture.Show.S01.1080p", "FOLDER");
+      save(packFirstEpisode, newFile, "Fixture.Show.S01E01.1080p.mkv", "VIDEO");
+      save(
+        packPinnedEpisode,
+        newFile,
+        "Fixture.Show.S01E02.1080p.mkv",
+        "VIDEO",
+      );
+      save(packSampleFolder, newFile, "Sample", "FOLDER");
+      save(packSampleVideo, packSampleFolder, "sample.mkv", "VIDEO");
+      save(packInfo, newFile, "Fixture.Show.S01.nfo", "FILE");
+    } else
+      save(
+        newFile,
+        folder,
+        options.videoName ?? "Fixture.Movie.2020.1080p.mkv",
+        "VIDEO",
+      );
     Object.assign(transfer, { status: "SEEDING", file_id: newFile });
   };
+  const played = () =>
+    options.played ??
+    (options.saved === "season" ? packPinnedEpisode : newFile);
   return {
     files,
     transfers,
@@ -161,6 +250,7 @@ function fakePutio(options: FakeOptions = {}) {
     provider,
     createTransfer,
     complete,
+    played,
   };
 }
 
@@ -173,7 +263,10 @@ type Hop =
   | `notice:${string}`;
 
 interface Script {
-  rows?: "pinned" | "missing";
+  /** "swapped" lists each series release under the other row's name. */
+  rows?: "pinned" | "missing" | "swapped";
+  /** Status URLs carry the episode, as the adapter's do for a season pack. */
+  statusEpisode?: boolean;
   play?: "status" | "reuse" | "lost" | "direct" | "direct-ambiguous";
   hops?: Hop[];
   /** What status reads answer once `hops` runs out. */
@@ -196,11 +289,13 @@ async function fakeServices(
         path: `${url.pathname}${url.search}`,
       });
       const base = `http://${request.headers.host}/s/${credential}`;
+      const statusUrl = (wait: number) =>
+        `${base}/status/${newTransfer}${script.statusEpisode ? "/1/2" : ""}.m3u8?wait=${wait}`;
       const redirect = (location: string) =>
         response.writeHead(302, { Location: location }).end();
       const media = () => {
         putio.complete(newTransfer);
-        return `${mediaOrigin}/v2/files/${newFile}/hls/media.m3u8?oauth_token=fixture-grant`;
+        return `${mediaOrigin}/v2/files/${putio.played()}/hls/media.m3u8?oauth_token=fixture-grant`;
       };
       if (!url.pathname.startsWith("/s/")) {
         let body = "";
@@ -250,6 +345,39 @@ async function fakeServices(
         response.end(JSON.stringify({ streams }));
         return;
       }
+      if (path === `/stream/series/${imdbId}:1:2.json`) {
+        const play = (release: string) =>
+          `${base}/play/series/${encodeURIComponent(episodeTarget)}/${encodeURIComponent(release)}.m3u8`;
+        const swapped = script.rows === "swapped";
+        const streams = [
+          {
+            name: "Download to put.io",
+            title: "Decoy",
+            url: play(decoyReleaseId),
+          },
+          ...(script.rows === "missing"
+            ? []
+            : [
+                {
+                  name: swapped
+                    ? "Download season to put.io"
+                    : "Download to put.io",
+                  title: "Fixture",
+                  url: play(releaseId),
+                },
+                {
+                  name: swapped
+                    ? "Download to put.io"
+                    : "Download season to put.io",
+                  title: "Season 1 pack",
+                  url: play(`pack:${packReleaseId}`),
+                },
+              ]),
+        ];
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ streams }));
+        return;
+      }
       if (path.startsWith("/play/")) {
         if (request.method === "HEAD") {
           response.writeHead(200).end();
@@ -259,7 +387,7 @@ async function fakeServices(
         switch (script.play ?? "status") {
           case "status":
             putio.createTransfer(newTransfer, size);
-            return redirect(`${base}/status/${newTransfer}.m3u8?wait=1`);
+            return redirect(statusUrl(1));
           case "reuse":
             return redirect(`${base}/status/${baselineTransfer}.m3u8?wait=1`);
           case "lost":
@@ -276,10 +404,7 @@ async function fakeServices(
       }
       if (path.startsWith("/status/")) {
         const hop = hops.shift() ?? script.rest ?? "media";
-        if (hop === "status")
-          return redirect(
-            `${base}/status/${newTransfer}.m3u8?wait=${Math.min(++wait, 5)}`,
-          );
+        if (hop === "status") return redirect(statusUrl(Math.min(++wait, 5)));
         if (hop === "pending") return redirect(`${base}/notice/pending.m3u8`);
         if (hop === "refuse") {
           response.writeHead(503).end();
@@ -331,6 +456,10 @@ const Receipt = Schema.fromJsonString(
       locationMediaOrigin: Schema.optional(Schema.Boolean),
       locationHls: Schema.optional(Schema.Boolean),
       locationNamesFile: Schema.optional(Schema.Boolean),
+      release: Schema.optional(Schema.String),
+      playedInTransfer: Schema.optional(Schema.Boolean),
+      playedEpisodeMatches: Schema.optional(Schema.Boolean),
+      packVideos: Schema.optional(Schema.Number),
       selectionToFirstStatusMs: Schema.optional(Schema.Number),
       selectionToCompletionMs: Schema.optional(Schema.Number),
       selectionToMediaMs: Schema.optional(Schema.Number),
@@ -358,7 +487,12 @@ type Decode = number | "fail" | "hang";
 async function runLane(
   script: Script,
   options: {
-    pin?: { imdbId?: string; releaseId?: string; maxBytes?: string };
+    pin?: {
+      imdbId?: string;
+      releaseId?: string;
+      episode?: string;
+      maxBytes?: string;
+    };
     decode?: Decode;
     reservedBytes?: number;
     acquisitionMs?: number;
@@ -453,7 +587,10 @@ const assertPrivateReceipt = (text: string) => {
     imdbId,
     releaseId,
     decoyReleaseId,
+    packReleaseId,
     maxBytes,
+    "S01",
+    "Season",
     "73101",
     "http",
     "fixture-grant",
@@ -518,6 +655,17 @@ test("the pinned release is acquired with one selection, decoded, and removed", 
   assert.equal(run.receipt.proof.locationMediaOrigin, true);
   assert.equal(run.receipt.proof.locationHls, true);
   assert.equal(run.receipt.proof.locationNamesFile, true);
+  assert.equal(run.receipt.proof.release, "movie");
+  assert.deepEqual(
+    run.requests
+      .filter((request) => request.path.includes("/stream/"))
+      .map((request) => request.path),
+    [`/s/${credential}/stream/movie/${imdbId}.json`],
+  );
+  assert.ok(!run.putio.events.includes("folder"));
+  assert.equal(run.receipt.proof.playedInTransfer, undefined);
+  assert.equal(run.receipt.proof.playedEpisodeMatches, undefined);
+  assert.equal(run.receipt.proof.packVideos, undefined);
   for (const timing of [
     run.receipt.proof.selectionToFirstStatusMs,
     run.receipt.proof.selectionToCompletionMs,
@@ -575,6 +723,28 @@ for (const [label, pin] of [
   ["a fractional byte limit", { imdbId, releaseId, maxBytes: "1.5" }],
   ["a negative byte limit", { imdbId, releaseId, maxBytes: "-1" }],
   ["an unsafe byte limit", { imdbId, releaseId, maxBytes: "9007199254740993" }],
+  ["an empty episode", { ...episodePin, episode: "" }],
+  ["an episode without a season", { ...episodePin, episode: "2" }],
+  ["a zero season", { ...episodePin, episode: "0:2" }],
+  ["a zero episode", { ...episodePin, episode: "1:0" }],
+  ["a zero-padded episode", { ...episodePin, episode: "01:02" }],
+  ["a negative episode", { ...episodePin, episode: "1:-2" }],
+  ["an episode range", { ...episodePin, episode: "1:2:3" }],
+  [
+    "an episode past the adapter's range",
+    { ...episodePin, episode: "1:10000" },
+  ],
+  ["a season pack without an episode", { ...packPin, episode: undefined }],
+  ["a bare pack prefix", { ...packPin, releaseId: "pack:" }],
+  [
+    "an upper-case pack prefix",
+    { ...packPin, releaseId: `PACK:${packReleaseId}` },
+  ],
+  [
+    "a doubled pack prefix",
+    { ...packPin, releaseId: `pack:pack:${packReleaseId}` },
+  ],
+  ["an owned video", { ...episodePin, releaseId: "owned:73101801" }],
 ] as const)
   test(`${label} fails at configuration before any call`, async () => {
     const run = await runLane({}, { pin });
@@ -803,4 +973,231 @@ test("an acquisition that never completes times out and cancels its transfer", a
   assert.equal(playRequests(run, "GET").length, 1);
   assert.deepEqual(run.putio.cancelled, [[newTransfer]]);
   assert.equal(run.receipt.cleanup.verification, "verified");
+});
+
+test("namedEpisode reads one season and episode from a file name", () => {
+  for (const [name, expected] of [
+    ["Fixture.Show.S01E02.1080p.mkv", { season: 1, episode: 2 }],
+    ["fixture show s1e2.mp4", { season: 1, episode: 2 }],
+    ["Fixture Show - S01.E02 - Title.mkv", { season: 1, episode: 2 }],
+    ["Fixture.Show.1x02.mkv", { season: 1, episode: 2 }],
+    ["Fixture.Show.S01E02-E02.mkv", { season: 1, episode: 2 }],
+    ["Fixture.Show.S01E02E03.mkv", undefined],
+    ["Fixture.Show.S01E02-03.mkv", undefined],
+    ["Fixture.Show.S01.1080p.x264.mkv", undefined],
+    ["Fixture.Movie.1920x1080.mkv", undefined],
+    ["FixtureS01E02.mkv", undefined],
+  ] as const)
+    assert.deepEqual(namedEpisode(name), expected, name);
+});
+
+const episodeGet = (release: string) =>
+  `/s/${credential}/play/series/${encodeURIComponent(episodeTarget)}/${encodeURIComponent(release)}.m3u8`;
+
+test("a pinned episode release reads the episode listing and plays that episode", async () => {
+  const run = await runLane(
+    { hops: ["status", "pending", "media"] },
+    {
+      pin: episodePin,
+      putio: { videoName: "Fixture.Show.S01E02.1080p.mkv" },
+    },
+  );
+  assert.ok(Exit.isSuccess(run.exit));
+  assert.equal(run.receipt.status, "passed");
+  assert.deepEqual(
+    run.requests
+      .filter((request) => request.path.includes("/stream/"))
+      .map((request) => request.path),
+    [`/s/${credential}/stream/series/${imdbId}:1:2.json`],
+  );
+  assert.equal(playRequests(run, "HEAD").length, 1);
+  assert.deepEqual(
+    playRequests(run, "GET").map((request) => request.path),
+    [episodeGet(releaseId)],
+  );
+  assert.equal(run.receipt.proof.release, "episode");
+  assert.equal(run.receipt.proof.pinnedRow, true);
+  assert.equal(run.receipt.proof.pendingNotices, 1);
+  assert.equal(run.receipt.proof.playedInTransfer, true);
+  assert.equal(run.receipt.proof.playedEpisodeMatches, true);
+  assert.equal(run.receipt.proof.packVideos, undefined);
+  assert.ok((run.receipt.proof.decode?.frames ?? 0) > 0);
+  assertCleaned(run);
+  assert.deepEqual(run.ledger, {
+    day: utcDay(),
+    reservedTransfers: 3,
+    reservedBytes: seededBytes + Number(maxBytes),
+  });
+  assertPrivateReceipt(run.receiptText);
+});
+
+test("a pinned season pack plays the pinned episode from its folder and removes the whole tree", async () => {
+  const run = await runLane(
+    {
+      statusEpisode: true,
+      hops: ["status", "pending", "refuse", "media"],
+    },
+    { pin: packPin, putio: { saved: "season" } },
+  );
+  assert.ok(Exit.isSuccess(run.exit));
+  assert.equal(run.receipt.status, "passed");
+  assert.deepEqual(
+    playRequests(run, "GET").map((request) => request.path),
+    [episodeGet(`pack:${packReleaseId}`)],
+  );
+  const statusPath = `/s/${credential}/status/${newTransfer}/1/2.m3u8`;
+  assert.deepEqual(
+    run.requests
+      .filter((request) => request.path.includes("/status/"))
+      .map((request) => request.path),
+    [
+      `${statusPath}?wait=1`,
+      `${statusPath}?wait=2`,
+      `${statusPath}?wait=2`,
+      `${statusPath}?wait=2`,
+    ],
+  );
+  assert.equal(run.receipt.proof.release, "season-pack");
+  assert.equal(run.receipt.proof.attribution, "status-url");
+  assert.equal(run.receipt.proof.playedInTransfer, true);
+  assert.equal(run.receipt.proof.playedEpisodeMatches, true);
+  // Two episodes and the sample.
+  assert.equal(run.receipt.proof.packVideos, 3);
+  assert.deepEqual(run.decoded, [
+    `${mediaOrigin}/v2/files/${packPinnedEpisode}/hls/media.m3u8?oauth_token=fixture-grant`,
+  ]);
+  // The saved folder is deleted once; nothing under it remains.
+  assertCleaned(run);
+  for (const id of [
+    packFirstEpisode,
+    packPinnedEpisode,
+    packSampleFolder,
+    packSampleVideo,
+    packInfo,
+  ])
+    assert.ok(!run.putio.files.has(id), String(id));
+  assert.ok(run.journal.includes(String(packSampleVideo)));
+  assertPrivateReceipt(run.receiptText);
+});
+
+test("a season folder whose entries outlive its deletion leaves cleanup unverified", async () => {
+  const run = await runLane(
+    { statusEpisode: true, hops: ["media"] },
+    { pin: packPin, putio: { saved: "season", orphanEntries: true } },
+  );
+  assert.equal(run.receipt.status, "failed");
+  assert.deepEqual(run.putio.deleted, [[newFile]]);
+  assert.ok(!run.putio.files.has(newFile));
+  assert.ok(run.putio.files.has(packPinnedEpisode));
+  assert.ok(!run.putio.transfers.has(newTransfer));
+  assert.equal(run.receipt.cleanup.verification, "present");
+});
+
+for (const [label, pin] of [
+  ["a season pack", packPin],
+  ["an episode release", episodePin],
+] as const)
+  test(`${label} pin never selects the other kind of row`, async () => {
+    const run = await runLane({ rows: "swapped" }, { pin });
+    assert.ok(Exit.isFailure(run.exit));
+    assert.equal(run.receipt.proof.failureStage, "pinned-row-missing");
+    assert.equal(run.receipt.proof.pinnedRow, false);
+    assert.equal(run.receipt.proof.reserved, undefined);
+    assert.equal(run.ledger.reservedBytes, seededBytes);
+    assert.deepEqual(playRequests(run, "HEAD"), []);
+    assert.deepEqual(playRequests(run, "GET"), []);
+    assert.deepEqual(run.putio.cancelled, []);
+    assertPrivateReceipt(run.receiptText);
+  });
+
+for (const mismatch of [
+  {
+    name: "a season pack whose status URL omits the episode",
+    script: { hops: ["media"] },
+    pin: packPin,
+  },
+  {
+    name: "an episode release whose status URL names an episode",
+    script: { statusEpisode: true, hops: ["media"] },
+    pin: episodePin,
+  },
+] satisfies { name: string; script: Script; pin: typeof episodePin }[])
+  test(`${mismatch.name} fails at redirect and cancels the run's transfer`, async () => {
+    const run = await runLane(mismatch.script, { pin: mismatch.pin });
+    assert.ok(Exit.isFailure(run.exit));
+    assert.equal(run.receipt.proof.failureStage, "redirect");
+    assert.equal(playRequests(run, "GET").length, 1);
+    assert.deepEqual(run.decoded, []);
+    assert.deepEqual(run.putio.cancelled, [[newTransfer]]);
+    assert.equal(run.receipt.cleanup.verification, "verified");
+    assertPreexistingUntouched(run);
+  });
+
+for (const identity of [
+  {
+    name: "an episode release saving another episode",
+    pin: episodePin,
+    putio: { videoName: "Fixture.Show.S01E03.1080p.mkv" },
+    inTransfer: true,
+  },
+  {
+    name: "a season pack playing another episode from its folder",
+    pin: packPin,
+    putio: { saved: "season", played: packFirstEpisode },
+    inTransfer: true,
+  },
+  {
+    name: "a season pack playing a video outside its folder",
+    pin: packPin,
+    putio: { saved: "season", played: baselineFile },
+    inTransfer: false,
+  },
+] satisfies {
+  name: string;
+  pin: typeof episodePin;
+  putio: FakeOptions;
+  inTransfer: boolean;
+}[])
+  test(`${identity.name} fails at episode-identity before decoding and is removed`, async () => {
+    const run = await runLane(
+      { statusEpisode: identity.pin === packPin, hops: ["media"] },
+      { pin: identity.pin, putio: identity.putio },
+    );
+    assert.ok(Exit.isFailure(run.exit));
+    assert.equal(run.receipt.proof.failureStage, "episode-identity");
+    assert.equal(run.receipt.proof.playedInTransfer, identity.inTransfer);
+    assert.equal(run.receipt.proof.playedEpisodeMatches, false);
+    assert.deepEqual(run.decoded, []);
+    assertCleaned(run);
+    assertPrivateReceipt(run.receiptText);
+  });
+
+test("the folder read returns put.io's entry names and types", async () => {
+  vi.stubEnv(liveVersions.putioTokenEnv, "fixture-token");
+  const fetchMock = vi.spyOn(globalThis, "fetch");
+  const page = () =>
+    Response.json({
+      status: "OK",
+      files: [
+        { id: 11, name: "Fixture.Show.S01E01.mkv", file_type: "VIDEO" },
+        { id: 12, name: "Sample", file_type: "FOLDER" },
+        { id: 13, name: "Fixture.nfo" },
+      ],
+    });
+  try {
+    fetchMock.mockResolvedValueOnce(page()).mockResolvedValueOnce(page());
+    assert.deepEqual(await Effect.runPromise(listFolder(7)), [
+      { id: 11, name: "Fixture.Show.S01E01.mkv", fileType: "VIDEO" },
+      { id: 12, name: "Sample", fileType: "FOLDER" },
+      { id: 13, name: "Fixture.nfo", fileType: undefined },
+    ]);
+    assert.equal(
+      fetchMock.mock.calls[0]?.[0],
+      `${liveVersions.apiBase}/v2/files/list?parent_id=7&per_page=1000`,
+    );
+    assert.deepEqual(await Effect.runPromise(listFolderIds(7)), [11, 12, 13]);
+  } finally {
+    fetchMock.mockRestore();
+    vi.unstubAllEnvs();
+  }
 });
