@@ -348,7 +348,7 @@ token, filename, provider ID or URL.
 
 ### Stremio Web step
 
-With `LIVE_OWNED_WEB=1`, after both FFmpeg decodes the probe serves the pinned
+With `LIVE_OWNED_WEB=1`, after every FFmpeg decode the probe serves the pinned
 Stremio Web build from `mise run setup` and opens it in a fresh headless
 Chromium guest context. It installs the personal manifest through the
 **Add addon** dialog as `hosted:live` does, opens the movie's detail page and
@@ -414,12 +414,22 @@ lists it. The step then:
 4. Every 10 seconds for up to 15 minutes, reads the MP4 status, then the stream
    list, counting under each status the lists that hold the Convert row, a
    **Play from put.io** row for the same selection, no row, or anything else.
-   It stops at one **chill.institute** row. `ERROR` fails at `convert-error`,
-   and running out of reads at `convert-timeout` with the last status and
-   percentage in tens.
+   It stops at one **chill.institute** row, then reads the MP4 status once
+   more as `wait.finalStatus`, so a size put.io reports after a poll's status
+   read is still charged. `ERROR` fails at `convert-error`, and running out of
+   reads at `convert-timeout` with the last status and percentage in tens.
 5. GETs the Convert row again, as a client holding the earlier list would. It
    must redirect `302` to the listed row's HLS playlist on the put.io API
    origin, which FFmpeg then decodes as for the title rows.
+
+In steps 3 and 4 each failed MP4 read counts under `started.readErrors` or
+`wait.readErrors`. One without a successful response is retried 10 seconds
+later unless it is the third in a row; a retried poll still counts toward the
+step's limit, and the final read after the library lists the ready source is
+bounded only by that three-in-a-row rule. Any other failure, and any in step 2,
+fails at once. The receipt's
+`failureCode` names an MP4 read failure: `mp4_request`, `mp4_schema` or
+`mp4_id_mismatch`.
 
 The probe only reads the MP4 status; its response shape follows the put.io SDK
 commit pinned in [versions.ts](../harness/live/versions.ts), and its status
