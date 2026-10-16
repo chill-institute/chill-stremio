@@ -110,13 +110,16 @@ magnets only. Cleanup cancels only transfers listed under the run's info hash.
 
 Uploads the fixture under a 1968 public-domain film's name and a 1962 series
 episode's name, waits for each **Play from put.io** row, and decodes its HLS
-playlist with FFmpeg. Optional steps:
+playlist with FFmpeg. Selections follow up to five `wait=<n>` redirects while
+put.io prepares a video. A failed stream-list read counts under
+`listingErrors`, and the third in a row fails the stage. Optional steps:
 
 - `LIVE_OWNED_WEB=1` (Stremio Web step) plays the movie row in pinned Stremio
   Web in Chromium.
 - `LIVE_OWNED_CONVERT=1` (convert step) uploads a lossless Matroska copy and
   checks that listings, HEAD, OPTIONS and prefetch never start a conversion,
-  that one GET plays `preparing` and starts it, and that the row plays once
+  that one selection starts it and ends as `preparing`, or `hls` when put.io
+  finishes during the wait (`selection.outcome`), and that the row plays once
   put.io finishes. The lane cannot count `StartPlaybackConversion` calls;
   [live-owned.test.ts](../tests/live-owned.test.ts) proves exactly one.
 

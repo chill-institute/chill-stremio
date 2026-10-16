@@ -1,9 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { Cause, Effect, Option, Schema, type Scope } from "effect";
+import { Cause, Duration, Effect, Option, Schema, type Scope } from "effect";
 import { isCredential, redactCredentials } from "../../src/credential.ts";
 import { createEngineRpc, EngineError } from "../../src/engine.ts";
+import { playbackWait } from "../../src/playback-wait.ts";
 import { charge, reserve } from "./allowance.ts";
 import { sameAccountRoot } from "./binding.ts";
 import {
@@ -248,11 +249,15 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
   };
   let stage = "configuration";
   const fail = (at: string) => new OwnedProbeFailure({ stage: at });
-  const request = (url: string, init: RequestInit = {}) =>
+  const request = (
+    url: string,
+    init: RequestInit = {},
+    timeout: Duration.Input = "20 seconds",
+  ) =>
     Effect.tryPromise({
       try: (signal) => fetch(url, { ...init, signal, redirect: "manual" }),
       catch: () => fail(stage),
-    }).pipe(Effect.timeout("20 seconds"));
+    }).pipe(Effect.timeout(timeout));
   const discard = (response: Response) =>
     Effect.ignore(
       Effect.tryPromise(() => response.body?.cancel() ?? Promise.resolve()),
@@ -273,6 +278,55 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
     return (yield* Schema.decodeUnknownEffect(Streams)(body).pipe(
       Effect.mapError(() => fail(stage)),
     )).streams;
+  });
+
+  /**
+   * Stream list reads for one polling stage. Each failed request or body
+   * counts as `listingErrors` and reads as `failed` unless it is the third in
+   * a row.
+   */
+  const pollStreams = (record: Record<string, unknown>) => {
+    let errors = 0;
+    let failedInRow = 0;
+    return (url: string) =>
+      listStreams(url).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            failedInRow = 0;
+          }),
+        ),
+        Effect.catch((error) => {
+          record.listingErrors = ++errors;
+          return ++failedInRow < 3
+            ? Effect.succeed("failed" as const)
+            : Effect.fail(error);
+        }),
+      );
+  };
+
+  /**
+   * GETs a selected row, following the adapter's redirects to the same URL
+   * with the next `wait=<n>` while it waits for put.io, up to its limit.
+   */
+  const select = Effect.fn("live.select")(function* (selected: string) {
+    const target = new URL(selected);
+    let url = selected;
+    for (let redirects = 0; ; redirects++) {
+      // A waiting selection answers within its 25-second window.
+      const response = yield* request(url, {}, "40 seconds");
+      yield* discard(response);
+      const location = response.headers.get("location") ?? "";
+      const next = URL.canParse(location) ? new URL(location) : undefined;
+      if (
+        redirects >= playbackWait.continuations ||
+        response.status !== 302 ||
+        next?.origin !== target.origin ||
+        next.pathname !== target.pathname ||
+        next.search !== `?wait=${redirects + 1}`
+      )
+        return { status: response.status, location, redirects };
+      url = location;
+    }
   });
 
   // Tells an upload put.io typed as something other than a video apart from
@@ -302,13 +356,13 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
     const base = `${options.origin}/s/${options.credential}`;
     const streams = `${base}/stream/${title.type}/${title.id}.json`;
     const listedAt = performance.now();
+    const list = pollStreams(record);
     const selected = yield* pollListing(listing, (poll) =>
       Effect.gen(function* () {
         record.listingPolls = poll;
-        const rows = (yield* listStreams(streams))?.filter(
-          (row) => row.name === "Play from put.io",
-        );
-        if (!rows) return undefined;
+        const listed = yield* list(streams);
+        if (!listed || listed === "failed") return undefined;
+        const rows = listed.filter((row) => row.name === "Play from put.io");
         record.ownedRows = rows.length;
         return rows.find((row) => {
           if (!row.url || !URL.canParse(row.url)) return false;
@@ -343,10 +397,10 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
     if (head.status !== 200) return yield* fail(stage);
 
     stage = `${title.stages}redirect`;
-    const selection = yield* request(selected);
-    yield* discard(selection);
+    const selection = yield* select(selected);
     record.redirectStatus = selection.status;
-    const location = selection.headers.get("location") ?? "";
+    record.redirects = selection.redirects;
+    const { location } = selection;
     const media = mediaLocation(selection.status, location, mediaOrigin);
     Object.assign(record, media.checks);
     record.locationNamesFile =
@@ -396,8 +450,11 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
       }
     };
     /** One read of the file's stream list, by the row it holds. */
-    const readLibrary = Effect.fn("live.readLibrary")(function* () {
-      const rows = yield* listStreams(streams);
+    const readLibrary = Effect.fn("live.readLibrary")(function* (
+      list: ReturnType<typeof pollStreams>,
+    ) {
+      const rows = yield* list(streams);
+      if (rows === "failed") return { kind: "failed" } as const;
       if (!rows) return { kind: "other" } as const;
       if (rows.length === 0) return { kind: "empty" } as const;
       const [row] = rows;
@@ -459,10 +516,11 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
 
     stage = "convert-listing";
     const listedAt = performance.now();
+    const list = pollStreams(record);
     const selected = yield* pollListing(listing, (poll) =>
       Effect.gen(function* () {
         record.listingPolls = poll;
-        const read = yield* readLibrary();
+        const read = yield* readLibrary(list);
         // A video put.io streams as uploaded breaks the step's premise.
         if (read.kind === "ready") return yield* fail("convert-not-required");
         return read.kind === "convert" ? read.url : undefined;
@@ -511,14 +569,28 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
       return yield* fail(stage);
 
     stage = "convert-selection";
-    const selection = yield* request(selected);
-    yield* discard(selection);
     const selectedAt = performance.now();
-    const preparing =
-      selection.headers.get("location") === `${base}/notice/preparing.m3u8`;
-    record.selectionStatus = selection.status;
-    record.selectionPreparing = preparing;
-    if (selection.status !== 302 || !preparing) return yield* fail(stage);
+    const selection = yield* select(selected);
+    // put.io can finish while the adapter holds the selection.
+    const played = mediaLocation(
+      selection.status,
+      selection.location,
+      mediaOrigin,
+    );
+    const outcome =
+      selection.status === 302 &&
+      selection.location === `${base}/notice/preparing.m3u8`
+        ? "preparing"
+        : played.ok && played.target?.pathname.includes(`/files/${fileId}/`)
+          ? "hls"
+          : "other";
+    record.selection = {
+      status: selection.status,
+      outcome,
+      redirects: selection.redirects,
+      afterMs: Math.round(performance.now() - selectedAt),
+    };
+    if (outcome === "other") return yield* fail(stage);
 
     stage = "convert-not-started";
     const started: Record<string, unknown> & { readErrors: number } = {
@@ -554,6 +626,7 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
       readErrors: 0,
     };
     record.wait = wait;
+    const waitList = pollStreams(wait);
     let last: Effect.Success<ReturnType<typeof mp4>> | undefined;
     const ready = yield* pollListing(convert.ready, (poll) =>
       Effect.gen(function* () {
@@ -562,8 +635,9 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
         if (!status) return undefined;
         last = status;
         if (last.status === "ERROR") return yield* fail("convert-error");
-        const read = yield* readLibrary();
+        const read = yield* readLibrary(waitList);
         if (read.kind === "ready") return read.url;
+        if (read.kind === "failed") return undefined;
         const counts = (reads[last.status] ??= {
           convert: 0,
           preparing: 0,
@@ -595,9 +669,8 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
 
     stage = "convert-reselect";
     // A client holding the earlier list selects the Convert row again.
-    const reselection = yield* request(selected);
-    yield* discard(reselection);
-    const location = reselection.headers.get("location") ?? "";
+    const reselection = yield* select(selected);
+    const { location } = reselection;
     const media = mediaLocation(reselection.status, location, mediaOrigin);
     const listed = URL.canParse(ready) ? new URL(ready) : undefined;
     const reselect = {

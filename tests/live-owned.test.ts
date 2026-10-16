@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import * as proto from "@chill-institute/contracts/chill/v4/api_pb";
 import { Effect, Exit, Schema } from "effect";
-import { test } from "vite-plus/test";
+import { test, vi } from "vite-plus/test";
 import { readLedger, utcDay } from "../harness/live/allowance.ts";
 import {
   ownedConvertStep,
@@ -477,6 +477,7 @@ const Receipt = Schema.fromJsonString(
       failureCode: Schema.optional(Schema.String),
       uploaded: Schema.optional(Schema.Boolean),
       listingPolls: Schema.optional(Schema.Number),
+      listingErrors: Schema.optional(Schema.Number),
       uploadFileType: Schema.optional(Schema.String),
       episode: Schema.optional(
         Schema.Struct({
@@ -512,6 +513,7 @@ const Receipt = Schema.fromJsonString(
       ownedRows: Schema.optional(Schema.Number),
       headStatus: Schema.optional(Schema.Number),
       redirectStatus: Schema.optional(Schema.Number),
+      redirects: Schema.optional(Schema.Number),
       locationMediaOrigin: Schema.optional(Schema.Boolean),
       locationHls: Schema.optional(Schema.Boolean),
       locationNamesFile: Schema.optional(Schema.Boolean),
@@ -530,6 +532,8 @@ const Receipt = Schema.fromJsonString(
           Schema.Struct({
             status: Schema.optional(Schema.String),
             uploadFileType: Schema.optional(Schema.String),
+            listingPolls: Schema.optional(Schema.Number),
+            listingErrors: Schema.optional(Schema.Number),
             readOnly: Schema.optional(
               Schema.Struct({
                 metaStatus: Schema.Number,
@@ -540,8 +544,13 @@ const Receipt = Schema.fromJsonString(
                 mp4Status: Schema.Array(Schema.String),
               }),
             ),
-            selectionStatus: Schema.optional(Schema.Number),
-            selectionPreparing: Schema.optional(Schema.Boolean),
+            selection: Schema.optional(
+              Schema.Struct({
+                status: Schema.Number,
+                outcome: Schema.Literals(["preparing", "hls", "other"]),
+                redirects: Schema.Number,
+              }),
+            ),
             started: Schema.optional(
               Schema.Struct({
                 status: Schema.optional(Schema.String),
@@ -564,6 +573,7 @@ const Receipt = Schema.fromJsonString(
                 lastStatus: Schema.optional(Schema.String),
                 lastPercent: Schema.optional(Schema.Number),
                 readErrors: Schema.Number,
+                listingErrors: Schema.optional(Schema.Number),
                 finalStatus: Schema.optional(Schema.String),
               }),
             ),
@@ -876,6 +886,39 @@ test("an episode put.io indexes late is listed on a later poll", async () => {
   assertCleaned(run);
 });
 
+/**
+ * Fails the lane's reads of one stream list at these 1-based positions: an odd
+ * one never answers, an even one answers a body that is not JSON.
+ */
+function failingLists(path: string, positions: readonly number[]) {
+  const original = globalThis.fetch;
+  let reads = 0;
+  return vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.endsWith(path) && positions.includes(++reads)) {
+        if (reads % 2) throw new TypeError("fetch failed");
+        return new Response("{", { status: 200 });
+      }
+      return original(input, init);
+    });
+}
+
+test("stream list reads that fail twice in a row use up polls without failing the listing", async () => {
+  const lists = failingLists(`/stream/movie/${ownedTitle.imdbId}.json`, [1, 2]);
+  try {
+    const run = await runLane("playable");
+    assert.equal(run.receipt.status, "passed");
+    assert.equal(run.receipt.proof.listingPolls, 3);
+    assert.equal(run.receipt.proof.listingErrors, 2);
+    assert.equal(run.receipt.proof.episode?.listingPolls, 1);
+    assertCleaned(run);
+  } finally {
+    lists.mockRestore();
+  }
+});
+
 test("the Stremio Web step runs only when LIVE_OWNED_WEB is 1", () => {
   for (const value of [undefined, "", "0", "true", "yes"])
     assert.equal(ownedWebStep(value), undefined, String(value));
@@ -1055,8 +1098,11 @@ test("a library Matroska upload converts once when its Convert row is selected, 
     prefetchStatus: 204,
     mp4Status: ["NOT_AVAILABLE", "NOT_AVAILABLE"],
   });
-  assert.equal(convert.selectionStatus, 302);
-  assert.equal(convert.selectionPreparing, true);
+  assert.deepEqual(convert.selection, {
+    status: 302,
+    outcome: "preparing",
+    redirects: 0,
+  });
   assert.equal(convert.started?.status, "IN_QUEUE");
   assert.equal(convert.started?.readErrors, 0);
   // The fake Engine answers a queued upload as conversion required, so the
@@ -1172,6 +1218,32 @@ test("a converted video that decodes no frames fails", async () => {
   assert.equal(run.decoded.length, 3);
   assertConvertCleaned(run);
   assertPrivateReceipt(run.receiptText);
+});
+
+const libraryList = `/stream/movie/${encodeURIComponent(`chill:file:${libraryId}`)}.json`;
+
+test("library stream list reads that fail while put.io converts are skipped unless three fail in a row", async () => {
+  // The first read lists the Convert row; the wait's polls follow.
+  for (const failure of [
+    { positions: [2, 3], status: "passed", polls: 3 },
+    { positions: [2, 3, 4], status: "failed", polls: 3 },
+  ]) {
+    const lists = failingLists(libraryList, failure.positions);
+    try {
+      const run = await runLane("playable", { convert: "converts" });
+      assert.equal(run.receipt.status, failure.status);
+      const convert = convertProof(run);
+      assert.equal(convert.listingErrors, undefined);
+      assert.equal(convert.wait?.listingErrors, failure.positions.length);
+      assert.equal(convert.wait?.polls, failure.polls);
+      if (failure.status === "failed")
+        assert.equal(run.receipt.proof.failureStage, "convert-wait");
+      else assert.deepEqual(convert.wait?.reads, {});
+      assertConvertCleaned(run);
+    } finally {
+      lists.mockRestore();
+    }
+  }
 });
 
 /**
