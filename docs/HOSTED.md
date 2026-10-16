@@ -265,13 +265,14 @@ prefetch hints never request conversion.
 source, whose title adds that put.io prepares the video before it plays. It
 selects `/s/<credential>/play/movie/chill:file:<fileId>/owned:<fileId>.m3u8`
 and plays like a [**Play from put.io**](#videos-already-in-putio) row: the type
-must be `movie` and both IDs must name the same file. While put.io queues the
-conversion, `ResolvePlayback` still answers that the video needs converting, so
-the library keeps that source and selecting it asks again. Once
-`ResolvePlayback` answers pending, because put.io is converting the video or
+must be `movie` and both IDs must name the same file. Once `ResolvePlayback`
+answers pending, because put.io has queued or is converting the video or is
 still processing an upload, the library lists one **Play from put.io** source
 with the same URL instead, whose title adds that put.io is preparing the video;
-selecting it plays the `preparing` clip until put.io has finished. Neither
+selecting it plays the `preparing` clip until put.io has finished. The
+2026-10-16 live pass saw that source while put.io reported `IN_QUEUE` and
+`CONVERTING`. If `ResolvePlayback` still answers that the video needs
+converting, the library keeps the Convert source and selecting it asks again. Neither
 source carries subtitles. Once put.io has converted the video, the library
 lists the video itself with its subtitles.
 

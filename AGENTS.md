@@ -104,13 +104,16 @@ Gaps:
   no Web pass has selected a row again after a pending clip; other
   acquisitions decode with FFmpeg. `hosted:public` and its canary consume no
   stream, `hosted:live`'s Stremio Web step has no recorded pass since v2.0.0,
-  native clients have not played an acquired release, the library's
-  **Convert and play from put.io** row has no live pass, which `hosted:owned`
-  with `LIVE_OWNED_CONVERT=1` covers, and the preparing **Play from put.io**
-  row has no selected live pass. Owner: chill-institute/chill-stremio.
+  and native clients have not played an acquired release. On 2026-10-16
+  `hosted:owned` with `LIVE_OWNED_CONVERT=1` passed for the library's
+  **Convert and play from put.io** row, decoded with FFmpeg; no Stremio client
+  has selected it, and the preparing **Play from put.io** row it listed was not
+  selected while put.io prepared the video. Owner: chill-institute/chill-stremio.
 - A cold season lookup slower than the listing's five-second wait still leaves
   the **Download season to put.io** row out of a first visit to an episode; a
-  later visit lists it. No lane times the cold lookup against production Engine. Owner: chill-institute/chill-stremio.
+  later visit lists it. Engine's sampled traces from 2026-09-16 to 2026-10-16
+  show every cold lookup finishing within 4.5 seconds, so a longer wait would
+  not have listed more packs. No lane times the cold lookup against production Engine. Owner: chill-institute/chill-stremio.
 - Selecting a library video put.io is still preparing plays the `preparing`
   clip instead of waiting in the player, so the user returns to the video
   later. Owner: chill-institute/chill-stremio.
