@@ -35,7 +35,7 @@ and OPTIONS stay read-only; consuming a selected media URL with GET submits one
 transfer, reused in memory for 60 seconds, and a lost submission response is
 never retried. An `owned:` row plays a [video already in put.io](./docs/HOSTED.md#videos-already-in-putio)
 through `ResolvePlayback` and never submits; Engine, not the adapter,
-matches filenames. A library video put.io must convert lists one such row under
+matches filenames. A library video put.io must convert, or is still preparing, lists one such row under
 `chill:file:<fileId>`, accepted only for that same file. `ResolvePlayback` never converts; only GET on selected media,
 status URLs included, calls `StartPlaybackConversion`, once per resolution, for a video put.io
 must [convert](./docs/HOSTED.md#videos-putio-must-convert). HLS terminal states, and waits past the four-minute pending limit
@@ -104,14 +104,16 @@ Gaps:
   no Web pass has selected a row again after a pending clip; other
   acquisitions decode with FFmpeg. `hosted:public` and its canary consume no
   stream, `hosted:live`'s Stremio Web step has no recorded pass since v2.0.0,
-  native clients have not played an acquired release, and the library's
-  **Convert and play from put.io** row has no live pass; `hosted:owned` with
-  `LIVE_OWNED_CONVERT=1` covers it. Owner: chill-institute/chill-stremio.
+  native clients have not played an acquired release, the library's
+  **Convert and play from put.io** row has no live pass, which `hosted:owned`
+  with `LIVE_OWNED_CONVERT=1` covers, and the preparing **Play from put.io**
+  row has no selected live pass. Owner: chill-institute/chill-stremio.
 - A cold season lookup slower than the listing's five-second wait still leaves
   the **Download season to put.io** row out of a first visit to an episode; a
   later visit lists it. No lane times the cold lookup against production Engine. Owner: chill-institute/chill-stremio.
-- While put.io converts a library video, its **put.io library** page lists no
-  source, so the user waits outside the player and reopens it. Owner: chill-institute/chill-stremio.
+- Selecting a library video put.io is still preparing plays the `preparing`
+  clip instead of waiting in the player, so the user returns to the video
+  later. Owner: chill-institute/chill-stremio.
 - CI artifacts expire after 7 days; archive evidence needed longer. Owner: chill-institute/chill-stremio.
 
 ## Work and verify

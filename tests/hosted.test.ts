@@ -3080,30 +3080,42 @@ test("a video already in put.io that put.io must convert starts converting and p
 test("listing videos put.io must convert never starts a conversion", async () => {
   const f = await fixture();
   try {
-    f.state.playbackConvertible = true;
     f.state.ownedVideos = [ownedVideo(77n)];
     const resource = (path: string) =>
       fetch(`${f.base()}/${path}`).then(async (response) => {
         assert.equal(response.status, 200, path);
         return response.json();
       });
-    assert.deepEqual(await resource("stream/movie/chill%3Afile%3A50.json"), {
-      streams: [
-        {
-          name: "Convert and play from put.io",
-          title: "Existing video\nput.io prepares this video before it plays",
-          url: librarySelection(f, "50"),
-          behaviorHints: { notWebReady: false },
-        },
+    // put.io must convert the video, then is preparing it.
+    for (const [convertible, name, note] of [
+      [
+        true,
+        "Convert and play from put.io",
+        "put.io prepares this video before it plays",
       ],
-    });
-    assert.deepEqual(await resource("subtitles/movie/chill%3Afile%3A50.json"), {
-      subtitles: [],
-    });
-    await resource("meta/movie/chill%3Afile%3A50.json");
-    await resource("catalog/movie/library.json");
-    assert.equal((await movieRows(f))[0]?.url, ownedSelection(f, "77"));
-    assert.equal(playbackResolutions(f), 2);
+      [false, "Play from put.io", "put.io is preparing this video"],
+    ] as const) {
+      f.state.playbackConvertible = convertible;
+      f.state.playbackPending = !convertible;
+      assert.deepEqual(await resource("stream/movie/chill%3Afile%3A50.json"), {
+        streams: [
+          {
+            name,
+            title: `Existing video\n${note}`,
+            url: librarySelection(f, "50"),
+            behaviorHints: { notWebReady: false },
+          },
+        ],
+      });
+      assert.deepEqual(
+        await resource("subtitles/movie/chill%3Afile%3A50.json"),
+        { subtitles: [] },
+      );
+      await resource("meta/movie/chill%3Afile%3A50.json");
+      await resource("catalog/movie/library.json");
+      assert.equal((await movieRows(f))[0]?.url, ownedSelection(f, "77"));
+    }
+    assert.equal(playbackResolutions(f), 4);
     assert.deepEqual(f.state.conversions, []);
   } finally {
     await f.close();
@@ -3135,9 +3147,22 @@ test("a library video put.io must convert lists a row that converts only when se
       `${f.base()}/notice/preparing.m3u8`,
     );
     assert.deepEqual(f.state.conversions, [50n]);
+    // While put.io prepares it, the listing offers the same selection, which
+    // plays the clip again without asking put.io to convert.
+    f.state.playbackConvertible = false;
+    f.state.playbackPending = true;
+    assert.deepEqual(
+      (await libraryRows()).map(({ name, url }) => ({ name, url })),
+      [{ name: "Play from put.io", url: librarySelection(f, "50") }],
+    );
+    assert.equal(
+      await location(librarySelection(f, "50")),
+      `${f.base()}/notice/preparing.m3u8`,
+    );
+    assert.deepEqual(f.state.conversions, [50n]);
     // put.io has converted it: the row plays the video, and the listing offers
     // the video itself again.
-    f.state.playbackConvertible = false;
+    f.state.playbackPending = false;
     assert.equal(await location(librarySelection(f, "50")), media);
     assert.deepEqual(f.state.conversions, [50n]);
     assert.deepEqual(

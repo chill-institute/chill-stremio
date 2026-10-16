@@ -23,8 +23,9 @@ For a public listing, use the [public manifest](https://stremio.chill.institute/
   including subfolders. Stremio's **Library** tab is for items saved in Stremio.
   A video put.io must convert first, such as most `.mkv` files, offers
   **Convert and play from put.io**: selecting it asks put.io to prepare the
-  video. Until put.io is done, the video lists no source; then it lists and
-  plays as usual.
+  video and shows a short clip. While put.io converts it, the video lists
+  **Play from put.io** instead, which shows the same clip until put.io is
+  done; then it lists and plays as usual.
 - Browse movies and shows, search **Releases**, or open a movie or episode to
   see chill release results.
 - A movie or episode already in your put.io account lists up to ten

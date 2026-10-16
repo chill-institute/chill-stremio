@@ -99,7 +99,7 @@ status clip, pointing to `https://chill.institute/stremio`. The exceptions are a
 `403` on the season lookup, where the listing leaves out the
 [season pack](./HOSTED.md#season-packs) row and a selected pack plays the
 release-unavailable clip, and any error on the owned-video lookup, which leaves
-out the **Play from put.io** rows.
+out the movie or episode page's **Play from put.io** rows.
 
 The credential grants library/discovery access, playback and chosen-release
 downloads to put.io. Keep add-on links private. Personalized responses use
@@ -126,22 +126,24 @@ retain original-file playback.
 
 Conversion is a write, made only when a user plays. When GET on a selected
 release, season pack or `owned:` row, including a library file's
-**Convert and play from put.io** row, resolves to a video needing conversion,
-[selection.ts](../src/selection.ts) calls `StartPlaybackConversion` once for
-that resolution. Its pending result counts as pending playback and its
+**Convert and play from put.io** or **Play from put.io** row, resolves to a
+video needing conversion, [selection.ts](../src/selection.ts) calls
+`StartPlaybackConversion` once for that resolution. Its pending result counts
+as pending playback and its
 unavailable result as unavailable; an RPC failure maps as `ResolvePlayback`
 failures do on that route. Engine treats repeated requests as idempotent, so a
 waiting selection asks again on each read that still needs conversion.
 Catalogs, metadata, stream and subtitle listings, HEAD, OPTIONS and prefetch
 hints never call it. The [library translator](../src/library.ts) lists such
-a video with a source only when its caller supplies a selection URL: the hosted
-adapter's `owned:<fileId>` play URL under `chill:file:<fileId>`, which the
-selection route accepts only for that same file. The local adapter, which has no
-selection route, lists no source.
+a video, or one still pending, with a source only when its caller supplies a
+selection URL: the hosted adapter's `owned:<fileId>` play URL under
+`chill:file:<fileId>`, which the selection route accepts only for that same
+file. The local adapter, which has no selection route, lists no source.
 
 The [library translator](../src/library.ts) validates media/subtitle URLs and
-expiry. Ready playback returns a direct source; pending/unavailable returns no
-source, and convertible returns the selection source above when there is one. Authentication, malformed responses, timeouts and provider rate limits
+expiry. Ready playback returns a direct source; unavailable returns no
+source, and convertible or pending returns the selection source above when
+there is one. Authentication, malformed responses, timeouts and provider rate limits
 remain errors instead of empty successful catalogs. Requests have finite total
 deadlines and cancel on disconnect. Transfer submission is never retried. The
 hosted process bounds concurrent work per process and per add-on link; see

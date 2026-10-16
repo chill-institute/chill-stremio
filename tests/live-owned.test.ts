@@ -1060,10 +1060,11 @@ test("a library Matroska upload converts once when its Convert row is selected, 
   assert.equal(convert.started?.status, "IN_QUEUE");
   assert.equal(convert.started?.readErrors, 0);
   // The fake Engine answers a queued upload as conversion required, so the
-  // library offers Convert, and a converting one as pending, so it lists none.
+  // library offers Convert, and a converting one as pending, so it lists the
+  // preparing row.
   assert.deepEqual(convert.wait?.reads, {
     IN_QUEUE: { convert: 1, preparing: 0, empty: 0, other: 0 },
-    CONVERTING: { convert: 0, preparing: 0, empty: 1, other: 0 },
+    CONVERTING: { convert: 0, preparing: 1, empty: 0, other: 0 },
   });
   assert.equal(convert.wait?.readErrors, 0);
   assert.equal(convert.wait?.finalStatus, "COMPLETED");
@@ -1089,7 +1090,7 @@ for (const timing of [
     convert: "listed-late",
     name: "that put.io reports completed before the library lists it",
     completedReads: 3,
-    completedLists: { convert: 0, preparing: 0, empty: 1, other: 0 },
+    completedLists: { convert: 0, preparing: 1, empty: 0, other: 0 },
   },
   {
     convert: "finishes-unseen",

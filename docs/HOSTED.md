@@ -131,7 +131,8 @@ The catalog lists and searches videos across the whole account, starting at the
 put.io root and including subfolders. Library read errors do not affect
 discovery or release search. A ready video's source plays it directly; a video
 put.io must [convert](#videos-putio-must-convert) first lists a
-**Convert and play from put.io** source instead.
+**Convert and play from put.io** source instead, and one put.io is still
+preparing lists a **Play from put.io** source.
 
 Library requests traverse folders breadth-first and stop after finding the
 requested page or file. Each request rechecks membership and retains the
@@ -253,8 +254,7 @@ asks put.io to convert it. An accepted request counts as pending:
   it, and the video plays once put.io's playlist is ready.
 - A **Play from put.io** or **Convert and play from put.io** row plays the
   `preparing` clip. Selecting **Play from put.io** again once put.io has
-  finished plays the video; the library then lists the video in place of
-  **Convert and play from put.io**.
+  finished plays the video; the library then lists the video itself.
 
 A video put.io cannot convert, or that is gone, plays `unavailable`. A failed
 conversion request is handled like a failed `ResolvePlayback` on the same
@@ -265,10 +265,15 @@ prefetch hints never request conversion.
 source, whose title adds that put.io prepares the video before it plays. It
 selects `/s/<credential>/play/movie/chill:file:<fileId>/owned:<fileId>.m3u8`
 and plays like a [**Play from put.io**](#videos-already-in-putio) row: the type
-must be `movie` and both IDs must name the same file. The source carries no
-subtitles. Once put.io has converted the video, the library lists the video
-itself with its subtitles; while put.io is still converting it, the library
-lists no source.
+must be `movie` and both IDs must name the same file. While put.io queues the
+conversion, `ResolvePlayback` still answers that the video needs converting, so
+the library keeps that source and selecting it asks again. Once
+`ResolvePlayback` answers pending, because put.io is converting the video or
+still processing an upload, the library lists one **Play from put.io** source
+with the same URL instead, whose title adds that put.io is preparing the video;
+selecting it plays the `preparing` clip until put.io has finished. Neither
+source carries subtitles. Once put.io has converted the video, the library
+lists the video itself with its subtitles.
 
 Movie discovery and episode detail retain their verified artwork and descriptions.
 Release search and detail add movie artwork only when the result's IMDb ID matches
@@ -354,8 +359,10 @@ submits a transfer, shares a submission or redirects to a status URL. Playback
 still being prepared, or a video put.io must [convert](#videos-putio-must-convert)
 first, plays the `preparing` clip, a file that is gone or has no
 playable source plays `unavailable`, and a rejected credential plays
-`reconnect`; legacy `.mp4` URLs get the matching `.mp4` clips. A malformed file
-ID, or an `<id>` that is neither a movie or episode page's ID nor, for a movie,
+`reconnect`; legacy `.mp4` URLs get the matching `.mp4` clips. After the
+`preparing` clip, the row stays listed and **put.io library** lists the video
+with a source to select again; either plays it once put.io has finished. A
+malformed file ID, or an `<id>` that is neither a movie or episode page's ID nor, for a movie,
 the same file's `chill:file:<fileId>`, returns `400` without contacting Engine. HEAD and prefetch hints answer as for other selected media,
 and the request counts toward [capacity](#capacity) like any other.
 

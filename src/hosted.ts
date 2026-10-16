@@ -335,7 +335,7 @@ export async function startHostedAdapter(options: {
       );
       const selection = createSelection({ base });
       const library = createLibrary(0n, true, {
-        conversionUrl: selection.libraryUrl,
+        selectionUrl: selection.libraryUrl,
       });
       const discovery = createDiscovery();
       const playRoute =

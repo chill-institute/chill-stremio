@@ -232,10 +232,10 @@ export function createLibrary(
   recursive = false,
   options: {
     /**
-     * The selection URL that plays a file put.io must convert. Listing only
-     * names it; consuming it is what asks put.io to convert.
+     * The selection URL that plays a file put.io must convert or is still
+     * preparing. Listing only names it; consuming it may ask put.io to convert.
      */
-    conversionUrl?: (fileId: bigint) => string;
+    selectionUrl?: (fileId: bigint) => string;
   } = {},
 ) {
   const files = Effect.fn("Library.files")(function* (
@@ -335,11 +335,23 @@ export function createLibrary(
       id: string;
     }) {
       const { streams, state, file } = yield* resolvePlayback(input);
-      if (state === "convertible" && file && options.conversionUrl)
+      const row =
+        state === "convertible"
+          ? {
+              name: "Convert and play from put.io",
+              note: "put.io prepares this video before it plays",
+            }
+          : state === "pending"
+            ? {
+                name: "Play from put.io",
+                note: "put.io is preparing this video",
+              }
+            : undefined;
+      if (row && file && options.selectionUrl)
         streams.push({
-          name: "Convert and play from put.io",
-          title: `${file.name}\nput.io prepares this video before it plays`,
-          url: options.conversionUrl(file.id),
+          name: row.name,
+          title: `${file.name}\n${row.note}`,
+          url: options.selectionUrl(file.id),
           behaviorHints: { notWebReady: false },
         });
       return { streams };
