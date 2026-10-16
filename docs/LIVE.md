@@ -86,7 +86,8 @@ production keys. The generated fixture, `.cache/media/movie.mp4` plus
 `english.vtt`, is the only source, except that
 [`hosted:acquire`](#real-acquisition-probe) may acquire the single release the
 account owner approved, supplied privately at run time; it is never a fallback
-or a looser match.
+or a looser match. The owned probe's [convert step](#convert-step) uploads a
+lossless Matroska copy of the generated movie.
 
 The default allowance is 10 GiB per UTC day, with no transfer-count quota. This is
 the standing test budget; ordinary runs need no daily approval. The budget is
@@ -306,12 +307,14 @@ videos the account already holds, on Stremio's movie and episode routes. Supply
 [transfer reuse probe](#transfer-reuse-probe); `CHILL_PUBLIC_STREMIO_ORIGIN`
 overrides the adapter endpoint and `CHILL_ENGINE_BASE_URL` the Engine endpoint
 used for the account check. Set `LIVE_OWNED_WEB=1` to add the
-[Stremio Web step](#stremio-web-step); any other value or none skips it.
+[Stremio Web step](#stremio-web-step) and `LIVE_OWNED_CONVERT=1` to add the
+[convert step](#convert-step); any other value or none skips each.
 
 Before any provider mutation the probe requires the credential and the token to
 list the same put.io root folder, then reserves three creations and twice the
-generated movie's size. It creates a run-unique folder and uploads the
-generated fixture movie, `.cache/media/movie.mp4`, into it twice:
+generated movie's size, more with the convert step. It creates a run-unique
+folder and uploads the generated fixture movie, `.cache/media/movie.mp4`, into
+it twice:
 
 | Route                          | Upload name                                   | Named after                    |
 | ------------------------------ | --------------------------------------------- | ------------------------------ |
@@ -333,15 +336,15 @@ playlist URL is a signed media grant passed on FFmpeg's command line, so other
 local users can read it while the decode runs; run the lane only on a host
 reserved for the operator.
 
-Cleanup deletes only the folder and the two files the run created, then
+Cleanup deletes only the folder and the files the run created, then
 requires put.io to report each as gone; otherwise cleanup stays `uncertain`.
 The private `.cache/live/recovery/owned-<timestamp>.json` journal keeps their
 IDs and the folder name. The receipt at
 `artifacts/live-owned-<timestamp>/results.json` keeps stage codes, booleans,
 counts, timings and the decoded codec and size, with the episode's under
-`proof.episode` and the Web step's under `proof.web`, which reads `skipped`
-when the step is off; it holds no credential, token, filename, provider ID or
-URL.
+`proof.episode`, the convert step's under `proof.convert` and the Web step's
+under `proof.web`; a step that is off reads `skipped`. It holds no credential,
+token, filename, provider ID or URL.
 
 ### Stremio Web step
 
@@ -353,8 +356,8 @@ reads the adapter's stream list the page requests. When that list lacks
 exactly one **Play from put.io** row with the media URL the FFmpeg check
 followed, it reloads the page on the listing poll's interval, up to its
 attempt count. The Web step stops after 8 minutes and the whole lane after 20,
-so a row that is slow to appear can end the step before the last reload. It
-then selects that row and requires:
+or 40 with the convert step, so a row that is slow to appear can end the step
+before the last reload. It then selects that row and requires:
 
 - a GET for the row's media URL
 - `200` or `206` responses from put.io hosts for at least one playlist and one
@@ -380,6 +383,53 @@ packs or the recognition gaps in
 [videos already in put.io](./HOSTED.md#videos-already-in-putio). Run the
 step in the [browser image](./HARNESS.md#browser-image) on a host without
 Chromium libraries.
+
+### Convert step
+
+With `LIVE_OWNED_CONVERT=1`, after the episode the probe plays a video put.io
+must convert through **put.io library**'s **Convert and play from put.io** row.
+Before the reservation it copies the generated movie's streams unchanged into
+Matroska, titled with the run's nonce so put.io holds no conversion of the same
+bytes, and requires ffprobe to read Matroska with the movie's streams;
+otherwise it fails at `convert-source`. The local copy is removed when the
+lane's work ends. The reservation becomes five creations, adding the copy and
+put.io's MP4 of it, and adds the copy's size and a 64 MiB ceiling for that MP4;
+put.io's reported MP4 size beyond the ceiling is charged once. The copy is
+uploaded as `video/x-matroska` under the run folder's name, so no title page
+lists it. The step then:
+
+1. Polls the copy's `/stream/movie/chill%3Afile%3A<fileId>.json` on the
+   deployed adapter, as the title listings poll, until it lists exactly one
+   **Convert and play from put.io** row selecting
+   `/s/<credential>/play/movie/chill:file:<fileId>/owned:<fileId>.m3u8`. A
+   **chill.institute** row there fails at `convert-not-required`.
+2. Requests the copy's meta and subtitles, which must answer `200`, and the
+   row with HEAD (`200`), OPTIONS (`204`) and a `Sec-Purpose: prefetch` GET
+   (`204`). put.io's `GET /v2/files/<fileId>/mp4` must then report
+   `NOT_AVAILABLE` 20 and 40 seconds later, so neither these requests nor the
+   listing asked for a conversion.
+3. GETs the row once, which must redirect `302` to `/notice/preparing.m3u8`,
+   then reads the MP4 status every 10 seconds; it must leave `NOT_AVAILABLE`
+   within 2 minutes.
+4. Every 10 seconds for up to 15 minutes, reads the MP4 status, then the stream
+   list, counting under each status the lists that hold the Convert row, a
+   **Play from put.io** row for the same selection, no row, or anything else.
+   It stops at one **chill.institute** row. `ERROR` fails at `convert-error`,
+   and running out of reads at `convert-timeout` with the last status and
+   percentage in tens.
+5. GETs the Convert row again, as a client holding the earlier list would. It
+   must redirect `302` to the listed row's HLS playlist on the put.io API
+   origin, which FFmpeg then decodes as for the title rows.
+
+The probe only reads the MP4 status; its response shape follows the put.io SDK
+commit pinned in [versions.ts](../harness/live/versions.ts), and its status
+list matches the one Engine accepts. Engine counts no `StartPlaybackConversion`
+calls, so the lane cannot show there was exactly one; the
+[owned probe tests](../tests/live-owned.test.ts) prove that against the real
+adapter. Failures carry a `convert-` stage prefix. A pass reads
+`status: passed`, `cleanup.status: acknowledged` and
+`proof.absenceConfirmed: true`; it covers FFmpeg decoding, not selecting the
+row in Stremio Web or Stremio for Linux.
 
 ## Real acquisition probe
 
