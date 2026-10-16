@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { access, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { access, chmod, mkdir, readFile, rm, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { Effect, Schema } from "effect";
 import { generateMedia } from "../media.ts";
+import { remuxMatroska } from "./playback.ts";
 import { liveVersions } from "./versions.ts";
 
 export class LiveSourceFailure extends Schema.TaggedError<LiveSourceFailure>()(
@@ -75,6 +76,33 @@ export const ensureLiveSource = Effect.fn("live.ensureLiveSource")(
       captionBytes,
       sha256,
     } satisfies LiveSource;
+  },
+);
+
+/**
+ * A run's Matroska copy of the fixture movie, which put.io converts before it
+ * streams. The nonce in its title keeps put.io from holding a conversion of
+ * the same bytes. Closing the scope removes the local copy.
+ */
+export const ensureConvertSource = Effect.fn("live.ensureConvertSource")(
+  function* (movie: string, nonce: string) {
+    const path = join(".cache/live", `convert-${nonce}.mkv`);
+    yield* Effect.acquireRelease(
+      Effect.tryPromise(() =>
+        mkdir(dirname(path), { recursive: true, mode: 0o700 }),
+      ),
+      () => Effect.ignore(Effect.tryPromise(() => rm(path, { force: true }))),
+    );
+    yield* remuxMatroska(movie, path, nonce);
+    const bytes = yield* Effect.tryPromise(async () => {
+      await chmod(path, 0o600);
+      return (await stat(path)).size;
+    });
+    if (!Number.isInteger(bytes) || bytes < 1)
+      return yield* new LiveSourceFailure({
+        message: "Matroska copy of the fixture movie is empty",
+      });
+    return { path, bytes };
   },
 );
 

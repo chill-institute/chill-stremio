@@ -580,6 +580,69 @@ export const fileAbsent = Effect.fn("live.putio.fileAbsent")(function* (
   });
 }, Effect.timeout("20 seconds"));
 
+const Nonnegative = Schema.Number.check(Schema.isGreaterThanOrEqualTo(0));
+
+// FileConversionStatusSchema in the put.io SDK at liveVersions.putioSdkCommit.
+// Its statuses widen to the list Engine's StartPlaybackConversion accepts;
+// PREPARING and FINISHING, which the SDK leaves out, read like IN_QUEUE.
+export const Mp4Envelope = Schema.Struct({
+  status: Schema.Literal("OK"),
+  mp4: Schema.Union([
+    Schema.Struct({
+      id: Schema.Int,
+      status: Schema.Literals(["NOT_AVAILABLE", "ERROR"]),
+    }),
+    Schema.Struct({
+      id: Schema.Int,
+      status: Schema.Literals(["IN_QUEUE", "PREPARING", "FINISHING"]),
+      percent_done: Schema.optional(Nonnegative),
+    }),
+    Schema.Struct({
+      id: Schema.Int,
+      status: Schema.Literal("CONVERTING"),
+      percent_done: Nonnegative,
+    }),
+    Schema.Struct({
+      id: Schema.Int,
+      status: Schema.Literal("COMPLETED"),
+      percent_done: Nonnegative,
+      size: Nonnegative,
+    }),
+  ]),
+});
+
+export type Mp4Status = (typeof Mp4Envelope.Type)["mp4"]["status"];
+
+/**
+ * A file's MP4 conversion state. The harness only reads it; starting a
+ * conversion is left to the adapter.
+ */
+export const mp4Status = Effect.fn("live.putio.mp4Status")(function* (
+  id: number,
+) {
+  const parsed = yield* requestJson(
+    `${liveVersions.apiBase}/v2/files/${id}/mp4`,
+    {},
+  );
+  const { mp4 } = yield* Schema.decodeUnknownEffect(Mp4Envelope)(parsed).pipe(
+    Effect.mapError(
+      () =>
+        new PutioFailure({
+          message: "put.io MP4 status response failed schema",
+        }),
+    ),
+  );
+  if (mp4.id !== id)
+    return yield* new PutioFailure({
+      message: "put.io MP4 status named a different file",
+    });
+  return {
+    status: mp4.status,
+    percentDone: "percent_done" in mp4 ? mp4.percent_done : undefined,
+    size: "size" in mp4 ? mp4.size : undefined,
+  };
+}, Effect.timeout("20 seconds"));
+
 /** One folder's entries with their names and types, from a single page. */
 export const listFolder = Effect.fn("live.putio.listFolder")(function* (
   parentId: number,

@@ -1,6 +1,8 @@
 export const liveVersions = {
   putioSdkCommit: "04273b9c34ae2b656f3c2b1cd689d48606572302",
   byteLimit: 10 * 1024 * 1024 * 1024,
+  /** Reserved for put.io's MP4 of the owned probe's Matroska upload. */
+  convertOutputBytes: 64 * 1024 * 1024,
   probeTimeoutMs: 12 * 60 * 1000,
   accountNameEnv: "PUTIO_ACCOUNT_NAME",
   usernameEnv: "PUTIO_USERNAME",

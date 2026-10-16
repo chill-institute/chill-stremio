@@ -190,6 +190,87 @@ export const decodeVideo = Effect.fn("live.playback.decodeVideo")(function* (
   return { frames, codec, width, height };
 });
 
+const MediaProbe = Schema.fromJsonString(
+  Schema.Struct({
+    format: Schema.Struct({ format_name: Schema.String }),
+    streams: Schema.Array(
+      Schema.Struct({
+        codec_type: Schema.String,
+        codec_name: Schema.String,
+        width: Schema.optional(Schema.Int),
+        height: Schema.optional(Schema.Int),
+      }),
+    ),
+  }),
+);
+
+const probeMedia = Effect.fn("live.playback.probeMedia")(function* (
+  path: string,
+) {
+  return yield* Schema.decodeUnknownEffect(MediaProbe)(
+    yield* runTool("ffprobe", [
+      "-show_entries",
+      "format=format_name:stream=codec_type,codec_name,width,height",
+      "-of",
+      "json",
+      path,
+    ]),
+  ).pipe(
+    Effect.mapError(
+      () =>
+        new LivePlaybackFailure({ message: "ffprobe output failed schema" }),
+    ),
+  );
+});
+
+/**
+ * Copies a movie's streams unchanged into Matroska under a new title, then
+ * requires ffprobe to read a Matroska file with the same streams.
+ */
+export const remuxMatroska = Effect.fn("live.remuxMatroska")(function* (
+  movie: string,
+  output: string,
+  title: string,
+) {
+  yield* extract([
+    "-y",
+    "-i",
+    movie,
+    "-map",
+    "0",
+    "-c",
+    "copy",
+    "-map_metadata",
+    "-1",
+    "-metadata",
+    `title=${title}`,
+    "-f",
+    "matroska",
+    output,
+  ]);
+  const [source, copy] = yield* Effect.all([
+    probeMedia(movie),
+    probeMedia(output),
+  ]);
+  const streams = (probe: typeof MediaProbe.Type) =>
+    JSON.stringify(
+      probe.streams.map((stream) => [
+        stream.codec_type,
+        stream.codec_name,
+        stream.width,
+        stream.height,
+      ]),
+    );
+  if (
+    !copy.format.format_name.split(",").includes("matroska") ||
+    !source.streams.some((stream) => stream.codec_type === "video") ||
+    streams(copy) !== streams(source)
+  )
+    return yield* new LivePlaybackFailure({
+      message: "Matroska copy does not carry the movie's streams",
+    });
+});
+
 export const muxFixtureCaptions = Effect.fn("live.muxFixtureCaptions")(
   function* (movie: string, captions: string, output: string) {
     yield* extract([

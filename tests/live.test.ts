@@ -17,6 +17,7 @@ import { classifyEgress } from "../harness/live/egress.ts";
 import { liveVersions } from "../harness/live/versions.ts";
 import {
   AccountEnvelope,
+  Mp4Envelope,
   TransferEnvelope,
   UploadEnvelope,
 } from "../harness/live/putio.ts";
@@ -138,6 +139,31 @@ test("put.io envelopes accept file responses", () => {
   assert.throws(() =>
     Schema.decodeUnknownSync(AccountEnvelope)({ status: "ERROR" }),
   );
+});
+
+test("put.io MP4 status envelopes take Engine's statuses and nothing else", () => {
+  const mp4 = (value: Record<string, unknown>) =>
+    Schema.decodeUnknownSync(Mp4Envelope)({
+      status: "OK",
+      mp4: { id: 7, ...value },
+    }).mp4;
+  assert.deepEqual(mp4({ status: "NOT_AVAILABLE" }), {
+    id: 7,
+    status: "NOT_AVAILABLE",
+  });
+  assert.equal(mp4({ status: "IN_QUEUE" }).status, "IN_QUEUE");
+  assert.deepEqual(mp4({ status: "COMPLETED", percent_done: 100, size: 9 }), {
+    id: 7,
+    status: "COMPLETED",
+    percent_done: 100,
+    size: 9,
+  });
+  for (const value of [
+    { status: "QUEUED" },
+    { status: "COMPLETED", percent_done: 100 },
+    { status: "CONVERTING" },
+  ])
+    assert.throws(() => mp4(value), JSON.stringify(value));
 });
 
 test("URL renewal accepts reused URLs and checks the resolved URL without credentials", async () => {
