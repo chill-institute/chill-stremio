@@ -154,7 +154,7 @@ export interface OwnedProvider {
       percentDone?: number | undefined;
       size?: number | undefined;
     },
-    unknown
+    putio.Mp4StatusFailure
   >;
 }
 
@@ -434,6 +434,28 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
       }
       return status;
     });
+    let failedInRow = 0;
+    /**
+     * An MP4 read while waiting on put.io. Each failed read is counted; one
+     * without a successful response is skipped unless it is the third in a row.
+     */
+    const waitingRead = Effect.fn("live.convertWaitingRead")(
+      function* (counts: { readErrors: number }) {
+        return yield* mp4().pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              failedInRow = 0;
+            }),
+          ),
+          Effect.catchTag("Mp4StatusFailure", (error) => {
+            counts.readErrors++;
+            return error.code === "mp4_request" && ++failedInRow < 3
+              ? Effect.succeed(undefined)
+              : Effect.fail(error);
+          }),
+        );
+      },
+    );
 
     stage = "convert-listing";
     const listedAt = performance.now();
@@ -499,19 +521,25 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
     if (selection.status !== 302 || !preparing) return yield* fail(stage);
 
     stage = "convert-not-started";
+    const started: Record<string, unknown> & { readErrors: number } = {
+      readErrors: 0,
+    };
+    record.started = started;
     const leftUnconverted = yield* pollListing(convert.started, (poll) =>
       Effect.gen(function* () {
-        const { status } = yield* mp4();
+        const read = yield* waitingRead(started);
+        if (!read) return undefined;
+        const { status } = read;
         if (status === "ERROR") return yield* fail("convert-error");
         return status === "NOT_AVAILABLE" ? undefined : { status, poll };
       }),
     );
     if (!leftUnconverted) return yield* fail(stage);
-    record.started = {
+    Object.assign(started, {
       status: leftUnconverted.status,
       reads: leftUnconverted.poll,
       afterMs: Math.round(performance.now() - selectedAt),
-    };
+    });
 
     stage = "convert-wait";
     // Each stream list read by the MP4 status put.io reported just before it.
@@ -521,13 +549,18 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
         Record<"convert" | "preparing" | "empty" | "other", number>
       >
     > = {};
-    const wait: Record<string, unknown> = { reads };
+    const wait: Record<string, unknown> & { readErrors: number } = {
+      reads,
+      readErrors: 0,
+    };
     record.wait = wait;
     let last: Effect.Success<ReturnType<typeof mp4>> | undefined;
     const ready = yield* pollListing(convert.ready, (poll) =>
       Effect.gen(function* () {
         wait.polls = poll;
-        last = yield* mp4();
+        const status = yield* waitingRead(wait);
+        if (!status) return undefined;
+        last = status;
         if (last.status === "ERROR") return yield* fail("convert-error");
         const read = yield* readLibrary();
         if (read.kind === "ready") return read.url;
@@ -551,6 +584,14 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
       return yield* fail("convert-timeout");
     }
     wait.readyAfterMs = Math.round(performance.now() - selectedAt);
+    // put.io can finish between a poll's MP4 read and its list read, so its
+    // final report decides any excess charge.
+    let final = yield* waitingRead(wait);
+    while (!final) {
+      yield* Effect.sleep(convert.ready.intervalMs);
+      final = yield* waitingRead(wait);
+    }
+    wait.finalStatus = final.status;
 
     stage = "convert-reselect";
     // A client holding the earlier list selects the Convert row again.
@@ -762,7 +803,11 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
         Option.isSome(error) && error.value instanceof OwnedProbeFailure
           ? error.value.stage
           : stage;
-      if (Option.isSome(error) && error.value instanceof EngineError)
+      if (
+        Option.isSome(error) &&
+        (error.value instanceof EngineError ||
+          error.value instanceof putio.Mp4StatusFailure)
+      )
         proof.failureCode = error.value.code;
       return Effect.fail(fail(String(proof.failureStage)));
     }),

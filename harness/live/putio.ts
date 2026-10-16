@@ -614,34 +614,46 @@ export const Mp4Envelope = Schema.Struct({
 export type Mp4Status = (typeof Mp4Envelope.Type)["mp4"]["status"];
 
 /**
+ * Why an MP4 status read failed: no successful HTTP response in time, a body
+ * outside `Mp4Envelope`, or a status naming another file.
+ */
+export class Mp4StatusFailure extends Schema.TaggedError<Mp4StatusFailure>()(
+  "Mp4StatusFailure",
+  { code: Schema.Literals(["mp4_request", "mp4_schema", "mp4_id_mismatch"]) },
+) {}
+
+/**
  * A file's MP4 conversion state. The harness only reads it; starting a
  * conversion is left to the adapter.
  */
-export const mp4Status = Effect.fn("live.putio.mp4Status")(function* (
-  id: number,
-) {
-  const parsed = yield* requestJson(
-    `${liveVersions.apiBase}/v2/files/${id}/mp4`,
-    {},
-  );
-  const { mp4 } = yield* Schema.decodeUnknownEffect(Mp4Envelope)(parsed).pipe(
-    Effect.mapError(
-      () =>
-        new PutioFailure({
-          message: "put.io MP4 status response failed schema",
-        }),
-    ),
-  );
-  if (mp4.id !== id)
-    return yield* new PutioFailure({
-      message: "put.io MP4 status named a different file",
-    });
-  return {
-    status: mp4.status,
-    percentDone: "percent_done" in mp4 ? mp4.percent_done : undefined,
-    size: "size" in mp4 ? mp4.size : undefined,
-  };
-}, Effect.timeout("20 seconds"));
+export const mp4Status = Effect.fn("live.putio.mp4Status")(
+  function* (id: number) {
+    const response = yield* request(
+      `${liveVersions.apiBase}/v2/files/${id}/mp4`,
+      {},
+    );
+    if (!response.ok)
+      return yield* new Mp4StatusFailure({ code: "mp4_request" });
+    const { mp4 } = yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(Mp4Envelope),
+    )(response.text).pipe(
+      Effect.mapError(() => new Mp4StatusFailure({ code: "mp4_schema" })),
+    );
+    if (mp4.id !== id)
+      return yield* new Mp4StatusFailure({ code: "mp4_id_mismatch" });
+    return {
+      status: mp4.status,
+      percentDone: "percent_done" in mp4 ? mp4.percent_done : undefined,
+      size: "size" in mp4 ? mp4.size : undefined,
+    };
+  },
+  Effect.timeout("20 seconds"),
+  Effect.mapError((error) =>
+    error instanceof Mp4StatusFailure
+      ? error
+      : new Mp4StatusFailure({ code: "mp4_request" }),
+  ),
+);
 
 /** One folder's entries with their names and types, from a single page. */
 export const listFolder = Effect.fn("live.putio.listFolder")(function* (

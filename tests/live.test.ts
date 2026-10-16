@@ -18,6 +18,8 @@ import { liveVersions } from "../harness/live/versions.ts";
 import {
   AccountEnvelope,
   Mp4Envelope,
+  Mp4StatusFailure,
+  mp4Status,
   TransferEnvelope,
   UploadEnvelope,
 } from "../harness/live/putio.ts";
@@ -147,11 +149,19 @@ test("put.io MP4 status envelopes take Engine's statuses and nothing else", () =
       status: "OK",
       mp4: { id: 7, ...value },
     }).mp4;
-  assert.deepEqual(mp4({ status: "NOT_AVAILABLE" }), {
+  for (const status of [
+    "NOT_AVAILABLE",
+    "ERROR",
+    "IN_QUEUE",
+    "PREPARING",
+    "FINISHING",
+  ])
+    assert.deepEqual(mp4({ status }), { id: 7, status });
+  assert.deepEqual(mp4({ status: "CONVERTING", percent_done: 57 }), {
     id: 7,
-    status: "NOT_AVAILABLE",
+    status: "CONVERTING",
+    percent_done: 57,
   });
-  assert.equal(mp4({ status: "IN_QUEUE" }).status, "IN_QUEUE");
   assert.deepEqual(mp4({ status: "COMPLETED", percent_done: 100, size: 9 }), {
     id: 7,
     status: "COMPLETED",
@@ -164,6 +174,57 @@ test("put.io MP4 status envelopes take Engine's statuses and nothing else", () =
     { status: "CONVERTING" },
   ])
     assert.throws(() => mp4(value), JSON.stringify(value));
+});
+
+test("the MP4 status read only GETs the file's status and codes each failure", async () => {
+  vi.stubEnv(liveVersions.putioTokenEnv, "fixture-token");
+  const fetchMock = vi.spyOn(globalThis, "fetch");
+  try {
+    fetchMock.mockResolvedValueOnce(
+      Response.json({
+        status: "OK",
+        mp4: { id: 7, status: "COMPLETED", percent_done: 100, size: 9 },
+      }),
+    );
+    assert.deepEqual(await Effect.runPromise(mp4Status(7)), {
+      status: "COMPLETED",
+      percentDone: 100,
+      size: 9,
+    });
+    for (const [response, code] of [
+      [
+        Response.json({
+          status: "OK",
+          mp4: { id: 8, status: "COMPLETED", percent_done: 100, size: 9 },
+        }),
+        "mp4_id_mismatch",
+      ],
+      [
+        Response.json({ status: "OK", mp4: { id: 7, status: "QUEUED" } }),
+        "mp4_schema",
+      ],
+      [new Response("not json"), "mp4_schema"],
+      [new Response("", { status: 503 }), "mp4_request"],
+      [new Error("socket hang up"), "mp4_request"],
+    ] as const) {
+      fetchMock.mockImplementationOnce(async () => {
+        if (response instanceof Error) throw response;
+        return response;
+      });
+      const failure = await Effect.runPromise(Effect.flip(mp4Status(7)));
+      assert.ok(failure instanceof Mp4StatusFailure);
+      assert.equal(failure.code, code);
+    }
+    assert.equal(fetchMock.mock.calls.length, 6);
+    for (const [url, init] of fetchMock.mock.calls) {
+      assert.equal(url, `${liveVersions.apiBase}/v2/files/7/mp4`);
+      assert.equal(init?.method ?? "GET", "GET");
+      assert.equal(init?.body, undefined);
+    }
+  } finally {
+    fetchMock.mockRestore();
+    vi.unstubAllEnvs();
+  }
 });
 
 test("URL renewal accepts reused URLs and checks the resolved URL without credentials", async () => {

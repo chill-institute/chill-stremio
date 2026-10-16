@@ -21,6 +21,7 @@ import {
   type OwnedWebInput,
   type OwnedWebProof,
 } from "../harness/live/owned.ts";
+import { Mp4StatusFailure } from "../harness/live/putio.ts";
 import { liveVersions } from "../harness/live/versions.ts";
 import { versions } from "../harness/versions.ts";
 import { startHostedAdapter } from "../src/hosted.ts";
@@ -42,6 +43,14 @@ const mib = 1024 * 1024;
  * - `not-started`: Engine accepts, but put.io never starts
  * - `timeout`: put.io keeps converting
  * - `error`: put.io's conversion fails
+ * - `listed-late`: the library lists the converted video only once put.io
+ *   has reported it completed twice
+ * - `finishes-unseen`: put.io finishes between a poll's MP4 read and its
+ *   stream list read
+ * - `plays-elsewhere`, `plays-mp4`, `plays-other-file`: Engine's playlist for
+ *   the converted video is outside the media origin, not HLS, or another file's
+ * - `plays-new-playlist`: each Engine read of the converted video names a new
+ *   playlist
  */
 type ConvertMode =
   | "converts"
@@ -50,9 +59,20 @@ type ConvertMode =
   | "selection"
   | "not-started"
   | "timeout"
-  | "error";
+  | "error"
+  | "listed-late"
+  | "finishes-unseen"
+  | "plays-elsewhere"
+  | "plays-mp4"
+  | "plays-other-file"
+  | "plays-new-playlist";
 
-function fakePutio(convert?: ConvertMode, outputBytes = 2 * mib) {
+function fakePutio(
+  convert?: ConvertMode,
+  outputBytes = 2 * mib,
+  /** Whether an upload's local source exists when put.io receives it. */
+  exists: (path: string) => boolean = () => true,
+) {
   // Parent folder by file ID; 0 is the account root.
   const files = new Map<
     number,
@@ -62,11 +82,18 @@ function fakePutio(convert?: ConvertMode, outputBytes = 2 * mib) {
     [102, { name: "Existing video.mkv", parent: 0, fileType: "VIDEO" }],
   ]);
   const deleted: number[][] = [];
-  const uploads: { path: string; name: string; mediaType?: string }[] = [];
+  const uploads: {
+    path: string;
+    name: string;
+    mediaType?: string;
+    present: boolean;
+  }[] = [];
   // Uploads put.io streams only after converting them.
   const matroska = new Set<number>();
   // Each conversion's step in `script`; a status read moves it on.
   const converting = new Map<number, number>();
+  // MP4 reads that reported COMPLETED, by file.
+  const completedReads = new Map<number, number>();
   const script: readonly Mp4Status[] =
     convert === "timeout"
       ? ["IN_QUEUE", "IN_QUEUE", "CONVERTING"]
@@ -94,7 +121,7 @@ function fakePutio(convert?: ConvertMode, outputBytes = 2 * mib) {
     createFolder: (name) => Effect.sync(() => add(name, 0, "FOLDER")),
     uploadFile: (path, name, parent, mediaType) =>
       Effect.sync(() => {
-        uploads.push({ path, name, mediaType });
+        uploads.push({ path, name, mediaType, present: exists(path) });
         const file = add(name, parent, "VIDEO");
         if (mediaType === "video/x-matroska" && convert !== "not-required")
           matroska.add(file.id);
@@ -116,12 +143,26 @@ function fakePutio(convert?: ConvertMode, outputBytes = 2 * mib) {
         const step = converting.get(id);
         if (step !== undefined) converting.set(id, step + 1);
         const value = status(id);
-        return value === "COMPLETED"
-          ? { status: value, percentDone: 100, size: outputBytes }
-          : { status: value, percentDone: value === "CONVERTING" ? 57 : 0 };
+        if (value !== "COMPLETED")
+          return {
+            status: value,
+            percentDone: value === "CONVERTING" ? 57 : 0,
+          };
+        completedReads.set(id, (completedReads.get(id) ?? 0) + 1);
+        return { status: value, percentDone: 100, size: outputBytes };
       }),
   };
-  return { files, deleted, uploads, matroska, converting, status, provider };
+  return {
+    files,
+    deleted,
+    uploads,
+    matroska,
+    converting,
+    completedReads,
+    status,
+    finish: (id: number) => converting.set(id, script.length - 1),
+    provider,
+  };
 }
 
 type Mode =
@@ -139,8 +180,24 @@ async function fakeEngine(
   convert?: ConvertMode,
 ) {
   let episodeLookups = 0;
+  let playlists = 0;
   // File IDs StartPlaybackConversion was asked to convert, in order.
   const conversions: number[] = [];
+  /** The converted upload's playlist, or the wrong one a `plays-` mode names. */
+  const convertedUrl = (fileId: bigint) => {
+    switch (convert) {
+      case "plays-elsewhere":
+        return `https://elsewhere.fixture.test/v2/files/${fileId}/hls/media.m3u8`;
+      case "plays-mp4":
+        return `${mediaOrigin}/v2/files/${fileId}/stream`;
+      case "plays-other-file":
+        return `${mediaOrigin}/v2/files/102/hls/media.m3u8`;
+      case "plays-new-playlist":
+        return `${mediaOrigin}/v2/files/${fileId}/hls/${++playlists}/media.m3u8`;
+      default:
+        return `${mediaOrigin}/v2/files/${fileId}/hls/media.m3u8`;
+    }
+  };
   const owned = (fileName: string) =>
     [...putio.files]
       .filter(([, file]) => file.name === fileName)
@@ -295,6 +352,11 @@ async function fakeEngine(
           if (putio.matroska.has(id)) {
             if (convert === "read-only" && !putio.converting.has(id))
               putio.converting.set(id, 0);
+            if (
+              convert === "finishes-unseen" &&
+              putio.status(id) === "CONVERTING"
+            )
+              putio.finish(id);
             // put.io's HLS answers conversion required until it converts.
             const status = putio.status(id);
             if (status === "NOT_AVAILABLE" || status === "IN_QUEUE") {
@@ -303,7 +365,11 @@ async function fakeEngine(
               );
               return;
             }
-            if (status !== "COMPLETED") {
+            if (
+              status !== "COMPLETED" ||
+              (convert === "listed-late" &&
+                (putio.completedReads.get(id) ?? 0) < 2)
+            ) {
               response.end(
                 '{"pending":{"reason":"PENDING_REASON_PROCESSING"}}',
               );
@@ -326,7 +392,7 @@ async function fakeEngine(
                   case: "ready",
                   value: {
                     media: {
-                      url: `${origin}/v2/files/${fileId}/hls/media.m3u8?oauth_token=fixture-download-grant`,
+                      url: `${putio.matroska.has(id) ? convertedUrl(fileId) : `${origin}/v2/files/${fileId}/hls/media.m3u8`}?oauth_token=fixture-download-grant`,
                       expiry: { case: "expiryUnknown", value: true },
                     },
                   },
@@ -408,6 +474,7 @@ const Receipt = Schema.fromJsonString(
     endpoint: Schema.String,
     proof: Schema.Struct({
       failureStage: Schema.optional(Schema.String),
+      failureCode: Schema.optional(Schema.String),
       uploaded: Schema.optional(Schema.Boolean),
       listingPolls: Schema.optional(Schema.Number),
       uploadFileType: Schema.optional(Schema.String),
@@ -476,7 +543,11 @@ const Receipt = Schema.fromJsonString(
             selectionStatus: Schema.optional(Schema.Number),
             selectionPreparing: Schema.optional(Schema.Boolean),
             started: Schema.optional(
-              Schema.Struct({ status: Schema.String, reads: Schema.Number }),
+              Schema.Struct({
+                status: Schema.optional(Schema.String),
+                reads: Schema.optional(Schema.Number),
+                readErrors: Schema.Number,
+              }),
             ),
             wait: Schema.optional(
               Schema.Struct({
@@ -492,6 +563,8 @@ const Receipt = Schema.fromJsonString(
                 ),
                 lastStatus: Schema.optional(Schema.String),
                 lastPercent: Schema.optional(Schema.Number),
+                readErrors: Schema.Number,
+                finalStatus: Schema.optional(Schema.String),
               }),
             ),
             reselect: Schema.optional(
@@ -524,7 +597,8 @@ const Receipt = Schema.fromJsonString(
 async function runLane(
   mode: Mode,
   options: {
-    frames?: number;
+    /** Frames each decode reports, or a function of the decoded URL. */
+    frames?: number | ((url: string) => number);
     reservedBytes?: number;
     provider?: (provider: OwnedProvider) => OwnedProvider;
     web?: OwnedOptions["web"];
@@ -535,7 +609,11 @@ async function runLane(
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "live-owned-"));
-  const putio = fakePutio(options.convert, options.outputBytes);
+  // Local upload sources that exist right now.
+  const local = new Set(["movie.mp4"]);
+  const putio = fakePutio(options.convert, options.outputBytes, (path) =>
+    local.has(path),
+  );
   const engine = await fakeEngine(putio, mode, options.convert);
   const decoded: string[] = [];
   let convertSourceRemoved = false;
@@ -544,15 +622,19 @@ async function runLane(
       options.convertSource ??
       (() =>
         Effect.acquireRelease(
-          Effect.succeed({ path: "convert.mkv", bytes: convertBytes }),
+          Effect.sync(() => {
+            local.add("convert.mkv");
+            return { path: "convert.mkv", bytes: convertBytes };
+          }),
           () =>
             Effect.sync(() => {
+              local.delete("convert.mkv");
               convertSourceRemoved = true;
             }),
         )),
     settleMs: 1,
     started: { attempts: 3, intervalMs: 1 },
-    ready: { attempts: 4, intervalMs: 1 },
+    ready: { attempts: 6, intervalMs: 1 },
   };
   try {
     await writeFile(
@@ -579,7 +661,10 @@ async function runLane(
           Effect.sync(() => {
             decoded.push(url);
             return {
-              frames: options.frames ?? 240,
+              frames:
+                typeof options.frames === "function"
+                  ? options.frames(url)
+                  : (options.frames ?? 240),
               codec: "h264",
               width: 1280,
               height: 720,
@@ -958,6 +1043,7 @@ test("a library Matroska upload converts once when its Convert row is selected, 
     path: "convert.mkv",
     name: `${liveVersions.folderPrefix}-owned-${nonce}.mkv`,
     mediaType: "video/x-matroska",
+    present: true,
   });
   const convert = convertProof(run);
   assert.equal(convert.status, "passed");
@@ -972,11 +1058,15 @@ test("a library Matroska upload converts once when its Convert row is selected, 
   assert.equal(convert.selectionStatus, 302);
   assert.equal(convert.selectionPreparing, true);
   assert.equal(convert.started?.status, "IN_QUEUE");
-  // Queued, the library still offers to convert; converting, it lists nothing.
+  assert.equal(convert.started?.readErrors, 0);
+  // The fake Engine answers a queued upload as conversion required, so the
+  // library offers Convert, and a converting one as pending, so it lists none.
   assert.deepEqual(convert.wait?.reads, {
     IN_QUEUE: { convert: 1, preparing: 0, empty: 0, other: 0 },
     CONVERTING: { convert: 0, preparing: 0, empty: 1, other: 0 },
   });
+  assert.equal(convert.wait?.readErrors, 0);
+  assert.equal(convert.wait?.finalStatus, "COMPLETED");
   assert.deepEqual(convert.reselect, {
     status: 302,
     locationMediaOrigin: true,
@@ -994,18 +1084,180 @@ test("a library Matroska upload converts once when its Convert row is selected, 
   assertPrivateReceipt(run.receiptText);
 });
 
-test("an MP4 larger than the reserved ceiling charges its excess", async () => {
+for (const timing of [
+  {
+    convert: "listed-late",
+    name: "that put.io reports completed before the library lists it",
+    completedReads: 3,
+    completedLists: { convert: 0, preparing: 0, empty: 1, other: 0 },
+  },
+  {
+    convert: "finishes-unseen",
+    name: "that put.io finishes after a poll's MP4 read",
+    completedReads: 1,
+    completedLists: undefined,
+  },
+] as const)
+  test(`an MP4 larger than the reserved ceiling ${timing.name} charges its excess once`, async () => {
+    const run = await runLane("playable", {
+      convert: timing.convert,
+      outputBytes: liveVersions.convertOutputBytes + mib,
+    });
+    assert.equal(run.receipt.status, "passed");
+    assert.equal(
+      run.putio.completedReads.get(libraryId),
+      timing.completedReads,
+    );
+    const convert = convertProof(run);
+    assert.deepEqual(convert.wait?.reads.COMPLETED, timing.completedLists);
+    assert.equal(convert.wait?.finalStatus, "COMPLETED");
+    assert.equal(convert.sizeExceeded, true);
+    assert.equal(convert.excessCharged, true);
+    assert.equal(
+      run.ledger.reservedBytes,
+      100 + (run.receipt.proof.reservation?.bytes ?? 0) + mib,
+    );
+  });
+
+const reselect = {
+  status: 302,
+  locationMediaOrigin: true,
+  locationHls: true,
+  locationNamesFile: true,
+  sameHls: true,
+};
+
+for (const failure of [
+  {
+    convert: "plays-elsewhere",
+    check: "locationMediaOrigin",
+    name: "outside the put.io API origin",
+  },
+  { convert: "plays-mp4", check: "locationHls", name: "to a file stream" },
+  {
+    convert: "plays-other-file",
+    check: "locationNamesFile",
+    name: "to another file's playlist",
+  },
+  {
+    convert: "plays-new-playlist",
+    check: "sameHls",
+    name: "to a playlist the library did not list",
+  },
+] as const)
+  test(`a converted video whose reselection redirects ${failure.name} fails before decoding`, async () => {
+    const run = await runLane("playable", { convert: failure.convert });
+    assert.ok(Exit.isFailure(run.exit));
+    assert.equal(run.receipt.proof.failureStage, "convert-reselect");
+    assert.deepEqual(convertProof(run).reselect, {
+      ...reselect,
+      [failure.check]: false,
+    });
+    assert.equal(run.decoded.length, 2, "only the title uploads decoded");
+    assertConvertCleaned(run);
+    assertPrivateReceipt(run.receiptText);
+  });
+
+test("a converted video that decodes no frames fails", async () => {
   const run = await runLane("playable", {
     convert: "converts",
-    outputBytes: liveVersions.convertOutputBytes + mib,
+    frames: (url) => (url.includes(`/files/${libraryId}/`) ? 0 : 240),
+  });
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "convert-decode");
+  const convert = convertProof(run);
+  assert.deepEqual(convert.reselect, reselect);
+  assert.equal(convert.decode?.frames, 0);
+  assert.equal(run.decoded.length, 3);
+  assertConvertCleaned(run);
+  assertPrivateReceipt(run.receiptText);
+});
+
+/**
+ * Fails the probe's MP4 reads at these 1-based positions with `code`. In the
+ * converts mode reads 1 and 2 precede the selection and 3 waits for put.io to
+ * start; a failed read leaves the fake's script where it was.
+ */
+const failingReads =
+  (positions: readonly number[], code: Mp4StatusFailure["code"]) =>
+  (provider: OwnedProvider): OwnedProvider => {
+    let reads = 0;
+    return {
+      ...provider,
+      mp4Status: (id) =>
+        Effect.suspend(() =>
+          positions.includes(++reads)
+            ? Effect.fail(new Mp4StatusFailure({ code }))
+            : provider.mp4Status(id),
+        ),
+    };
+  };
+
+test("MP4 reads that fail while put.io converts are retried unless three fail in a row", async () => {
+  const run = await runLane("playable", {
+    convert: "converts",
+    // One wait for the start, two library polls, then the final read.
+    provider: failingReads([3, 5, 6, 10], "mp4_request"),
   });
   assert.equal(run.receipt.status, "passed");
-  assert.equal(convertProof(run).excessCharged, true);
-  assert.equal(
-    run.ledger.reservedBytes,
-    100 + (run.receipt.proof.reservation?.bytes ?? 0) + mib,
-  );
+  const convert = convertProof(run);
+  assert.equal(convert.started?.readErrors, 1);
+  assert.equal(convert.started?.reads, 2);
+  assert.equal(convert.wait?.readErrors, 3);
+  assert.equal(convert.wait?.polls, 5, "failed reads use up polls");
+  assert.equal(convert.wait?.finalStatus, "COMPLETED");
+  assert.equal(convert.decode?.frames, 240);
 });
+
+for (const failure of [
+  {
+    name: "an MP4 read that fails before the selection",
+    positions: [1],
+    code: "mp4_request",
+    stage: "convert-read-only",
+    conversions: [],
+  },
+  {
+    name: "three failed MP4 reads in a row while put.io starts",
+    positions: [3, 4, 5],
+    code: "mp4_request",
+    stage: "convert-not-started",
+    conversions: [libraryId],
+  },
+  {
+    name: "three failed MP4 reads in a row while put.io converts",
+    positions: [4, 5, 6],
+    code: "mp4_request",
+    stage: "convert-wait",
+    conversions: [libraryId],
+  },
+  {
+    name: "an MP4 status for another file",
+    positions: [4],
+    code: "mp4_id_mismatch",
+    stage: "convert-wait",
+    conversions: [libraryId],
+  },
+] as const)
+  test(`${failure.name} fails with its code and still removes every upload`, async () => {
+    const run = await runLane("playable", {
+      convert: "converts",
+      provider: failingReads(failure.positions, failure.code),
+    });
+    assert.ok(Exit.isFailure(run.exit));
+    assert.equal(run.receipt.proof.failureStage, failure.stage);
+    assert.equal(run.receipt.proof.failureCode, failure.code);
+    assert.deepEqual(run.conversions, failure.conversions);
+    const convert = convertProof(run);
+    if (failure.stage !== "convert-read-only")
+      assert.equal(
+        (failure.stage === "convert-wait" ? convert.wait : convert.started)
+          ?.readErrors,
+        failure.positions.length,
+      );
+    assertConvertCleaned(run);
+    assertPrivateReceipt(run.receiptText);
+  });
 
 test("a Matroska copy that fails its check stops before any upload", async () => {
   const run = await runLane("playable", {
