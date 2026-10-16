@@ -45,6 +45,11 @@ mise run native:desktop:probe hosted-hls  # hosted adapter, HLS media
 - Hosted HLS: decoded HLS movie and episode with audio and captions; no
   interruption, status clips or audio switching.
 
+libmpv follows the adapter's redirects within FFmpeg's limit of eight and
+mpv's 60-second read timeout: adapter responses stay under 60 seconds, and a
+status or `owned:` chain uses at most six, five `wait=<n>` continuations and
+the final one, plus any redirect put.io adds.
+
 Recovery after a cut restarts the owned client and reselects; same-process
 reselection can leave the loading cover visible.
 

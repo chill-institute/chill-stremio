@@ -213,7 +213,8 @@ export function createSelection(options: { base: string }) {
   });
   /**
    * A video already in the account plays without a transfer. One that put.io
-   * must convert starts converting and plays the preparing clip until ready.
+   * must convert starts converting; until put.io has prepared a video, it
+   * resolves as pending.
    */
   const owned = Effect.fn("Selection.owned")(function* (input: {
     type: string;
@@ -240,9 +241,7 @@ export function createSelection(options: { base: string }) {
     return (
       playback.case === "ready"
         ? { url: playback.url }
-        : {
-            status: playback.case === "pending" ? "preparing" : playback.case,
-          }
+        : { status: playback.case }
     ) satisfies PlaybackResult;
   });
   /** The selection that plays a library file through `owned`. */

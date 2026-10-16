@@ -20,7 +20,10 @@ the add-on shows **Reconnect chill.institute**, install it again from
 
 - **Discover → put.io library** lists every video in your account. A video
   put.io must convert first, such as most `.mkv` files, offers **Convert and
-  play from put.io**.
+  play from put.io**: the player waits a few minutes while put.io prepares it,
+  then plays it without subtitles until you open it again. If put.io takes
+  longer, a short clip plays and the video lists **Play from put.io**, which
+  waits again.
 - Movie and episode pages list videos you already have as **Play from put.io**,
   then chill release results.
 - **Download to put.io** downloads a release and plays it when one video is

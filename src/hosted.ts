@@ -50,6 +50,15 @@ class HttpFailure extends Error {
 const fail = (code: string): never => {
   throw new HttpFailure(code);
 };
+/** An Engine rate limit, outage, timeout or failed fetch: a later read may pass. */
+const transient = (error: unknown) =>
+  error instanceof HttpFailure &&
+  [
+    "resource_exhausted",
+    "unavailable",
+    "deadline_exceeded",
+    "unknown",
+  ].includes(error.code);
 /** Resolves once the signal aborts. */
 const aborted = (signal: AbortSignal) =>
   new Promise<undefined>((resolve) => {
@@ -139,6 +148,59 @@ export async function startHostedAdapter(options: {
     clearTimeout(submissions.get(key)?.expiry);
     submissions.delete(key);
   };
+  // When each HLS selection of a video already in put.io began waiting, and
+  // when a request last joined or left it. Each of those reinserts its entry,
+  // so the least recently seen come first.
+  const ownedWaits = new Map<string, { since: number; lastSeen: number }>();
+  // A request lasts at most its first read's 10 seconds and one HLS window,
+  // so an entry idle longer has no open request.
+  const longestRequestMs = 10_000 + playbackWait.hlsWindowMs;
+  const liveOwnedWait = (key: string) => {
+    const entry = ownedWaits.get(key);
+    return entry !== undefined && performance.now() - entry.lastSeen <= reuseMs;
+  };
+  const joinOwnedWait = (key: string) => {
+    const now = performance.now();
+    const joined = ownedWaits.get(key);
+    ownedWaits.delete(key);
+    // Entries idle past the reuse window go. At 256, so do entries with no
+    // open request, until the joining one fits; without any, the map grows.
+    for (const [stale, candidate] of ownedWaits) {
+      const idle = now - candidate.lastSeen;
+      if (
+        idle <= longestRequestMs ||
+        (idle <= reuseMs && ownedWaits.size < 256)
+      )
+        break;
+      ownedWaits.delete(stale);
+    }
+    const entry =
+      joined && now - joined.lastSeen <= reuseMs
+        ? joined
+        : { since: now, lastSeen: now };
+    entry.lastSeen = now;
+    ownedWaits.set(key, entry);
+    return entry;
+  };
+  const leaveOwnedWait = (
+    key: string,
+    entry: { since: number; lastSeen: number },
+  ) => {
+    if (ownedWaits.get(key) !== entry) return;
+    ownedWaits.delete(key);
+    entry.lastSeen = performance.now();
+    ownedWaits.set(key, entry);
+  };
+  /** Identical selections under one credential share this hash. */
+  const selectionKey = (
+    credential: string,
+    choice: { type: string; id: string; releaseId: string },
+  ) =>
+    createHash("sha256")
+      .update(
+        `${credential}\n${choice.type}\n${choice.id}\n${choice.releaseId}`,
+      )
+      .digest("hex");
   let origin = options.publicOrigin ?? "";
   let listenOrigin = "";
   const reconnectUrl = `${options.webOrigin}/stremio`;
@@ -215,6 +277,7 @@ export async function startHostedAdapter(options: {
     );
     const controller = new AbortController();
     let lease: Lease | undefined;
+    const route = personalRoute(request.url);
     // None of these contacts Engine. Refusing liveness would make ingress drop
     // the backend, and the Web player abandons playback when its HEAD probe of
     // the selected media fails.
@@ -223,7 +286,6 @@ export async function startHostedAdapter(options: {
       request.method !== "OPTIONS" &&
       !(request.method === "GET" && request.url === "/health")
     ) {
-      const route = personalRoute(request.url);
       const admitted = admission.acquire(route.credential);
       if (typeof admitted === "string") {
         refuse(response, admitted, route.media);
@@ -233,10 +295,11 @@ export async function startHostedAdapter(options: {
     }
     controllers.add(controller);
     const requestDeadlineAt = Date.now() + 10_000;
-    let deadline = setTimeout(() => {
+    const expire = () => {
       controller.abort();
       json(response, 504, { error: "deadline_exceeded" });
-    }, 10_000);
+    };
+    let deadline = setTimeout(expire, 10_000);
     response.once("close", () => {
       clearTimeout(deadline);
       controllers.delete(controller);
@@ -371,7 +434,7 @@ export async function startHostedAdapter(options: {
         // selection until the pending limit. Each HLS window ends before that,
         // even while the selection's submission runs on.
         const timing = hls
-          ? { ...playbackWait, windowMs: 25_000 }
+          ? { ...playbackWait, windowMs: playbackWait.hlsWindowMs }
           : playbackWait;
         // The pinned player probes content type with HEAD before consuming the selected media URL.
         if (request.method === "HEAD") {
@@ -409,43 +472,100 @@ export async function startHostedAdapter(options: {
             return fail("invalid_request");
           }
         }
-        // A video already in the account resolves once within the request
-        // deadline: no submission, transfer or status URL.
-        if (choice?.releaseId.startsWith(ownedPrefix)) {
-          const fileId = ownedFileId(choice.releaseId);
-          if (fileId === undefined) return fail("invalid_request");
-          let result: PlaybackResult;
-          try {
-            result = await run(
-              selection
-                .owned({ type: choice.type, id: choice.id, fileId })
-                .pipe(Effect.provide(layer)),
-            );
-          } catch (error) {
-            if (!rejected(error)) throw error;
-            result = { status: "reconnect" };
-          }
-          if (response.destroyed || response.writableEnded) return;
-          response
-            .writeHead(302, {
-              Location:
-                "url" in result
-                  ? result.url
-                  : `${base}/notice/${result.status}.${hls ? "m3u8" : "mp4"}`,
-            })
-            .end();
-          return;
-        }
-        clearTimeout(deadline);
-        // Status reads and polling stop when this window ends, as a new
-        // submission does; the later deadline leaves room to redirect.
+        const fileId = choice?.releaseId.startsWith(ownedPrefix)
+          ? (ownedFileId(choice.releaseId) ?? fail("invalid_request"))
+          : undefined;
+        // Reads and polling stop when this window ends, as waiting for a new
+        // submission does.
         const waiting = new AbortController();
         const windowEnd = setTimeout(() => waiting.abort(), timing.windowMs);
-        deadline = setTimeout(() => {
-          controller.abort();
-          json(response, 504, { error: "deadline_exceeded" });
-        }, timing.windowMs + 10_000);
         const reading = AbortSignal.any([controller.signal, waiting.signal]);
+        // A video already in the account needs no submission, transfer or
+        // status URL. Its first read keeps the request deadline; while put.io
+        // prepares it, an HLS selection waits out the window and continues at
+        // its own URL until the pending limit.
+        if (choice && fileId !== undefined) {
+          const owned = { type: choice.type, id: choice.id, fileId };
+          const key = selectionKey(credential, choice);
+          const resolve = (signal?: AbortSignal) =>
+            run(selection.owned(owned).pipe(Effect.provide(layer)), signal);
+          let result: PlaybackResult;
+          let waited: { since: number; lastSeen: number } | undefined;
+          try {
+            // Failing a waiting selection would end playback on a 4xx or
+            // restart the wait on a 5xx, so a failed read holds the rest of
+            // the window and the next window reads again. A continuation, or
+            // the player's retry while the wait is remembered, already waits.
+            let held = false;
+            result = await resolve().catch((error: unknown) => {
+              if (
+                !hls ||
+                !transient(error) ||
+                (continuation === "0" && !liveOwnedWait(key))
+              )
+                throw error;
+              held = true;
+              return { status: "pending" } satisfies PlaybackResult;
+            });
+            if (hls && "status" in result && result.status === "pending") {
+              // As for a download, the later deadline leaves room to redirect.
+              clearTimeout(deadline);
+              deadline = setTimeout(
+                expire,
+                requestDeadlineAt + timing.windowMs - Date.now(),
+              );
+              waited = joinOwnedWait(key);
+              if (held) await aborted(reading);
+              else
+                result = await waitForPlayback(
+                  result,
+                  () =>
+                    resolve(reading).catch(async (error: unknown) => {
+                      if (!transient(error)) throw error;
+                      await aborted(reading);
+                      return { status: "pending" } satisfies PlaybackResult;
+                    }),
+                  reading,
+                  { ...timing, pollMs: playbackWait.ownedPollMs },
+                );
+            }
+          } catch (error) {
+            if (rejected(error)) result = { status: "reconnect" };
+            else if (
+              waited &&
+              waiting.signal.aborted &&
+              !controller.signal.aborted
+            )
+              result = { status: "pending" };
+            else throw error;
+          } finally {
+            clearTimeout(windowEnd);
+            if (waited) leaveOwnedWait(key, waited);
+          }
+          if (response.destroyed || response.writableEnded) return;
+          let location =
+            "url" in result
+              ? result.url
+              : `${base}/notice/${result.status}.${hls ? "m3u8" : "mp4"}`;
+          if ("status" in result && result.status === "pending") {
+            if (
+              waited &&
+              Number(continuation) < playbackWait.continuations &&
+              performance.now() - waited.since < pendingMs
+            )
+              location = `${base}${path}?wait=${Number(continuation) + 1}`;
+            else {
+              // Selecting the row again waits again.
+              if (waited) waited.since = performance.now();
+              location = `${base}/notice/preparing.${hls ? "m3u8" : "mp4"}`;
+            }
+          }
+          response.writeHead(302, { Location: location }).end();
+          return;
+        }
+        // The later deadline leaves room to redirect.
+        clearTimeout(deadline);
+        deadline = setTimeout(expire, timing.windowMs + 10_000);
         let transferId: bigint | undefined;
         let episode: SeasonEpisode | undefined;
         let result: PlaybackResult;
@@ -459,9 +579,7 @@ export async function startHostedAdapter(options: {
         try {
           if (choice) {
             const { type, id, releaseId } = choice;
-            const key = createHash("sha256")
-              .update(`${credential}\n${type}\n${id}\n${releaseId}`)
-              .digest("hex");
+            const key = selectionKey(credential, choice);
             let shared = submissions.get(key);
             if (!shared) {
               // The submission holds its own unit, so reconnecting clients
@@ -721,12 +839,15 @@ export async function startHostedAdapter(options: {
       json(response, 200, result);
     };
     void handle().catch((error) => {
-      const code =
+      const failed =
         error instanceof HttpFailure
           ? error.code
           : controller.signal.aborted
             ? "deadline_exceeded"
             : "unavailable";
+      // HLS players give up on selected media after a 4xx; a 5xx they retry.
+      const code =
+        route.media && failed === "resource_exhausted" ? "unavailable" : failed;
       json(response, status(code), { error: code });
     });
   });

@@ -27,6 +27,15 @@ import { versions } from "../harness/versions.ts";
 import { startHostedAdapter } from "../src/hosted.ts";
 import { statusMediaKinds, statusPlaylist } from "../src/status-media.ts";
 
+// Short windows and polls; the adapter's continuation limit stays real.
+vi.mock("../src/playback-wait.ts", async (original) => {
+  const actual = await original<typeof import("../src/playback-wait.ts")>();
+  return {
+    ...actual,
+    playbackWait: { ...actual.playbackWait, hlsWindowMs: 100, ownedPollMs: 10 },
+  };
+});
+
 const credential = `v4.local.${"O".repeat(300)}`;
 const nonce = "0".repeat(32);
 const mediaOrigin = "https://media.fixture.test";
@@ -47,6 +56,10 @@ const mib = 1024 * 1024;
  *   has reported it completed twice
  * - `finishes-unseen`: put.io finishes between a poll's MP4 read and its
  *   stream list read
+ * - `finishes-held`: put.io converts while the adapter holds the selection,
+ *   one step for each Engine read
+ * - `held-other-file`: as `finishes-held`, but Engine's playlist for the
+ *   converted video is another file's
  * - `plays-elsewhere`, `plays-mp4`, `plays-other-file`: Engine's playlist for
  *   the converted video is outside the media origin, not HLS, or another file's
  * - `plays-new-playlist`: each Engine read of the converted video names a new
@@ -62,6 +75,8 @@ type ConvertMode =
   | "error"
   | "listed-late"
   | "finishes-unseen"
+  | "finishes-held"
+  | "held-other-file"
   | "plays-elsewhere"
   | "plays-mp4"
   | "plays-other-file"
@@ -191,6 +206,7 @@ async function fakeEngine(
       case "plays-mp4":
         return `${mediaOrigin}/v2/files/${fileId}/stream`;
       case "plays-other-file":
+      case "held-other-file":
         return `${mediaOrigin}/v2/files/102/hls/media.m3u8`;
       case "plays-new-playlist":
         return `${mediaOrigin}/v2/files/${fileId}/hls/${++playlists}/media.m3u8`;
@@ -357,6 +373,12 @@ async function fakeEngine(
               putio.status(id) === "CONVERTING"
             )
               putio.finish(id);
+            const step = putio.converting.get(id);
+            if (
+              (convert === "finishes-held" || convert === "held-other-file") &&
+              step !== undefined
+            )
+              putio.converting.set(id, step + 1);
             // put.io's HLS answers conversion required until it converts.
             const status = putio.status(id);
             if (status === "NOT_AVAILABLE" || status === "IN_QUEUE") {
@@ -789,16 +811,19 @@ for (const failure of [
   {
     mode: "pending",
     stage: "redirect",
+    redirects: 5,
     name: "a selection the adapter answers with a decodable status clip",
   },
   {
     mode: "elsewhere",
     stage: "redirect",
+    redirects: 0,
     name: "a selection redirected outside the put.io API origin",
   },
   {
     mode: "never-listed",
     stage: "listing",
+    redirects: undefined,
     name: "a page that never lists the upload",
   },
 ] as const)
@@ -807,6 +832,8 @@ for (const failure of [
     assert.ok(Exit.isFailure(run.exit));
     assert.equal(run.receipt.status, "failed");
     assert.equal(run.receipt.proof.failureStage, failure.stage);
+    // A video put.io keeps preparing holds the selection to its last redirect.
+    assert.equal(run.receipt.proof.redirects, failure.redirects);
     assert.equal(
       run.receipt.proof.uploadFileType,
       failure.stage === "listing" ? "VIDEO" : undefined,
@@ -1059,6 +1086,22 @@ const convertProof = (run: Awaited<ReturnType<typeof runLane>>) => {
   return convert;
 };
 
+/**
+ * The adapter's StartPlaybackConversion calls: none, one, or, while it holds
+ * the selection, one for each read that finds the conversion still queued.
+ */
+const assertConversions = (
+  conversions: readonly number[],
+  expected: "none" | "once" | "each read",
+) => {
+  if (expected === "none") assert.deepEqual(conversions, []);
+  else if (expected === "once") assert.deepEqual(conversions, [libraryId]);
+  else {
+    assert.ok(conversions.length > 1);
+    assert.ok(conversions.every((id) => id === libraryId));
+  }
+};
+
 const assertConvertCleaned = (run: Awaited<ReturnType<typeof runLane>>) => {
   assert.deepEqual(run.putio.deleted, [[731_001, 731_002, 731_003, libraryId]]);
   assert.deepEqual([...run.putio.files.keys()], [101, 102]);
@@ -1069,12 +1112,12 @@ const assertConvertCleaned = (run: Awaited<ReturnType<typeof runLane>>) => {
     assert.ok(!run.receiptText.includes(secret), secret);
 };
 
-test("a library Matroska upload converts once when its Convert row is selected, then plays", async () => {
+test("a library Matroska upload starts converting when its Convert row is selected, then plays", async () => {
   const run = await runLane("playable", { convert: "converts" });
   assert.ok(Exit.isSuccess(run.exit));
   assert.equal(run.receipt.status, "passed");
-  // Listings, read-only requests, the title rows and the reselection never convert.
-  assert.deepEqual(run.conversions, [libraryId]);
+  // Only the selection asks, and put.io queues the conversion while it waits.
+  assertConversions(run.conversions, "each read");
   const reservation = {
     creations: 5,
     bytes: 2 * sourceBytes + convertBytes + liveVersions.convertOutputBytes,
@@ -1101,7 +1144,7 @@ test("a library Matroska upload converts once when its Convert row is selected, 
   assert.deepEqual(convert.selection, {
     status: 302,
     outcome: "preparing",
-    redirects: 0,
+    redirects: 5,
   });
   assert.equal(convert.started?.status, "IN_QUEUE");
   assert.equal(convert.started?.readErrors, 0);
@@ -1246,6 +1289,41 @@ test("library stream list reads that fail while put.io converts are skipped unle
   }
 });
 
+test("a library upload put.io converts while the adapter holds its selection plays at once and passes the later steps", async () => {
+  const run = await runLane("playable", { convert: "finishes-held" });
+  assert.ok(Exit.isSuccess(run.exit));
+  assert.equal(run.receipt.status, "passed");
+  // The first read and the two that find the conversion queued ask for it.
+  assert.deepEqual(run.conversions, [libraryId, libraryId, libraryId]);
+  const convert = convertProof(run);
+  assert.deepEqual(convert.selection, {
+    status: 302,
+    outcome: "hls",
+    redirects: 0,
+  });
+  assert.equal(convert.started?.status, "COMPLETED");
+  assert.equal(convert.wait?.polls, 1);
+  assert.deepEqual(convert.wait?.reads, {});
+  assert.deepEqual(convert.reselect, reselect);
+  assert.equal(convert.decode?.frames, 240);
+  assertConvertCleaned(run);
+  assertPrivateReceipt(run.receiptText);
+});
+
+test("a held selection that plays another file's playlist fails at the selection", async () => {
+  const run = await runLane("playable", { convert: "held-other-file" });
+  assert.ok(Exit.isFailure(run.exit));
+  assert.equal(run.receipt.proof.failureStage, "convert-selection");
+  assert.deepEqual(convertProof(run).selection, {
+    status: 302,
+    outcome: "other",
+    redirects: 0,
+  });
+  assert.equal(run.decoded.length, 2, "only the title uploads decoded");
+  assertConvertCleaned(run);
+  assertPrivateReceipt(run.receiptText);
+});
+
 /**
  * Fails the probe's MP4 reads at these 1-based positions with `code`. In the
  * converts mode reads 1 and 2 precede the selection and 3 waits for put.io to
@@ -1288,28 +1366,28 @@ for (const failure of [
     positions: [1],
     code: "mp4_request",
     stage: "convert-read-only",
-    conversions: [],
+    conversions: "none",
   },
   {
     name: "three failed MP4 reads in a row while put.io starts",
     positions: [3, 4, 5],
     code: "mp4_request",
     stage: "convert-not-started",
-    conversions: [libraryId],
+    conversions: "each read",
   },
   {
     name: "three failed MP4 reads in a row while put.io converts",
     positions: [4, 5, 6],
     code: "mp4_request",
     stage: "convert-wait",
-    conversions: [libraryId],
+    conversions: "each read",
   },
   {
     name: "an MP4 status for another file",
     positions: [4],
     code: "mp4_id_mismatch",
     stage: "convert-wait",
-    conversions: [libraryId],
+    conversions: "each read",
   },
 ] as const)
   test(`${failure.name} fails with its code and still removes every upload`, async () => {
@@ -1320,7 +1398,7 @@ for (const failure of [
     assert.ok(Exit.isFailure(run.exit));
     assert.equal(run.receipt.proof.failureStage, failure.stage);
     assert.equal(run.receipt.proof.failureCode, failure.code);
-    assert.deepEqual(run.conversions, failure.conversions);
+    assertConversions(run.conversions, failure.conversions);
     const convert = convertProof(run);
     if (failure.stage !== "convert-read-only")
       assert.equal(
@@ -1348,37 +1426,37 @@ for (const failure of [
   {
     convert: "not-required",
     stage: "convert-not-required",
-    conversions: [],
+    conversions: "none",
     name: "a Matroska upload put.io streams as uploaded",
   },
   {
     convert: "read-only",
     stage: "convert-read-only",
-    conversions: [],
+    conversions: "none",
     name: "a conversion that starts before the row is selected",
   },
   {
     convert: "selection",
     stage: "convert-selection",
-    conversions: [libraryId],
+    conversions: "once",
     name: "a conversion Engine refuses to start",
   },
   {
     convert: "not-started",
     stage: "convert-not-started",
-    conversions: [libraryId],
+    conversions: "each read",
     name: "a selection put.io never starts converting",
   },
   {
     convert: "timeout",
     stage: "convert-timeout",
-    conversions: [libraryId],
+    conversions: "each read",
     name: "a conversion that outlasts the wait",
   },
   {
     convert: "error",
     stage: "convert-error",
-    conversions: [libraryId],
+    conversions: "each read",
     name: "a conversion put.io reports failed",
   },
 ] as const)
@@ -1387,7 +1465,7 @@ for (const failure of [
     assert.ok(Exit.isFailure(run.exit));
     assert.equal(run.receipt.status, "failed");
     assert.equal(run.receipt.proof.failureStage, failure.stage);
-    assert.deepEqual(run.conversions, failure.conversions);
+    assertConversions(run.conversions, failure.conversions);
     assert.equal(run.decoded.length, 2, "only the title uploads decoded");
     if (failure.stage === "convert-timeout")
       assert.deepEqual(

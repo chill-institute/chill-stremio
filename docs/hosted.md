@@ -40,9 +40,11 @@ fires every catalog request at once and never cancels them.
 - Over the process limit: `503 unavailable`. Over the link limit: `429
   resource_exhausted`, except selected media under `/play/` and `/status/`,
   which gets `503` because HLS players retry 5xx only. All carry
-  `Retry-After: 5`.
+  `Retry-After: 5`. An Engine rate limit on selected media is also `503`,
+  without `Retry-After`.
 - A new selection needs two free units or it submits nothing; an `owned:` row
-  needs one.
+  needs one, which a [waiting](#videos-already-in-putio) request holds for at
+  most 35 seconds.
 - `/health`, HEAD and OPTIONS never count; `/notice/` counts only toward the
   process limit. Counts are per process, keyed by a credential hash.
 
@@ -77,7 +79,8 @@ rechecks membership per request within a 10-second deadline. Traversal stops at
 5,000 entries per folder, 50,000 in total, 1,000 folders or 64 levels and then
 errors instead of returning a partial page. A video put.io must
 [convert](#videos-putio-must-convert) lists a **Convert and play from put.io**
-source; one still preparing lists **Play from put.io**. Library videos carry
+source; one still preparing lists **Play from put.io**. Both wait in the
+player as [owned rows](#videos-already-in-putio) do. Library videos carry
 Engine's subtitle tracks; release playback has none, so reopen the file from
 the library for subtitles.
 
@@ -126,13 +129,15 @@ Legacy `.mp4` selections get `404`, or `503` on indexer errors.
 
 `ResolvePlayback` never converts. Only GET on selected media, status URLs
 included, calls `StartPlaybackConversion`, once per resolution. A selected
-download keeps waiting as above; a library or owned row plays `preparing`, and
-selecting it again after put.io finishes plays the video. A video put.io can't
-convert plays `unavailable`.
+download keeps waiting as above; a library or owned row
+[waits](#videos-already-in-putio), asking again on each read that still finds
+the video unconverted. A video put.io can't convert plays `unavailable`.
 
 The library's convert row selects
 `/s/<credential>/play/movie/chill:file:<fileId>/owned:<fileId>.m3u8`; both IDs
-must name the same file. Neither convert nor preparing rows carry subtitles.
+must name the same file. Neither convert nor preparing rows carry subtitles,
+and a video that becomes ready during the wait plays without them; reopen it
+from the library to get them.
 
 ## Episode releases
 
@@ -163,6 +168,24 @@ calls only `ResolvePlayback` and never submits. A malformed file ID, or an
 `<id>` that is neither the page's ID nor the same file's `chill:file:<fileId>`,
 gets `400`.
 
+- **Waiting.** While put.io prepares or must convert the video, an HLS
+  selection reads again every 5 seconds until its 25-second window, measured
+  from the request's start, ends, then redirects to the same URL with the next
+  `wait=<n>`. After four minutes across the player's retries, or at the fifth
+  redirect, it plays `preparing`; selecting it again waits again. Legacy `.mp4`
+  plays `preparing.mp4` at once.
+- **Wait memory.** The adapter remembers when each wait began, keyed by a hash
+  of the credential and selection, until 60 seconds after its last request.
+  Past 256 entries a joining wait first forgets the least recently seen entry
+  idle for over 35 seconds; it never evicts an active wait. A restart forgets
+  every wait, so a deploy more than about 90 seconds into a Stremio Web wait
+  ends it with a player error; select the row again.
+- **Engine failures.** While a selection waits, `resource_exhausted`,
+  `unavailable`, `deadline_exceeded` or `unknown` (including a failed
+  connection) hold the rest of the window. Elsewhere on a first read they
+  return `5xx`, which Stremio Web retries; a gone or unplayable file plays
+  `unavailable` and a rejected credential `reconnect`.
+
 Misses (open these from the library): filenames without a year, alternate
 titles, years off by one, date or absolute episode numbering, multi-episode
 files, folder-named videos, results past put.io's first 100, underscore-joined
@@ -177,7 +200,8 @@ manifests and `/configure` call other apps unverified.
 - Web with a connected streaming server transcodes through it; no lane covers
   that path.
 - Android clients' ExoPlayer read timeout (8 seconds) is shorter than a pending
-  hold, so waiting there is unsupported.
+  hold, so waiting there is unsupported, including on owned rows put.io is
+  still preparing.
 
 ## Release
 

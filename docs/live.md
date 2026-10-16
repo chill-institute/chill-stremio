@@ -121,7 +121,8 @@ put.io prepares a video. A failed stream-list read counts under
   that one selection starts it and ends as `preparing`, or `hls` when put.io
   finishes during the wait (`selection.outcome`), and that the row plays once
   put.io finishes. The lane cannot count `StartPlaybackConversion` calls;
-  [live-owned.test.ts](../tests/live-owned.test.ts) proves exactly one.
+  [live-owned.test.ts](../tests/live-owned.test.ts) proves only the selection
+  asks, once per read while put.io still queues the conversion.
 
 ### Real acquisition probe
 

@@ -6,7 +6,11 @@ export type PlaybackResult = { url: string } | { status: StatusMediaKind };
 // Stay below mpv's 60s network timeout and FFmpeg's eight-redirect limit.
 export const playbackWait = {
   windowMs: 45_000,
+  hlsWindowMs: 25_000,
   pollMs: 2_000,
+  // put.io takes minutes to convert a video, and each read while it queues
+  // the conversion asks for it again.
+  ownedPollMs: 5_000,
   continuations: 5,
 };
 
@@ -14,7 +18,7 @@ export async function waitForPlayback(
   initial: PlaybackResult,
   inspect: () => Promise<PlaybackResult>,
   signal: AbortSignal,
-  timing = playbackWait,
+  timing: { windowMs: number; pollMs: number } = playbackWait,
 ) {
   const deadline = performance.now() + timing.windowMs;
   let result = initial;

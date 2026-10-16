@@ -15,7 +15,10 @@ import { discoveryTargetId } from "../src/discovery.ts";
 // Poll pending playback quickly; its window and continuation limits stay real.
 vi.mock("../src/playback-wait.ts", async (original) => {
   const actual = await original<typeof import("../src/playback-wait.ts")>();
-  return { ...actual, playbackWait: { ...actual.playbackWait, pollMs: 20 } };
+  return {
+    ...actual,
+    playbackWait: { ...actual.playbackWait, pollMs: 20, ownedPollMs: 20 },
+  };
 });
 
 const statusSegment = Buffer.alloc(188 * 2, 0x47);
@@ -126,12 +129,19 @@ async function fixture(
     // ResolvePlayback answers unavailable for a reason other than conversion.
     playbackUnavailable: false,
     conversionResult: "pending" as "pending" | "unavailable",
+    // An accepted conversion leaves the video pending, as put.io converting
+    // it would.
+    conversionStarts: false,
     conversionRejection: undefined as
       | { status: number; code: string }
       | undefined,
     // File IDs StartPlaybackConversion was asked to convert, in order.
     conversions: [] as bigint[],
+    // File IDs ResolvePlayback was asked to resolve, in order.
+    resolved: [] as bigint[],
     rejection: undefined as { status: number; code: string } | undefined,
+    // Engine closes each connection without answering.
+    dropConnections: false,
     // An AddTransfer refusal and the stable code Engine sends with it.
     addRejection: undefined as
       | { status: number; code: string; engineCode?: string }
@@ -198,6 +208,10 @@ async function fixture(
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
       assert.equal(request.method, "POST");
+      if (state.dropConnections) {
+        response.destroy();
+        return;
+      }
       if (state.rejection) {
         error(response, state.rejection.status, state.rejection.code);
         return;
@@ -519,6 +533,7 @@ async function fixture(
             proto.ResolvePlaybackRequestSchema,
             json,
           );
+          state.resolved.push(fileId);
           if (
             ![21n, 22n, 50n, ...state.ownedVideos.map(({ id }) => id)].includes(
               fileId,
@@ -590,6 +605,10 @@ async function fixture(
               state.conversionRejection.code,
             );
             return;
+          }
+          if (state.conversionStarts && state.conversionResult === "pending") {
+            state.playbackConvertible = false;
+            state.playbackPending = true;
           }
           response.end(
             toJsonString(
@@ -2861,14 +2880,17 @@ test("a video already in put.io plays without a transfer or status URL", async (
     assert.deepEqual(f.calls, []);
     assert.equal(await location(ownedSelection(f, "77")), media);
     assert.equal(await location(ownedSelection(f, "77", "mp4")), media);
+    // While put.io prepares it, legacy MP4 plays the clip and HLS waits.
     f.state.playbackPending = true;
-    for (const format of ["m3u8", "mp4"])
-      assert.equal(
-        await location(ownedSelection(f, "77", format)),
-        `${f.base()}/notice/preparing.${format}`,
-      );
+    assert.equal(
+      await location(ownedSelection(f, "77", "mp4")),
+      `${f.base()}/notice/preparing.mp4`,
+    );
+    const resolutions = f.calls.length;
+    const waited = location(ownedSelection(f, "77"));
+    await until(() => f.calls.length >= resolutions + 3);
     f.state.playbackPending = false;
-    assert.equal(await location(ownedSelection(f, "77")), media);
+    assert.equal(await waited, media);
     for (const format of ["m3u8", "mp4"])
       assert.equal(
         await location(ownedSelection(f, "78", format)),
@@ -2928,11 +2950,27 @@ test("a video already in put.io needs no submission unit of its link", async () 
     );
     assert.equal(another.status, 503, "a new selection needs two free units");
     await another.arrayBuffer();
-    assert.equal(
-      await location(ownedSelection(f, "77")),
-      "https://media.fixture.test/video-77?token=fixture-playback-secret",
-    );
+    const media =
+      "https://media.fixture.test/video-77?token=fixture-playback-secret";
+    assert.equal(await location(ownedSelection(f, "77")), media);
+    // Waiting while put.io prepares it holds only the request's unit.
+    f.state.playbackPending = true;
+    const resolutions = () =>
+      f.calls.filter(({ method }) => method === "ResolvePlayback").length;
+    const before = resolutions();
+    const waited = location(ownedSelection(f, "77"));
+    await until(() => resolutions() >= before + 2);
+    const manifest = await fetch(`${f.base()}/manifest.json`);
+    assert.equal(manifest.status, 429, "the wait holds the link's last unit");
+    await manifest.arrayBuffer();
+    f.state.playbackPending = false;
+    assert.equal(await waited, media);
     assert.equal(f.state.addCount, 0);
+    assert.ok(
+      f.calls.every(({ method }) =>
+        ["GetMovies", "ResolvePlayback"].includes(method),
+      ),
+    );
     await vi.advanceTimersByTimeAsync(10_000);
     for (const response of await Promise.all(stalled)) {
       assert.equal(response.status, 504);
@@ -3032,22 +3070,27 @@ test("a video already in put.io that put.io must convert starts converting and p
     for (const init of readOnlyProbes)
       await (await fetch(ownedSelection(f, "77"), init)).arrayBuffer();
     assert.deepEqual(f.state.conversions, []);
-    for (const format of ["m3u8", "mp4"])
-      assert.equal(
-        await location(ownedSelection(f, "77", format)),
-        `${f.base()}/notice/preparing.${format}`,
-      );
-    assert.deepEqual(f.state.conversions, [77n, 77n]);
+    assert.equal(
+      await location(ownedSelection(f, "77", "mp4")),
+      `${f.base()}/notice/preparing.mp4`,
+    );
+    assert.deepEqual(f.state.conversions, [77n]);
+    // HLS waits, asking again on each read that still needs converting.
+    const waited = location(ownedSelection(f, "77"));
+    await until(() => f.state.conversions.length >= 3);
     // put.io is converting, then done.
     f.state.playbackConvertible = false;
     f.state.playbackPending = true;
-    assert.equal(
-      await location(ownedSelection(f, "77")),
-      `${f.base()}/notice/preparing.m3u8`,
-    );
+    const resolutions = playbackResolutions(f);
+    // Reads run one at a time, so the second after the switch follows any
+    // conversion asked before it.
+    await until(() => playbackResolutions(f) >= resolutions + 2);
+    const conversions = f.state.conversions.length;
+    await until(() => playbackResolutions(f) >= resolutions + 4);
     f.state.playbackPending = false;
-    assert.equal(await location(ownedSelection(f, "77")), media);
-    assert.deepEqual(f.state.conversions, [77n, 77n]);
+    assert.equal(await waited, media);
+    assert.equal(f.state.conversions.length, conversions);
+    assert.ok(f.state.conversions.every((id) => id === 77n));
     f.state.playbackConvertible = true;
     f.state.conversionResult = "unavailable";
     assert.equal(
@@ -3066,11 +3109,14 @@ test("a video already in put.io that put.io must convert starts converting and p
         `${f.base()}/notice/${clip}.m3u8`,
       );
     }
+    // Once a restart forgets the wait, a failed first read stays an error the
+    // player retries.
+    await f.restart();
     f.state.conversionRejection = { status: 503, code: "unavailable" };
     const failed = await fetch(ownedSelection(f, "77"), { redirect: "manual" });
     assert.equal(failed.status, 503);
     await failed.arrayBuffer();
-    assert.equal(f.state.conversions.length, 7);
+    assert.equal(f.state.conversions.length, conversions + 5);
     assert.equal(f.state.addCount, 0);
   } finally {
     await f.close();
@@ -3142,27 +3188,35 @@ test("a library video put.io must convert lists a row that converts only when se
     for (const init of readOnlyProbes)
       await (await fetch(librarySelection(f, "50"), init)).arrayBuffer();
     assert.deepEqual(f.state.conversions, []);
-    assert.equal(
-      await location(librarySelection(f, "50")),
-      `${f.base()}/notice/preparing.m3u8`,
-    );
-    assert.deepEqual(f.state.conversions, [50n]);
-    // While put.io prepares it, the listing offers the same selection, which
-    // plays the clip again without asking put.io to convert.
-    f.state.playbackConvertible = false;
-    f.state.playbackPending = true;
+    f.state.conversionStarts = true;
+    let responded = false;
+    const selected = location(librarySelection(f, "50")).then((value) => {
+      responded = true;
+      return value;
+    });
+    await until(() => f.state.conversions.length === 1);
+    // While put.io prepares it, the listing offers the same selection without
+    // subtitles, and the selection waits without asking put.io again.
     assert.deepEqual(
       (await libraryRows()).map(({ name, url }) => ({ name, url })),
       [{ name: "Play from put.io", url: librarySelection(f, "50") }],
     );
-    assert.equal(
-      await location(librarySelection(f, "50")),
-      `${f.base()}/notice/preparing.m3u8`,
+    assert.deepEqual(
+      await (
+        await fetch(`${f.base()}/subtitles/movie/chill%3Afile%3A50.json`)
+      ).json(),
+      { subtitles: [] },
     );
-    assert.deepEqual(f.state.conversions, [50n]);
-    // put.io has converted it: the row plays the video, and the listing offers
-    // the video itself again.
+    for (const init of readOnlyProbes)
+      await (await fetch(librarySelection(f, "50"), init)).arrayBuffer();
+    const resolutions = playbackResolutions(f);
+    await until(() => playbackResolutions(f) >= resolutions + 2);
+    assert.equal(responded, false);
+    // put.io has converted it: the waiting selection plays the video, and the
+    // listing offers the video itself again.
     f.state.playbackPending = false;
+    assert.equal(await selected, media);
+    assert.deepEqual(f.state.conversions, [50n]);
     assert.equal(await location(librarySelection(f, "50")), media);
     assert.deepEqual(f.state.conversions, [50n]);
     assert.deepEqual(
@@ -3200,6 +3254,290 @@ test("a library video put.io must convert lists a row that converts only when se
     assert.equal(f.calls.length, calls);
     assert.deepEqual(f.state.conversions, [50n]);
   } finally {
+    await f.close();
+  }
+});
+
+test("a library video put.io keeps preparing waits in windows, then plays the clip until selected again", async () => {
+  const f = await fixture({ selectionPendingMs: 40_000 });
+  // Fake request windows and the pending clock; sockets and polling stay real.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  try {
+    f.state.playbackPending = true;
+    const url = librarySelection(f, "50");
+    // The window ends once its first read and a poll have answered.
+    const wait = async (target: string) => {
+      const before = playbackResolutions(f);
+      const response = fetch(target, { redirect: "manual" });
+      while (playbackResolutions(f) < before + 2) await sleep(5);
+      await vi.advanceTimersByTimeAsync(25_000);
+      return (await response).headers.get("location");
+    };
+    const continued = `${url}?wait=1`;
+    const clip = `${f.base()}/notice/preparing.m3u8`;
+    assert.equal(await wait(url), continued);
+    assert.equal(
+      await wait(url),
+      clip,
+      "The client's retry of the selected URL reaches the pending limit",
+    );
+    assert.equal(await wait(`${url}?wait=5`), clip);
+    assert.equal(
+      await wait(url),
+      continued,
+      "Selecting again after the clip waits again",
+    );
+    // 75 seconds after that wait's request joined, 50 after it ended.
+    await vi.advanceTimersByTimeAsync(50_000);
+    assert.equal(
+      await wait(url),
+      clip,
+      "A wait is remembered for 60 seconds after its last request ends",
+    );
+    await vi.advanceTimersByTimeAsync(61_000);
+    assert.equal(
+      await wait(url),
+      continued,
+      "A selection idle past the reuse window waits the whole limit again",
+    );
+    assert.equal(
+      await location(librarySelection(f, "50", { format: "mp4" })),
+      `${f.base()}/notice/preparing.mp4`,
+    );
+    f.state.playbackPending = false;
+    assert.equal(
+      await location(url),
+      "https://media.fixture.test/video-50?token=fixture-playback-secret",
+    );
+    assert.ok(f.calls.every(({ method }) => method === "ResolvePlayback"));
+    assert.equal(f.state.addCount, 0);
+  } finally {
+    vi.useRealTimers();
+    await f.close();
+  }
+});
+
+test("a waiting library selection holds through failed reads and never answers 429", async () => {
+  const f = await fixture();
+  // Fake request windows; sockets and polling stay real.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    f.state.playbackPending = true;
+    const url = librarySelection(f, "50");
+    for (const failure of [
+      { status: 429, code: "resource_exhausted" },
+      { status: 503, code: "unavailable" },
+      { status: 504, code: "deadline_exceeded" },
+      // A connection Engine closes fails the fetch, which Connect reports as
+      // unknown.
+      "dropped",
+    ] as const) {
+      f.state.rejection = undefined;
+      f.state.dropConnections = false;
+      const before = playbackResolutions(f);
+      const response = fetch(url, { redirect: "manual" });
+      await until(() => playbackResolutions(f) >= before + 2);
+      if (failure === "dropped") f.state.dropConnections = true;
+      else f.state.rejection = failure;
+      await until(() => playbackResolutions(f) >= before + 3);
+      const failed = playbackResolutions(f);
+      const label = failure === "dropped" ? failure : failure.code;
+      await sleep(100);
+      assert.equal(playbackResolutions(f), failed, label);
+      await vi.advanceTimersByTimeAsync(25_000);
+      assert.equal(
+        (await response).headers.get("location"),
+        `${url}?wait=1`,
+        label,
+      );
+    }
+    f.state.dropConnections = false;
+    const before = playbackResolutions(f);
+    const reconnecting = location(url);
+    await until(() => playbackResolutions(f) >= before + 2);
+    f.state.rejection = { status: 401, code: "unauthenticated" };
+    assert.equal(await reconnecting, `${f.base()}/notice/reconnect.m3u8`);
+    // A selection that is not waiting keeps a failed first read an error, one
+    // the player retries.
+    f.state.rejection = { status: 429, code: "resource_exhausted" };
+    const limited = await fetch(librarySelection(f, "21"), {
+      redirect: "manual",
+    });
+    assert.equal(limited.status, 503);
+    assert.deepEqual(await limited.json(), { error: "unavailable" });
+  } finally {
+    vi.useRealTimers();
+    await f.close();
+  }
+});
+
+test("a waiting library selection's continuation or retry holds a failed first read", async () => {
+  const f = await fixture();
+  // Fake request deadlines and windows; sockets and polling stay real.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    f.state.playbackPending = true;
+    f.state.rejection = { status: 429, code: "resource_exhausted" };
+    const url = librarySelection(f, "50");
+    // A continuation waits even with no wait remembered, as after a restart;
+    // the client's retry of the selected URL then rejoins that wait.
+    for (const [label, target, next] of [
+      ["wait=1", `${url}?wait=1`, `${url}?wait=2`],
+      ["wait=2", `${url}?wait=2`, `${url}?wait=3`],
+      ["retry", url, `${url}?wait=1`],
+    ] as const) {
+      const before = playbackResolutions(f);
+      const response = fetch(target, { redirect: "manual" });
+      await until(() => playbackResolutions(f) > before);
+      await sleep(100);
+      assert.equal(playbackResolutions(f), before + 1, label);
+      await vi.advanceTimersByTimeAsync(25_000);
+      assert.equal((await response).headers.get("location"), next, label);
+    }
+  } finally {
+    vi.useRealTimers();
+    await f.close();
+  }
+});
+
+const resolutionsOf = (f: Fixture, fileId: bigint) =>
+  f.state.resolved.filter((id) => id === fileId).length;
+/**
+ * Waits on each file's library selection until it reads again after joining
+ * its wait, then lets it play, so the wait stays remembered.
+ */
+async function rememberWaits(f: Fixture, fileIds: readonly bigint[]) {
+  f.state.playbackPending = true;
+  const responses = fileIds.map((id) =>
+    fetch(librarySelection(f, String(id)), { redirect: "manual" }),
+  );
+  await until(() => fileIds.every((id) => resolutionsOf(f, id) >= 2));
+  f.state.playbackPending = false;
+  for (const response of await Promise.all(responses)) {
+    assert.equal(response.status, 302);
+    await response.arrayBuffer();
+  }
+}
+/**
+ * Remembers waits for the first 256 of 257 file IDs, seen in their order, and
+ * returns the IDs.
+ */
+async function fillWaits(f: Fixture) {
+  const fileIds = Array.from({ length: 257 }, (_, n) => BigInt(1_000 + n));
+  f.state.ownedVideos = fileIds.map(ownedVideo);
+  await rememberWaits(f, fileIds.slice(0, 1));
+  await rememberWaits(f, fileIds.slice(1, 2));
+  for (let n = 2; n < 256; n += 15)
+    await rememberWaits(f, fileIds.slice(n, Math.min(n + 15, 256)));
+  return fileIds;
+}
+/** Selects each file again and ends their windows together. */
+async function nextWindows(f: Fixture, fileIds: readonly bigint[]) {
+  f.state.playbackPending = true;
+  const before = fileIds.map((id) => resolutionsOf(f, id));
+  const responses = fileIds.map((id) =>
+    fetch(librarySelection(f, String(id)), { redirect: "manual" }),
+  );
+  await until(() =>
+    fileIds.every((id, n) => resolutionsOf(f, id) >= (before[n] ?? 0) + 2),
+  );
+  await vi.advanceTimersByTimeAsync(25_000);
+  return Promise.all(
+    responses.map(async (response) => (await response).headers.get("location")),
+  );
+}
+
+test("a full wait memory keeps the joining wait and any a request may still hold", async () => {
+  const f = await fixture({ selectionPendingMs: 40_000 });
+  // Fake request windows and the pending clock; sockets and polling stay real.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  try {
+    const [oldest, second, ...others] = await fillWaits(f);
+    assert.ok(oldest !== undefined && second !== undefined);
+    const clip = [`${f.base()}/notice/preparing.m3u8`];
+    // Each wait was seen within the longest request, 35 seconds.
+    await vi.advanceTimersByTimeAsync(30_000);
+    await rememberWaits(f, others.slice(-1));
+    assert.deepEqual(
+      await nextWindows(f, [oldest]),
+      clip,
+      "A new wait keeps the oldest, which reaches the pending limit",
+    );
+    // Now idle longer than any request, and the least recently seen.
+    assert.deepEqual(
+      await nextWindows(f, [second]),
+      clip,
+      "A wait keeps its own start",
+    );
+  } finally {
+    vi.useRealTimers();
+    await f.close();
+  }
+}, 10_000);
+
+test("a full wait memory forgets the oldest wait idle longer than any request", async () => {
+  const f = await fixture({ selectionPendingMs: 40_000 });
+  // Fake request windows and the pending clock; sockets and polling stay real.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  try {
+    const [oldest, ...others] = await fillWaits(f);
+    const newest = others.at(-2);
+    assert.ok(oldest !== undefined && newest !== undefined);
+    await vi.advanceTimersByTimeAsync(40_000);
+    // A new wait at the limit makes room for itself only.
+    await rememberWaits(f, others.slice(-1));
+    assert.deepEqual(await nextWindows(f, [oldest, newest]), [
+      `${librarySelection(f, String(oldest))}?wait=1`,
+      `${f.base()}/notice/preparing.m3u8`,
+    ]);
+  } finally {
+    vi.useRealTimers();
+    await f.close();
+  }
+}, 10_000);
+
+test("a library selection's first read keeps the request deadline and its window starts with the request", async () => {
+  const f = await fixture();
+  // Fake request deadlines, windows and Engine latency; sockets stay real.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const url = librarySelection(f, "50");
+    // Each Engine call answers within its own timeout; together they outlast
+    // the request deadline.
+    f.state.playbackConvertible = true;
+    f.state.delayMs = {
+      ResolvePlayback: 6_000,
+      StartPlaybackConversion: 6_000,
+    };
+    const slow = fetch(url, { redirect: "manual" });
+    await until(() => f.state.heldCalls === 1);
+    await vi.advanceTimersByTimeAsync(6_000);
+    await until(() => f.state.heldCalls === 2);
+    await vi.advanceTimersByTimeAsync(4_000);
+    const expired = await Promise.race([slow, sleep(500)]);
+    assert.equal(expired?.status, 504);
+    await expired?.arrayBuffer();
+    await vi.advanceTimersByTimeAsync(2_000);
+    f.state.playbackConvertible = false;
+    f.state.playbackPending = true;
+    f.state.delayMs = { ResolvePlayback: 8_000 };
+    let responded = false;
+    const selected = fetch(url, { redirect: "manual" }).then((response) => {
+      responded = true;
+      return response;
+    });
+    await until(() => f.state.heldCalls === 3);
+    await vi.advanceTimersByTimeAsync(8_000);
+    // The first read answered pending, and the first poll is waiting.
+    await until(() => f.state.heldCalls === 4);
+    await vi.advanceTimersByTimeAsync(16_000);
+    await sleep(50);
+    assert.equal(responded, false);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await until(() => responded);
+    assert.equal((await selected).headers.get("location"), `${url}?wait=1`);
+  } finally {
+    vi.useRealTimers();
     await f.close();
   }
 });
