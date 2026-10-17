@@ -22,8 +22,7 @@ affected playback lane when playback behavior changes, including
 
 ## Delivery
 
-Use Conventional Commits. Push verified changes directly when repository rules
-permit; otherwise open a pull request. The commit-analyzer `releaseRules` in
+Use Conventional Commits. The commit-analyzer `releaseRules` in
 [.releaserc.json](./.releaserc.json) decide what releases from `main`;
 [smoke.mjs](./.github/release/smoke.mjs) fails when they drift from the other
 chill.institute packages. Publishing and rollback:
