@@ -1,156 +1,60 @@
 # Agent guide
 
-This repository owns the hosted Stremio adapter for chill.institute. Read
-[CONTRIBUTING.md](./CONTRIBUTING.md) for commands and [architecture](./docs/ARCHITECTURE.md)
-before changing boundaries. Fixture setup and smoke stay local and credential-free.
-`mise run live:probe` and `live:search` are maintainer-only lanes. They may
-contact put.io only with the designated test token; they must not use Engine or
-production tokens.
+The hosted Stremio add-on for chill.institute; it translates Stremio requests
+into Engine calls and keeps no state. Read [architecture](./docs/architecture.md)
+before moving boundaries and [hosted](./docs/hosted.md) for runtime and release.
 
-## Engine-backed adapter
+## Setup and verify
 
-`mise run adapter:serve` runs the local single-user adapter with `CHILL_TOKEN`
-and `CHILL_FOLDER_ID` in its private environment. Read [ADAPTER.md](./docs/ADAPTER.md)
-for the per-process installation capability and SSH forwarding. Never print the
-private installation receipt or use real credentials in the fixture lane.
-`mise run adapter:live` uses both designated test accounts, normal chill
-OAuth and production Engine for the authenticated Web flow. It shares the
-live allowance; see [ADAPTER.md](./docs/ADAPTER.md#authenticated-playback-probe).
-`mise run adapter:smoke` proves the actual adapter against a generated local
-Engine in the pinned Web client; preserve fake-only capture and cleanup proof.
+```sh
+mise trust && mise install && mise run setup
+mise run verify
+mise run fixture:smoke
+```
 
-## Hosted release
+## Hazards
 
-`mise run hosted:serve` runs the stateless multi-user adapter. Read
-[HOSTED.md](./docs/HOSTED.md) before changing credentials, routes or rollout.
-Supported clients are Stremio Web and Stremio for Linux; keep the README,
-`/configure` and both manifest descriptions in
-[manifest-descriptions.ts](./src/manifest-descriptions.ts) in step. That module
-stays package-free: `hosted:public` imports it and requires an exact match.
-Personal routes live under `/s/<credential>/`; the adapter checks only the
-credential's shape and forwards it to Engine in `X-Chill-Stremio-Credential`,
-never as `Authorization`. It keeps no database, key, installation registry or
-management API; chill-web issues links. Catalog, metadata, stream listing, HEAD
-and OPTIONS stay read-only; consuming a selected media URL with GET submits one
-transfer, reused in memory for 60 seconds, and a lost submission response is
-never retried. An `owned:` row plays a [video already in put.io](./docs/HOSTED.md#videos-already-in-putio)
-through `ResolvePlayback` and never submits; Engine, not the adapter,
-matches filenames. A library video put.io must convert, or is still preparing, lists one such row under
-`chill:file:<fileId>`, accepted only for that same file. `ResolvePlayback` never converts; only GET on selected media,
-status URLs included, calls `StartPlaybackConversion`, once per resolution, for a video put.io
-must [convert](./docs/HOSTED.md#videos-putio-must-convert). HLS terminal states, and waits past the four-minute pending limit
-or an HLS status URL's fifth redirect, redirect to status clips under `/notice/`,
-which never call Engine. Engine `401`/`403` becomes the reconnect notice,
-except a `403` on the [season lookup](./docs/HOSTED.md#season-packs), which
-leaves out the season pack row or plays `release-unavailable` for a selected pack,
-and any error on the owned-video lookup, which leaves out its rows.
-[Capacity](./docs/HOSTED.md#capacity) refusals of selected media stay `503`;
-`/health`, HEAD, OPTIONS and `/notice/` stay outside the per-link limit.
-`mise run hosted:smoke` is fake-only, including its recording. Status clips are
-generated at setup/build time; runtime only loads them. Redact credentials from
-logs, errors, receipts and recordings, and suppress sensitive paths at ingress.
-`mise run hosted:credential` writes the designated account's add-on credential
-only to a pipe or an owner-only file for the canary Environment; never echo or
-log it.
+- Never print, log or commit credentials, add-on links, installation receipts
+  or signed media URLs; redact them from logs, errors, receipts and recordings.
+- Fixture lanes stay credential-free: no credentials, sessions, provider logic,
+  live transfers, deployment or publication.
+- Live lanes use only the designated test accounts, never Engine or production
+  tokens, within the [shared allowance](./docs/live.md#credential-and-budget).
+- Fixture screenshot and recording policy never applies to a live account.
+- Only GET on selected media writes; a lost transfer submission is never retried.
+- Lanes that edit a Stremio account's add-ons run alone and remove only their
+  own descriptor.
+- Keep the README, `/configure` and
+  [manifest-descriptions.ts](./src/manifest-descriptions.ts) in step.
+- HTTP success or advancing time is not decoded playback; a Web pass does not
+  prove native support. Keep setup, playback and cleanup exclusive per checkout.
 
 ## Proof map
 
-| Change                                                 | Check                                                                                                                                                                                                                                                                                                                        | Runs                                                                                     | Leaves                                                                                                                                                                              |
-| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Docs, config, workflows, protocol and unit logic       | `mise run verify` (Vite+ fmt, lint, types, [tests](./tests); `actionlint`; `zizmor`)                                                                                                                                                                                                                                         | local, [CI](./.github/workflows/verify.yml) `verify` on PRs and `main`                   | exit status                                                                                                                                                                         |
-| Pushed workflow changes                                | [shared scan](https://github.com/chill-institute/.github/tree/main/.github/actions/scan), last step of [CI](./.github/workflows/verify.yml) `verify`: Actionlint and Zizmor when the pushed range touches workflows; secrets rely on GitHub secret scanning                                                                  | CI on push to `main` (pushed range) and dispatch (full history)                          | failed run                                                                                                                                                                          |
-| Web playback harness, fixture media, pinned Web client | `mise run fixture:smoke`; HLS: `mise run hls:smoke` ([scope](./docs/HARNESS.md#hls-playback))                                                                                                                                                                                                                                | local, [manual CI](./.github/workflows/playback.yml)                                     | `artifacts/<timestamp>/results.json`, `run-N/` screenshots, failure trace; `artifacts/hls-<timestamp>/results.json`; CI artifact `web-playback-<run_id>`                            |
-| Engine-backed adapter                                  | `mise run adapter:smoke` ([scope](./docs/ADAPTER.md#verify))                                                                                                                                                                                                                                                                 | local, [manual CI](./.github/workflows/playback.yml)                                     | `artifacts/adapter-<timestamp>/results.json`; CI artifact `web-playback-<run_id>`                                                                                                   |
-| Hosted service, credentials, routes, acquisition       | `mise run hosted:smoke`, then `docker build` and `mise run hosted:container` ([release](./docs/HOSTED.md#verification-and-release))                                                                                                                                                                                          | local, [manual CI](./.github/workflows/playback.yml), publish `build`                    | `artifacts/hosted-<timestamp>/` receipt and `video/` recording, `artifacts/container-<timestamp>/results.json`; CI artifact `hosted-release-proof-<run_id>`                         |
-| Native desktop playback                                | `mise run native:desktop:probe` (client only), `native:desktop:probe hosted` (hosted adapter), `native:desktop:probe hosted-hls` (hosted adapter, HLS media) ([scope](./docs/NATIVE-DESKTOP.md))                                                                                                                             | Linux host, [manual CI](./.github/workflows/native-desktop.yml) runs all three on x86_64 | `artifacts/desktop-<timestamp>/`, `desktop-hosted-<timestamp>/` or `desktop-hosted-hls-<timestamp>/results.json`; CI artifacts `linux-desktop-{fixture,hosted,hosted-hls}-<run_id>` |
-| Android TV playback                                    | `mise run native:android:probe`; `native:android:account` with the designated Stremio account ([scope](./docs/NATIVE-ANDROID.md))                                                                                                                                                                                            | Linux host with an accelerated Android TV emulator                                       | `artifacts/android-<timestamp>/results.json` and sanitized `emulator.log`; `artifacts/android-account-<timestamp>/results.json`                                                     |
-| Live put.io and production Engine                      | `mise run live:probe`, `live:search`, `adapter:live`, `hosted:live`; deployed endpoint: `hosted:public` with `CHILL_STREMIO_CREDENTIAL` ([LIVE](./docs/LIVE.md), [search](./docs/LIVE.md#file-search-probe), [ADAPTER](./docs/ADAPTER.md#authenticated-playback-probe), [HOSTED](./docs/HOSTED.md#verification-and-release)) | designated accounts; shared allowance                                                    | `artifacts/{live,live-search,live-adapter,live-hosted,public}-<timestamp>/results.json`                                                                                             |
-| Production Engine transfer reuse                       | `mise run hosted:reuse` with `CHILL_STREMIO_CREDENTIAL` ([LIVE](./docs/LIVE.md#transfer-reuse-probe))                                                                                                                                                                                                                        | designated account; shared allowance                                                     | `artifacts/live-reuse-<timestamp>/results.json`                                                                                                                                     |
-| Videos already in put.io through the deployed adapter  | `mise run hosted:owned` with `CHILL_STREMIO_CREDENTIAL`; `LIVE_OWNED_WEB=1` adds Stremio Web, `LIVE_OWNED_CONVERT=1` the library's Convert row ([LIVE](./docs/LIVE.md#owned-video-probe), [convert](./docs/LIVE.md#convert-step))                                                                                            | designated account; shared allowance                                                     | `artifacts/live-owned-<timestamp>/results.json`                                                                                                                                     |
-| Real acquisition through the deployed adapter          | `mise run hosted:acquire` with `CHILL_STREMIO_CREDENTIAL` and the private release pin; `LIVE_ACQUIRE_WEB=1` selects it in Stremio Web ([LIVE](./docs/LIVE.md#real-acquisition-probe))                                                                                                                                        | designated account; shared allowance                                                     | `artifacts/live-acquire-<timestamp>/results.json`                                                                                                                                   |
-| Deployed adapter after publish                         | [canary](./.github/workflows/canary.yml): `mise run hosted:public` with the `canary` Environment's `CHILL_STREMIO_CREDENTIAL` ([HOSTED](./docs/HOSTED.md#verification-and-release))                                                                                                                                          | CI: publish `canary` job at the published commit; manual dispatch from `main`            | CI artifact `hosted-public-<run_id>`                                                                                                                                                |
-| Release rules, locked semantic-release                 | `npm ci --prefix .github/release --ignore-scripts`, then `node .github/release/smoke.mjs`                                                                                                                                                                                                                                    | local, PR [CI](./.github/workflows/verify.yml)                                           | exit status                                                                                                                                                                         |
-| Release and deploy                                     | `main` push tags a release ([`release`](./.github/workflows/verify.yml)); [publish](./.github/workflows/publish-hosted.yml) `build` tests and pushes the image; its `publish` Environment job records the digest and dispatches the Engine deploy                                                                            | CI, publish is manual                                                                    | GitHub release, GHCR digest in release notes, Engine `deploy-stremio.yml` run                                                                                                       |
+| Change                         | Check                                                                                | Runs                               |
+| ------------------------------ | ------------------------------------------------------------------------------------ | ---------------------------------- |
+| Docs, config, workflows, logic | `mise run verify`                                                                    | local, `verify.yml`                |
+| Release rules                  | `npm ci --prefix .github/release --ignore-scripts && node .github/release/smoke.mjs` | local, PR `verify.yml`             |
+| Web harness, media, Web pin    | `mise run fixture:smoke`; `mise run hls:smoke`                                       | local, manual `playback.yml`       |
+| Local adapter                  | `mise run adapter:smoke`                                                             | local, manual `playback.yml`       |
+| Hosted service                 | `mise run hosted:smoke`, then [image checks](./docs/hosted.md#release)               | local, manual CI, publish          |
+| Native desktop                 | `mise run native:desktop:probe [hosted\|hosted-hls]`                                 | Linux, manual `native-desktop.yml` |
+| Android TV                     | `mise run native:android:probe`; `native:android:account`                            | Linux host with KVM                |
+| Live put.io, production Engine | [live lanes](./docs/live.md#lanes)                                                   | designated accounts                |
+| Release and deploy             | [release and rollback](./docs/hosted.md#release)                                     | CI; publish is manual              |
 
 Gaps:
 
-- Android TV decoded playback, audio, seek/pause and subtitles are unproven; the lane exits `blocked`. Owner: chill-institute/chill-stremio.
-- Android TV lanes have no CI or declared remote runner. Owner: operator.
-- Playback lanes run in CI only on manual dispatch, so none gates PRs or `main`;
-  `hosted:smoke` gates only image publication. Owner: chill-institute/chill-stremio.
-- The desktop lane stays on Linux client 1.2.0 because 1.2.2 fails Next Video ([result](./docs/NATIVE-DESKTOP.md#current-linux-result)); status clips are unproven on 1.2.2. Owner: chill-institute/chill-stremio.
-- The Web smoke proves the pending clip with a 45-second limit; the four-minute production limit has no browser run. Owner: chill-institute/chill-stremio.
-- The desktop lane never reaches the pending clip, which libmpv gets at an HLS status URL's fifth redirect, about 150 seconds in; selecting the release again there submits another transfer. Owner: chill-institute/chill-stremio.
-- ARM64 desktop lanes have no CI runner, and their last evidence predates the current GNOME runtime. Owner: operator.
-- No macOS or Windows native lane. Owner: chill-institute/chill-stremio.
-- Stremio Web proof covers only the pinned revision in Chromium; Firefox, Safari
-  and the current web.stremio.com build are unverified. Owner: chill-institute/chill-stremio.
-- Stremio Web with a connected streaming server sends selected media through
-  the server's ffprobe and transcode path; no lane covers it ([HOSTED](./docs/HOSTED.md#verification-and-release)). Owner: chill-institute/chill-stremio.
-- Android clients' ExoPlayer read timeout, 8 seconds by default, is shorter
-  than a pending selection's hold, so waiting there is unsupported. Owner: chill-institute/chill-stremio.
-- `hosted:live` fakes Engine's credential check. The canary proves production
-  Engine accepts an issued credential only after a publish or a manual dispatch,
-  so Engine deploys between adapter releases go unchecked until the next run. Owner: operator.
-- Through the deployed adapter, Stremio Web has played only an owned movie and
-  one approved single-episode release; other `hosted:owned` and
-  `hosted:acquire` passes, including a season pack and the library's
-  **Convert and play from put.io** row, decode with FFmpeg. No Web pass has
-  selected a row again after a pending clip, no Stremio client has selected
-  the Convert row or a preparing **Play from put.io** row, and native clients
-  have not played an acquired release. `hosted:public` and its canary consume
-  no stream, and `hosted:live`'s Stremio Web step has no recorded pass since
-  v2.0.0. Owner: chill-institute/chill-stremio.
-- A cold season lookup slower than the listing's five-second wait still leaves
-  the **Download season to put.io** row out of a first visit to an episode; a
-  later visit lists it. No lane times the cold lookup against production Engine. Owner: chill-institute/chill-stremio.
-- Selecting a library video put.io is still preparing plays the `preparing`
-  clip instead of waiting in the player, so the user returns to the video
-  later. Owner: chill-institute/chill-stremio.
-- CI artifacts expire after 7 days; archive evidence needed longer. Owner: chill-institute/chill-stremio.
+- Playback lanes run in CI only on manual dispatch; run the affected lane.
+- Desktop stays on Linux client 1.2.0; 1.2.2 fails Next Video.
+- Android TV playback is unproven and its lanes exit `blocked`.
+- Engine deploys go unchecked until the next canary; dispatch it after one.
+- CI artifacts expire after 7 days; archive evidence you need.
 
-## Work and verify
+## Code
 
-- Keep the primary checkout on `main`.
-- Run `mise trust`, `mise install`, then `mise run setup` from a fresh checkout.
-- A Web pass does not establish native support.
-- The opt-in `native:android:account` lane uses only generated fixture media;
-  serialize account addon edits, keep pairing/UI captures in memory, and verify
-  exact owned-addon removal.
-- For direct put.io validation, follow [LIVE.md](./docs/LIVE.md) and its
-  designated-account and allowance boundaries.
-- Use `mise run fixture:serve` for a foreground fixture server and
-  `mise run cleanup` for cleanup. See [harness guidance](./docs/HARNESS.md)
-  for browser setup, fresh-state runs, result files and failure artifacts.
-- Keep setup, playback and cleanup exclusive within a checkout. Cleanup
-  preserves evidence; use the [handoff and recovery contract](./docs/HARNESS.md#autonomous-handoff)
-  when reporting completion or a blocked attempt.
-- Run harness TypeScript directly with Node; use explicit `.ts` and type-only
-  imports. Vite+ owns static checks and tests in
-  [vite.config.ts](./vite.config.ts); use its public `vite-plus/test` imports.
-  Mise owns Node and pnpm.
-- Use TypeScript for service and harness orchestration. Keep resources scoped,
-  deadlines finite, and SDK Promise conversion at the protocol boundary.
-- Preserve read-only CI, hooks and organization policy.
-- Do not add credentials, sessions, installation registries, provider logic,
-  live transfers, deployment or publication to the fixture workflow.
-- Do not log credentials or sensitive URLs. Fixture-only artifacts must never
-  be reused as a capture policy for a live authenticated account.
-
-## Learning more about Effect
-
-This repository uses the Effect Typescript library, pinned in
-[package.json](./package.json) and [pnpm-lock.yaml](./pnpm-lock.yaml).
-
-Before writing any Effect code, first read `node_modules/effect/AGENTS.md`
-**completely**, and follow the links in the file when required.
-
-If you need to learn more about particular Effect apis and concepts that the
-guide doesn't cover, search through the source code in `node_modules/effect/src`.
-
-## Evidence
-
-HTTP success and advancing playback time do not establish decoded playback.
-Retain structured assertions and useful failure artifacts. Web evidence applies
-only to the pinned Web client and tested browser; native desktop, Android TV
-and live-account checks require their own proof.
+- Run harness TypeScript with Node; use explicit `.ts` and type-only imports.
+- Vite+ owns checks and tests ([vite.config.ts](./vite.config.ts)); import
+  from `vite-plus/test`. Keep resources scoped and deadlines finite.
+- Effect is pinned in [package.json](./package.json). Before writing Effect
+  code, read `node_modules/effect/AGENTS.md`; search `node_modules/effect/src`.

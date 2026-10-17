@@ -39,7 +39,7 @@ for (const executable of [
 ])
   await execute("which", [executable], { timeout: 5000 }).catch(() => {
     throw new Error(
-      `Missing ${executable}; install the Linux packages listed in docs/NATIVE-DESKTOP.md`,
+      `Missing ${executable}; install the Linux packages listed in docs/native-desktop.md`,
     );
   });
 await mkdir(installation, { recursive: true });

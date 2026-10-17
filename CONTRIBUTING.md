@@ -1,85 +1,33 @@
 # Contributing
 
-The adapter and playback harness use TypeScript, Node.js, Effect and the
-[Stremio add-on SDK](https://github.com/Stremio/stremio-addon-sdk).
-Read the [architecture](./docs/ARCHITECTURE.md) for adapter, Engine and
-shared-schema responsibilities, and [AGENTS.md](./AGENTS.md) for implementation
-rules.
+TypeScript, Node.js, Effect and the
+[Stremio add-on SDK](https://github.com/Stremio/stremio-addon-sdk). Read
+[AGENTS.md](./AGENTS.md) for rules and the proof map.
 
-## Local workflow
+## Setup and verify
 
-Install the [FFmpeg and browser prerequisites](./docs/HARNESS.md#prerequisites),
-then use the toolchain pinned in [mise.toml](./mise.toml):
+Install the [FFmpeg and browser prerequisites](./docs/harness.md#prerequisites),
+then:
 
 ```sh
-mise trust
-mise install
-mise run setup
+mise trust && mise install && mise run setup
 mise run verify
 mise run fixture:smoke
-mise run fixture:serve
 ```
 
-Stop the foreground server with Ctrl-C, then run `mise run cleanup` to remove
-generated runtime state. Cleanup preserves evidence.
+`mise run fixture:serve` serves fixtures in the foreground; after Ctrl-C,
+`mise run cleanup` removes generated state and keeps `artifacts/`. Run the
+affected playback lane when playback behavior changes, including
+[Renovate](./renovate.json) updates to playback-sensitive dependencies.
 
-A successful fixture smoke reports `passed` for two fresh browser runs and
-writes `artifacts/<run timestamp>/results.json`. See
-[playback assertions](./docs/HARNESS.md#playback-proof) to interpret the evidence
-and [recovery](./docs/HARNESS.md#results-and-recovery) after a failure.
-`mise run hls:smoke` checks
-[HLS audio switching, seeking and captions](./docs/HARNESS.md#hls-playback) with
-generated media.
-
-Harness entrypoints run directly with Node's native TypeScript support. Vite+
-owns formatting, linting, type checks and tests in
-[vite.config.ts](./vite.config.ts); mise owns Node and pnpm locally and in CI.
-
-## Adapter checks
-
-`mise run adapter:smoke` tests installation, catalog and decoded playback against
-a generated local Engine fixture. `mise run hosted:smoke` exercises the hosted
-discovery, acquisition and playback flow and records a demo. Both use fake
-credentials and make no live provider calls.
-
-To run a service locally, follow the
-[Engine-backed adapter setup](./docs/ADAPTER.md#run) or
-[hosted service setup](./docs/HOSTED.md#run-on-linux).
-
-Native and live checks have separate runner and account prerequisites:
-
-- [Desktop](./docs/NATIVE-DESKTOP.md): `mise run native:desktop:probe hosted`
-  drives the hosted adapter in the native client with generated Engine responses.
-  It requires the fixture setup stamp; rerun setup if cleanup removed it.
-- [Android TV](./docs/NATIVE-ANDROID.md): emulator setup, playback checks and
-  account cleanup.
-- [Live put.io](./docs/LIVE.md): designated test account, allowance and recovery requirements.
-- [Authenticated adapter](./docs/ADAPTER.md#authenticated-playback-probe): the Web
-  flow through Engine with maintainer test accounts.
-
-Web playback does not establish native support. Setup alone is not a playback pass.
-
-## Verification and delivery
-
-Run `mise run verify` before delivery. It checks formatting, lint, types,
-unit and protocol behavior, and workflows. Use the affected playback lane
-when changing playback behavior.
-
-[Verification CI](./.github/workflows/verify.yml) runs on contributions and
-updates to `main`. The [Web playback workflow](./.github/workflows/playback.yml)
-runs the fixture, HLS, adapter and hosted smokes only on manual dispatch to bound
-runner cost.
-[Renovate configuration](./renovate.json) identifies playback-sensitive
-dependencies that require review and fresh browser evidence.
+## Delivery
 
 Use Conventional Commits. Push verified changes directly when repository rules
-permit; otherwise open a pull request.
+permit; otherwise open a pull request. The commit-analyzer `releaseRules` in
+[.releaserc.json](./.releaserc.json) decide what releases from `main`;
+[smoke.mjs](./.github/release/smoke.mjs) fails when they drift from the other
+chill.institute packages. Publishing and rollback:
+[hosted release](./docs/hosted.md#release).
 
-The commit-analyzer `releaseRules` in [`.releaserc.json`](./.releaserc.json)
-decide which commit types release from `main`. The rule set is identical in
-every chill.institute package repo; [`smoke.mjs`](./.github/release/smoke.mjs)
-fails when it drifts.
-
-Original code and documentation are [MIT licensed](./LICENSE). Third-party
-dependencies and the [fixture font](./harness/fonts/LICENSE) retain their own
-licenses.
+Code and docs are [MIT licensed](./LICENSE); dependencies and the
+[fixture font](./harness/fonts/LICENSE) keep their own licenses.
