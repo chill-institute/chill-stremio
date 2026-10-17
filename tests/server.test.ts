@@ -171,12 +171,19 @@ test("CLI writes a private install receipt and removes it on shutdown without pr
   );
   const receipt = join(directory, ".cache/adapter/install.json");
   try {
-    await expect
-      .poll(async () => (await stat(receipt)).mode & 0o777, { timeout: 8000 })
-      .toBe(0o600);
-    const contents = await readFile(receipt, "utf8");
-    expect(contents).not.toContain(token);
+    // Signal as soon as the receipt is complete: shutdown must already be wired.
+    const deadline = Date.now() + 8000;
+    let contents = "";
+    while (Date.now() < deadline) {
+      contents = await readFile(receipt, "utf8").catch(() => "");
+      if (contents.endsWith("}")) break;
+      await new Promise((r) => setImmediate(r));
+    }
+    const mode = (await stat(receipt)).mode & 0o777;
     child.kill("SIGTERM");
+    expect(mode).toBe(0o600);
+    expect(JSON.parse(contents)).toHaveProperty("manifestUrl");
+    expect(contents).not.toContain(token);
     expect(await stopped).toBe(0);
     await expect(stat(receipt)).rejects.toThrow();
     expect(output).not.toContain(token);

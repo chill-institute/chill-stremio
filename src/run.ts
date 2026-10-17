@@ -15,6 +15,11 @@ const Config = Schema.Struct({
 });
 
 async function main() {
+  // Listen before the receipt exists so a signal can never leave it behind.
+  const stopped = new Promise<void>((resolve) => {
+    process.once("SIGINT", () => resolve());
+    process.once("SIGTERM", () => resolve());
+  });
   const config = Schema.decodeUnknownSync(Config)(process.env);
   const port = Number(config.CHILL_ADAPTER_PORT ?? "7000");
   if (port !== 0 && (port < 1024 || port > 65535))
@@ -56,10 +61,7 @@ async function main() {
     "Adapter running. Private installation URL: .cache/adapter/install.json",
   );
   try {
-    await new Promise<void>((resolve) => {
-      process.once("SIGINT", () => resolve());
-      process.once("SIGTERM", () => resolve());
-    });
+    await stopped;
   } finally {
     await adapter.close();
     await rm(receipt);
