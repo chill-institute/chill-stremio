@@ -215,7 +215,11 @@ mise run hosted:container
 - `hosted:smoke` drives the pinned Web client against a fake Engine
   ([hosted-fixture.ts](../harness/hosted-fixture.ts)); its recording is
   shareable only because the lane is fake. Read its structured receipt before
-  claiming playback or cleanup.
+  claiming playback or cleanup. Its owned-wait step selects a fake
+  **Play from put.io** library row that is still preparing: the player must
+  keep loading through a `wait=1` redirect and a manifest retry, never request
+  the `preparing` clip, and decode once the fake reports it ready, calling only
+  `ResolvePlayback`. No lane covers the wait on the Convert row or live.
 - `hosted:container` runs the image read-only with no capabilities and checks
   the credential never reaches container logs.
 - Releasing commits on `main` cut a semantic-release version.

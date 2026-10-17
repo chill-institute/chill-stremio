@@ -3,7 +3,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createConnection } from "node:net";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
-import { chromium, expect, type Locator, type Page } from "@playwright/test";
+import {
+  chromium,
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+} from "@playwright/test";
 import { Effect } from "effect";
 import { redactCredentials } from "../src/credential.ts";
 import { startHostedAdapter } from "../src/hosted.ts";
@@ -42,6 +48,7 @@ const {
   multipleEpisodeName,
   pendingCase,
   packCase,
+  preparingCase,
 } = hostedFixture;
 // Shortened from the production limit so the smoke still crosses one client
 // manifest timeout and retry before the pending clip.
@@ -123,8 +130,16 @@ async function openRelease(page: Page, name: string, target: string) {
   return release;
 }
 
-/** Opens a put.io library video from the current discover view and plays it. */
-async function openLibraryFile(page: Page, name: string, fileId: bigint) {
+/**
+ * Opens a put.io library video from the current discover view and returns
+ * its `source` row.
+ */
+async function libraryRow(
+  page: Page,
+  name: string,
+  fileId: bigint,
+  source = "chill.institute",
+) {
   await page.getByText(name, { exact: true }).first().click();
   const show = page
     .getByRole("link")
@@ -132,12 +147,16 @@ async function openLibraryFile(page: Page, name: string, fileId: bigint) {
     .filter({ visible: true })
     .last();
   const stream = page
-    .getByText("chill.institute", { exact: true })
+    .getByText(source, { exact: true })
     .filter({ visible: true })
     .last();
   await reachDetail(show, stream);
-  await stream.click();
+  return stream;
 }
+
+/** Opens a put.io library video from the current discover view and plays it. */
+const openLibraryFile = async (page: Page, name: string, fileId: bigint) =>
+  (await libraryRow(page, name, fileId)).click();
 
 const program = Effect.gen(function* () {
   yield* Effect.promise(() => mkdir(directory, { recursive: true }));
@@ -1048,6 +1067,161 @@ const program = Effect.gen(function* () {
           7,
           "Choosing a file from the library must not submit",
         );
+        // A library video put.io is still preparing keeps the player waiting
+        // through a window redirect and a manifest retry, then plays once
+        // ready, within the shortened limit.
+        engine.state.preparingListed = true;
+        // Leave the library first, or Stremio keeps the catalog it loaded
+        // before the video was listed.
+        await page.goto(`${web.origin}/#/`);
+        await page.goto(
+          `${web.origin}/#/discover/${encodeURIComponent(manifestUrl)}/movie/library`,
+        );
+        const preparingRow = await libraryRow(
+          page,
+          preparingCase.name,
+          preparingCase.fileId,
+          "Play from put.io",
+        );
+        await expect(
+          page
+            .getByText("put.io is preparing this video", { exact: false })
+            .filter({ visible: true })
+            .first(),
+        ).toBeVisible();
+        const engineReads = () =>
+          Object.values(engine.calls.methods).reduce(
+            (sum, count) => sum + count,
+            0,
+          );
+        // Count only the selection's calls, after the library page's reads.
+        await expect
+          .poll(
+            async () => {
+              const before = engineReads();
+              await page.waitForTimeout(1500);
+              return engineReads() === before;
+            },
+            { timeout: 15000 },
+          )
+          .toBe(true);
+        const methodsBefore = { ...engine.calls.methods };
+        const playbackFilesBefore = engine.calls.playbackFiles.length;
+        const preparingTransfers: number = engine.calls.transfer;
+        const preparingRejected: number = engine.calls.rejected;
+        const preparingPath = `${base}/play/movie/${encodeURIComponent(`chill:file:${preparingCase.fileId}`)}/${encodeURIComponent(`owned:${preparingCase.fileId}`)}.m3u8`;
+        const preparingResource = new RegExp(
+          `^/(meta|stream|subtitles)/movie/chill:file:${preparingCase.fileId}(?:/[^/]*)?\\.json$`,
+        );
+        // Queries of each GET of the row's URL, in request order.
+        const preparingSelections: string[] = [];
+        const adapterReads = { meta: 0, stream: 0, subtitles: 0, other: 0 };
+        const trackPreparing = (request: Request) => {
+          const { origin, pathname, search } = new URL(request.url());
+          if (![publicAdapterOrigin, adapter.current.origin].includes(origin))
+            return;
+          if (pathname === preparingPath) {
+            if (request.method() === "GET") preparingSelections.push(search);
+            return;
+          }
+          const kind = preparingResource.exec(
+            decodeURIComponent(pathname.slice(base.length)),
+          )?.[1];
+          if (kind === "meta" || kind === "stream" || kind === "subtitles")
+            adapterReads[kind]++;
+          else adapterReads.other++;
+        };
+        context.on("request", trackPreparing);
+        await preparingRow.click();
+        const preparingSelectedAt = performance.now();
+        // One 25-second window redirects to wait=1, then the player abandons
+        // that chain at 30 seconds and requests the row's URL again.
+        await expect
+          .poll(
+            () =>
+              preparingSelections.includes("?wait=1") &&
+              preparingSelections.filter((search) => search === "").length >= 2,
+            { timeout: pendingLimitMs },
+          )
+          .toBe(true);
+        assert.equal(
+          await page
+            .locator("video")
+            .evaluateAll((videos) =>
+              videos.some(
+                (video) =>
+                  video instanceof HTMLVideoElement &&
+                  video.getVideoPlaybackQuality().totalVideoFrames > 0,
+              ),
+            ),
+          false,
+          "A video put.io is preparing must keep the player loading",
+        );
+        assert.equal(
+          [...noticeRequests].some((name) => name.startsWith("preparing.")),
+          false,
+          "A wait within the limit must not show the preparing clip",
+        );
+        await page.screenshot({ path: `${directory}/preparing-loading.png` });
+        const preparingUrl = page.url();
+        const readyAfterMs = Math.round(
+          performance.now() - preparingSelectedAt,
+        );
+        engine.state.preparingReady = true;
+        const preparingPlayback = await decoded(
+          page,
+          { ...fixture, origin: web.origin },
+          "movie",
+          `${directory}/preparing-decoded.png`,
+        );
+        context.off("request", trackPreparing);
+        assert.equal(
+          page.url(),
+          preparingUrl,
+          "A prepared video must play without navigation or reselection",
+        );
+        assert.equal(
+          [...noticeRequests].some((name) => name.startsWith("preparing.")),
+          false,
+          "A prepared video must not show the preparing clip",
+        );
+        const preparingCalls: Record<string, number> = {};
+        for (const [method, count] of Object.entries(engine.calls.methods))
+          if (count > (methodsBefore[method] ?? 0))
+            preparingCalls[method] = count - (methodsBefore[method] ?? 0);
+        assert.deepEqual(
+          Object.keys(preparingCalls).filter(
+            (method) => !["GetFolder", "ResolvePlayback"].includes(method),
+          ),
+          [],
+          "A library selection may only resolve playback",
+        );
+        assert.equal(
+          engine.calls.transfer,
+          preparingTransfers,
+          "Waiting on a library video must not submit",
+        );
+        assert.equal(engine.calls.rejected, preparingRejected);
+        assert.ok(
+          engine.calls.playbackFiles
+            .slice(playbackFilesBefore)
+            .every((file) => file === String(preparingCase.fileId)),
+        );
+        // Each library read lists the folder once and a stream or subtitles
+        // read resolves playback once; the selection never lists a folder.
+        assert.equal(
+          preparingCalls.GetFolder ?? 0,
+          adapterReads.meta + adapterReads.stream + adapterReads.subtitles,
+          "Every folder listing must come from a library read",
+        );
+        const selectionReads =
+          (preparingCalls.ResolvePlayback ?? 0) -
+          adapterReads.stream -
+          adapterReads.subtitles;
+        assert.ok(
+          selectionReads >= preparingSelections.length,
+          "Every request of the row's URL must resolve playback",
+        );
         await page.goto(`${web.origin}/#/`);
         engine.state.credentialRejected = true;
         await page.goto(
@@ -1157,6 +1331,24 @@ const program = Effect.gen(function* () {
               returnedToStreams: true,
               reselectedWithoutSubmission: true,
               decoded: pendingPlayback,
+            },
+            preparingLibraryWait: {
+              source: "Play from put.io",
+              limitMs: pendingLimitMs,
+              selectedUrlRequests: preparingSelections.filter(
+                (search) => search === "",
+              ).length,
+              continuations: preparingSelections.filter(
+                (search) => search !== "",
+              ),
+              readyAfterMs,
+              playerLoadingUntilReady: true,
+              preparingNoticeRequested: false,
+              engineCalls: preparingCalls,
+              adapterReads,
+              selectionPlaybackReads: selectionReads,
+              transfersSubmitted: 0,
+              decoded: preparingPlayback,
             },
             statusReadAcrossRestart: true,
             stayedInStremio: true,

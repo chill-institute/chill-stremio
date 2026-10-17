@@ -28,6 +28,7 @@ import {
   Container,
   GetFolderRequestSchema,
   GetFolderResponseSchema,
+  PendingReason,
   ResolvePlaybackRequestSchema,
   ResolvePlaybackResponseSchema,
   VideoCodec,
@@ -63,6 +64,15 @@ export const hostedFixture = {
   /** A download that stays pending until the smoke completes it. */
   pendingCase: { name: "Synthetic Pending Release", transferId: 6n },
   /**
+   * A library video put.io is still preparing. The library lists it once the
+   * smoke sets `preparingListed`, and it plays once the smoke sets
+   * `preparingReady`.
+   */
+  preparingCase: {
+    fileId: 9223372036854775807n - 7n,
+    name: "Preparing Library Movie",
+  },
+  /**
    * Engine's season pack for the series' first season: two episode videos,
    * saved outside the library root so library listings stay unchanged.
    */
@@ -93,10 +103,14 @@ export interface HostedEngineState {
   pendingSubmitted: boolean;
   pendingCompleted: boolean;
   packSubmitted: boolean;
+  preparingListed: boolean;
+  preparingReady: boolean;
   /** Answer every RPC as Engine does for a revoked or expired credential. */
   credentialRejected: boolean;
 }
 export interface HostedEngineCalls {
+  /** RPCs by method, rejected ones included. */
+  methods: Record<string, number>;
   folder: number;
   playback: number;
   discovery: number;
@@ -366,6 +380,7 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
       recoveryCases,
       pendingCase,
       packCase,
+      preparingCase,
     } = hostedFixture;
     const media = options.mediaOrigin;
     const packTransfer = {
@@ -384,6 +399,8 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
       pendingSubmitted: false,
       pendingCompleted: false,
       packSubmitted: false,
+      preparingListed: false,
+      preparingReady: false,
       credentialRejected: false,
     };
     const pendingTransfer = (id: bigint) => ({
@@ -395,6 +412,7 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
       saveParentId: 0n,
     });
     const calls: HostedEngineCalls = {
+      methods: {},
       folder: 0,
       playback: 0,
       discovery: 0,
@@ -409,6 +427,8 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
       Effect.tryPromise(async () => {
         const server = createServer(async (req, res) => {
           try {
+            const method = req.url?.split("/").at(-1) ?? "";
+            calls.methods[method] = (calls.methods[method] ?? 0) + 1;
             assert.equal(req.method, "POST");
             assert.equal(req.headers.authorization, undefined);
             assert.equal(req.headers["x-chill-stremio-credential"], credential);
@@ -425,7 +445,7 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                 "AddTransfer",
                 "GetTransfer",
                 "ResolvePlayback",
-              ].includes(req.url?.split("/").at(-1) ?? ""),
+              ].includes(method),
             );
             if (state.credentialRejected) {
               calls.unauthenticated++;
@@ -566,6 +586,15 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                                   {
                                     id: episodeFileId,
                                     name: episodeName,
+                                    fileType: "VIDEO",
+                                  },
+                                ]
+                              : []),
+                            ...(state.preparingListed
+                              ? [
+                                  {
+                                    id: preparingCase.fileId,
+                                    name: preparingCase.name,
                                     fileType: "VIDEO",
                                   },
                                 ]
@@ -928,6 +957,24 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                         },
                 }),
               );
+            } else if (
+              req.url === "/chill.v4.UserService/ResolvePlayback" &&
+              fromJsonString(ResolvePlaybackRequestSchema, body).fileId ===
+                preparingCase.fileId &&
+              !state.preparingReady
+            ) {
+              assert.ok(state.preparingListed);
+              calls.playback++;
+              calls.playbackFiles.push(String(preparingCase.fileId));
+              response = toJsonString(
+                ResolvePlaybackResponseSchema,
+                create(ResolvePlaybackResponseSchema, {
+                  result: {
+                    case: "pending",
+                    value: { reason: PendingReason.PROCESSING },
+                  },
+                }),
+              );
             } else {
               assert.equal(req.url, "/chill.v4.UserService/ResolvePlayback");
               const requestedFile = fromJsonString(
@@ -943,7 +990,9 @@ export const startHostedEngine = Effect.fn("startHostedEngine")(
                   ([multipleMovieId, multipleEpisodeId].includes(
                     requestedFile,
                   ) &&
-                    state.recoverySubmitted.has("select-file")),
+                    state.recoverySubmitted.has("select-file")) ||
+                  (requestedFile === preparingCase.fileId &&
+                    state.preparingListed),
               );
               calls.playback++;
               calls.playbackFiles.push(String(requestedFile));

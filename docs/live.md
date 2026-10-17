@@ -119,7 +119,7 @@ put.io prepares a video. A failed stream-list read counts under
 - `LIVE_OWNED_CONVERT=1` (convert step) uploads a lossless Matroska copy and
   checks that listings, HEAD, OPTIONS and prefetch never start a conversion,
   that one selection starts it and ends as `preparing`, or `hls` when put.io
-  finishes during the wait (`selection.outcome`), and that the row plays once
+  finishes during the wait (`selection.outcome`; `other` fails), and that the row plays once
   put.io finishes. The lane cannot count `StartPlaybackConversion` calls;
   [live-owned.test.ts](../tests/live-owned.test.ts) proves only the selection
   asks, once per read while put.io still queues the conversion.
