@@ -24,7 +24,7 @@ lane.
 
 Provide `emulator`, `adb`, `sdkmanager` and `avdmanager` on PATH using the
 standard Android SDK. The probe discovers its SDK from the emulator executable;
-it has no devbox-specific path or username. The emulator, TV system image and
+it has no host-specific path or username. The emulator, TV system image and
 APK pins live in [android-versions.ts](../harness/native/android-versions.ts).
 Other host architectures fail explicitly. A Google APIs phone image cannot
 certify TV behavior.
@@ -173,15 +173,10 @@ separate required assertions. Until implemented and verified, the lane remains
 Do not present a pairing or HTTP-media-request pass as full TV support.
 
 Pairing, exact fixture installation, intact advancing pictures and D-pad source
-navigation have been demonstrated together in one fresh pinned-emulator trial.
-The other fresh boot in that aggregate failed APK installation before account
-access. A subsequent aggregate verified installation, then failed opening fixture
-details before playback. Its uncertain cleanup skipped the next trial; API-only
-journal reconciliation later verified the exact addon absent and baseline hashes
-preserved without another mutation. Audio and the revised seek/pause sequence
-still require proof, including confirming the HUD is present before Back dismisses
-it. Earlier marker-only results cannot satisfy current intact-picture gates.
-The next acceptance run must first establish repeatable startup and fixture
+navigation have been demonstrated together in one fresh pinned-emulator trial;
+no aggregate has passed both trials. Audio and the seek/pause sequence still
+require proof, including confirming the HUD is present before Back dismisses
+it. The next acceptance run must first establish repeatable startup and fixture
 installation, then decoded playback and TV controls. Hosted acceptance separately
 requires discovery, selected downloads, progress and acquired-file playback
 through the actual adapter. A generic fixture-addon pass cannot replace it.

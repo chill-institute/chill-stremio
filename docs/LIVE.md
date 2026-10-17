@@ -50,8 +50,7 @@ credentials, resolve at playback start, and do not infer a lifetime from token
 reuse. A bounded refresh may return the same token; rate-limit responses must
 stop retries rather than trigger repeated URL requests.
 
-Engine `PUTIO_OAUTH_TOKEN` still does not identify this account. Distinct
-egress stays listed unless `LIVE_EGRESS_PROXY` is an HTTP CONNECT proxy on
+Distinct egress stays listed unless `LIVE_EGRESS_PROXY` is an HTTP CONNECT proxy on
 a second public path and Range 206 succeeds on both paths. The operator must
 independently establish that the proxy uses a different public IP: the harness
 checks Range responses, not the egress IP itself. Proxy Range success does not
@@ -89,8 +88,9 @@ account owner approved, supplied privately at run time; it is never a fallback
 or a looser match. The owned probe's [convert step](#convert-step) uploads a
 lossless Matroska copy of the generated movie.
 
-The default allowance is 10 GiB per UTC day, with no transfer-count quota. This is
-the standing test budget; ordinary runs need no daily approval. The budget is
+The default daily allowance is `byteLimit` in
+[versions.ts](../harness/live/versions.ts), per UTC day. This is the standing
+test budget; ordinary runs need no daily approval. The budget is
 tracked per OS user and machine in the shared `allowance.json`.
 
 The [probe](../harness/live/probe.ts) reserves four creations and the prepared
@@ -118,8 +118,6 @@ day and both reservation counters; never zero usage to grant another attempt.
 Grant only the approved scope. Probes preserve and consume that allowance;
 normal UTC rollover drops the override and restores the defaults. This changes
 the local test budget only, never provider quotas or rate-limit handling.
-Older ledgers remain readable; their obsolete `transferLimit` is ignored and
-removed on the next reservation without changing recorded usage.
 
 ## Session reuse
 

@@ -4,7 +4,7 @@ For the stateless multi-user service and discovery, use [HOSTED.md](./HOSTED.md)
 
 The adapter serves one selected folder using the existing chill bearer token.
 `GetFolder` supplies catalog and metadata; `ResolvePlayback` requests HLS streams
-using contracts v3.1.0. Engine returns a verified put.io HLS master URL with a
+through the contracts client pinned in [package.json](../package.json). Engine returns a verified put.io HLS master URL with a
 separate download grant; the account OAuth token never reaches the adapter.
 It uses the released generated client and never calls put.io directly.
 
@@ -37,18 +37,17 @@ The manifest URL contains a random installation capability, never the chill
 bearer. Anyone with that URL and network access to this process can browse and
 resolve videos from the selected folder. Protect the file and URL. The key exists
 only for this process: stopping it revokes the installation, and restarting
-requires reinstalling the newly generated URL. There is no installation registry.
+requires reinstalling the newly generated URL.
 
 Ctrl+C or SIGTERM closes the listener, cancels Engine requests and removes the
 installation receipt. After an unclean exit, establish that the process stopped
 before deleting the stale receipt. Startup will not overwrite it.
 
-This is a local single-user process, not a publicly hosted multi-user service.
-On an SSH devbox, run the process there and forward the same loopback port from
+On a remote host, run the process there and forward the same loopback port from
 the computer running Stremio:
 
 ```sh
-ssh -N -L 7000:127.0.0.1:7000 <your-devbox>
+ssh -N -L 7000:127.0.0.1:7000 <remote-host>
 ```
 
 A synced localhost installation does not make the process reachable on other
@@ -131,5 +130,6 @@ from editing this test account's add-ons during the probe; Stremio's collection
 write replaces its list. Cleanup failures remain failures even if playback
 worked. The probe closes browser and local listeners on completion.
 
-This exercises pinned Web on the devbox. It does not prove native support or
-playback from the user's device; those need their own client and network proof.
+This exercises pinned Web on the host running the probe. It does not prove
+native support or playback from the user's device; those need their own client
+and network proof.

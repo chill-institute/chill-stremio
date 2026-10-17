@@ -68,8 +68,8 @@ credential and dropped when a link's last unit ends.
 
 A personal add-on link has the form
 `https://stremio.chill.institute/s/<credential>/manifest.json`. The credential is
-an opaque PASETO `v4.local.` token of up to 1,024 characters. The adapter checks
-only its shape; a malformed credential returns `404` without contacting Engine.
+an opaque PASETO `v4.local.` token with an optional key-ID footer. The adapter
+checks only its shape and length ([credential.ts](../src/credential.ts)); a malformed credential returns `404` without contacting Engine.
 Every Engine call for that link sends `X-Chill-Stremio-Credential` and no
 `Authorization` header. Engine accepts the credential for `Search`, `GetMovies`,
 `GetTVShows`, `GetTVShowDetail`, `GetTVShowSeason`, `GetTVShowSeasonDownloads`,
@@ -141,9 +141,8 @@ IDs, with limits of 5,000 entries per folder, 50,000 total entries, 1,000 folder
 and 64 levels. Exceeding a limit or an upstream error returns an error rather
 than a silently incomplete page. Large or slow libraries may hit these limits.
 
-The add-on has no Downloads or Acquired videos catalog. Engine targets its
-configured download folder; when that folder is inside the account, completed
-downloads appear in **put.io library**.
+Engine targets its configured download folder; when that folder is inside the
+account, completed downloads appear in **put.io library**.
 
 ## Selected media
 
@@ -389,8 +388,7 @@ different show with the same name when the filename has no year.
 
 The adapter runs at `https://stremio.chill.institute`. Stremio Web and Stremio
 for Linux are supported; both manifest descriptions and `/configure` say so and
-call other Stremio apps unverified. The earlier Web direct-file
-download-to-playback flow passes. HLS audio switching passes a real put.io Web
+call other Stremio apps unverified. HLS audio switching passes a real put.io Web
 probe, and the generated hosted HLS flow passes with default audio bundled into
 its video variant. The original separate-track fixture retains the
 [client-worker regression](./HARNESS.md#hls-playback).
@@ -457,7 +455,7 @@ clip, removed routes,
 sanitized Engine failures, clean SIGTERM, restart and that container logs never
 contain the credential.
 
-Every `feat`, `fix`, `perf`, `refactor`, `revert` or breaking change on `main`
+Every releasing commit on `main`
 cuts a semantic-release version and GitHub release as `chill-ci`; see the
 [release rules](../CONTRIBUTING.md). [Publish hosted adapter](../.github/workflows/publish-hosted.yml) is
 a manual, main-only workflow in three jobs. The `build` job has no Environment
@@ -473,8 +471,8 @@ hosting repository's adapter deploy with that digest and waits for it. The
 `canary` job then runs the post-deploy canary at the published commit. The
 default verification, fixture and canary workflows retain read-only permissions.
 
-Engine owns the adapter deployment and shared host-mutation lock; its manual
-dispatch remains the rollback path. Any v2.0.3 or later image can be a rollback
+Engine owns the adapter deployment; dispatching its deploy with an earlier
+image digest is the rollback path. Any v2.0.3 or later image can be a rollback
 target because the adapter keeps no state; v2.0.0 to v2.0.2 reject every issued
 link because they do not accept Engine's key-ID credential footer.
 The Engine deploy workflow reads the package with its own repository token, so
@@ -554,7 +552,7 @@ through the pinned Stremio Web UI in a fresh guest browser, opens the completed
 file and requires advancing decoded video, intact fixture frames and increasing
 decoded AAC bytes. Video pixels remain in memory. The receipt checks browser,
 context and Web listener cleanup and absence of the Engine bearer from browser
-requests. This uses the same devbox and direct provider HTTPS; it does not
+requests. It runs on the probe's host over direct provider HTTPS; it does not
 establish playback from another device or network.
 
 The shared live ledger reserves the source upload and copied bytes plus
@@ -584,6 +582,5 @@ or with `LIVE_ACQUIRE_WEB=1` selects and plays it in Stremio Web, and removes
 only what the run created; see the
 [real acquisition probe](./LIVE.md#real-acquisition-probe).
 
-The public endpoint depends on the `infra`-owned DNS record and the Engine-owned
-Compose service and deploy workflow. Native desktop and Android TV support
-require their own passing receipts; Web results do not establish native support.
+Native desktop and Android TV support require their own passing receipts; Web
+results do not establish native support.

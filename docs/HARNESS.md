@@ -35,7 +35,7 @@ and their shared ledger lives there. `--ipc=host` gives Chromium the host's
 shared memory instead of Docker's 64 MB `/dev/shm`, which can crash it; use
 `--shm-size=2g` where host IPC is not allowed. `--init` reaps Chromium's
 child processes. The image's Node must satisfy `engines` in
-[package.json](../package.json); v1.64.0's is 24.21.0.
+[package.json](../package.json).
 
 ```sh
 docker build --target browser -t chill-stremio:browser .
@@ -204,25 +204,16 @@ credentials and sensitive playback URLs. See [LIVE.md](./LIVE.md).
 Native desktop and Android TV require separately pinned client builds, an
 automatable device or emulator, installation/reset commands and decoded-video,
 audio, subtitle and remote-navigation evidence. A Web pass does not establish
-native support. Run `mise run native:android:probe` and
-`mise run native:desktop:probe` on a compatible Linux runner, and
-`mise run native:desktop:probe hosted` for the actual hosted adapter; interpret
-those results with [Android TV](./NATIVE-ANDROID.md) and
-[desktop](./NATIVE-DESKTOP.md). The
+native support. Run and interpret those lanes with
+[Android TV](./NATIVE-ANDROID.md) and [desktop](./NATIVE-DESKTOP.md). The
 [authenticated Android lane](./NATIVE-ANDROID.md#authenticated-emulator-lane)
 owns pairing with the separate Stremio test login. The put.io login is not a
 Stremio login and must not be typed into TV. The runner classifies the
 pairing/QR wall from allowlisted labels only: no login codes, QR images, UI
 XML, or account-linking screenshots.
 
-Live put.io validation is a separate lane: `mise run live:setup` and
-`mise run live:probe`. Follow the
-[allowance contract](./LIVE.md#credential-and-budget)
-before running it. With the designated token loaded it uploads the
-self-generated fixture movie and captions, decodes playback, checks Range
-pause/resume and URL reissue, requires put.io-delivered English cue text when
-the account exposes it, and adds a URL transfer of that file. Generic Engine
-put.io hooks do not identify that account.
+Live put.io validation is a separate lane; follow the
+[allowance contract](./LIVE.md#credential-and-budget) before running it.
 
 ## HLS playback
 
@@ -238,10 +229,9 @@ used by the [hls.js public sample](https://test-streams.mux.dev/), while retaini
 our generated frames, tones and captions for exact assertions. CI needs no
 external media host.
 
-The focused audio/seek/caption run passed on 2026-09-20 in
-`artifacts/hls-1789908737717/results.json` and cleaned up fully. The hosted
-smoke's current flow is described in [HOSTED.md](./HOSTED.md#verification-and-release).
-Native clients need separate proof.
+The hosted smoke's flow is described in
+[HOSTED.md](./HOSTED.md#verification-and-release). Native clients need separate
+proof.
 
 The original separate-track fMP4 fixture remains available:
 
@@ -255,7 +245,6 @@ video buffer, then fails when audio arrives. Changing only the container to
 MPEG-TS did not fix it. Bundling the default audio with video avoids the missing
 buffer path without changing the client or relaxing playback assertions.
 This is a fixture compatibility change, not a fix to Stremio's worker.
-Diagnostic trace and cleanup: `artifacts/hosted-2026-09-20T11-53-24.950Z/`.
 
 The [upstream Web revision checked](https://github.com/Stremio/stremio-web/commit/afbc05e3d99cb30779d889ee0b1c86b927af3a95)
 retains the affected build configuration. A client build fix would require new

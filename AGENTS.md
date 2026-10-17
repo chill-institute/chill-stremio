@@ -92,28 +92,18 @@ Gaps:
 - `hosted:live` fakes Engine's credential check. The canary proves production
   Engine accepts an issued credential only after a publish or a manual dispatch,
   so Engine deploys between adapter releases go unchecked until the next run. Owner: operator.
-- On 2026-10-14 `hosted:owned` recorded a pass for one movie's library
-  playback through the deployed adapter, and `hosted:acquire` for one approved
-  movie release acquired through the deployed adapter and production Engine.
-  On 2026-10-15 `hosted:owned` passed for an owned episode and, with
-  `LIVE_OWNED_WEB=1`, played the owned movie in Stremio Web, and
-  `hosted:acquire` passed for an approved Matroska season pack, playing the
-  pinned episode after put.io converted it, and for an approved
-  single-episode release, which with `LIVE_ACQUIRE_WEB=1` was also selected
-  and played in Stremio Web. put.io finished that release within seconds, so
-  no Web pass has selected a row again after a pending clip; other
-  acquisitions decode with FFmpeg. `hosted:public` and its canary consume no
-  stream, `hosted:live`'s Stremio Web step has no recorded pass since v2.0.0,
-  and native clients have not played an acquired release. On 2026-10-16
-  `hosted:owned` with `LIVE_OWNED_CONVERT=1` passed for the library's
-  **Convert and play from put.io** row, decoded with FFmpeg; no Stremio client
-  has selected it, and the preparing **Play from put.io** row it listed was not
-  selected while put.io prepared the video. Owner: chill-institute/chill-stremio.
+- Through the deployed adapter, Stremio Web has played only an owned movie and
+  one approved single-episode release; other `hosted:owned` and
+  `hosted:acquire` passes, including a season pack and the library's
+  **Convert and play from put.io** row, decode with FFmpeg. No Web pass has
+  selected a row again after a pending clip, no Stremio client has selected
+  the Convert row or a preparing **Play from put.io** row, and native clients
+  have not played an acquired release. `hosted:public` and its canary consume
+  no stream, and `hosted:live`'s Stremio Web step has no recorded pass since
+  v2.0.0. Owner: chill-institute/chill-stremio.
 - A cold season lookup slower than the listing's five-second wait still leaves
   the **Download season to put.io** row out of a first visit to an episode; a
-  later visit lists it. Engine's sampled traces from 2026-09-16 to 2026-10-16
-  show every cold lookup finishing within 4.5 seconds, so a longer wait would
-  not have listed more packs. No lane times the cold lookup against production Engine. Owner: chill-institute/chill-stremio.
+  later visit lists it. No lane times the cold lookup against production Engine. Owner: chill-institute/chill-stremio.
 - Selecting a library video put.io is still preparing plays the `preparing`
   clip instead of waiting in the player, so the user returns to the video
   later. Owner: chill-institute/chill-stremio.

@@ -8,12 +8,8 @@ without account credentials. Results are separate from [Web](./HARNESS.md) and
 
 ## Setup
 
-Install `flatpak`, `bubblewrap`, `pulseaudio`, `pulseaudio-utils`, `xdotool`,
-`xclip`, `xvfb`, `xauth`, `dbus`, `ffmpeg`, `tesseract-ocr` and fixture fonts
-using the devbox package manager. Node and the Web fixture setup remain owned
-by [mise](../mise.toml).
-
-On Debian/Ubuntu, install the system prerequisites once:
+Node and the Web fixture setup are owned by [mise](../mise.toml). On
+Debian/Ubuntu, install the system prerequisites once:
 
 ```sh
 sudo apt-get install --no-install-recommends --yes flatpak bubblewrap pulseaudio pulseaudio-utils xdotool xclip xvfb xauth dbus ffmpeg fonts-dejavu-core tesseract-ocr
@@ -212,13 +208,6 @@ before the clip check also required the `Download` headline word:
   source list, exact-file playback, the reconnect row, four transfers and
   cleanup.
 - Hosted HLS mode.
-
-Before status clips, client 1.2.0 stayed on its loading screen when those
-selections answered `409`.
-[Run 38141014977](https://github.com/chill-institute/chill-stremio/actions/runs/38141014977)
-was blocked in three trials because a client launch logged
-`Failed to open display`; a later launch in the same trial reached the Xvfb
-display.
 
 Client 1.2.2 (`0496ce1d…`), Flathub's current build, passed both hosted modes in
 [run 38136421172](https://github.com/chill-institute/chill-stremio/actions/runs/38136421172)

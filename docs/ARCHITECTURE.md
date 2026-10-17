@@ -57,8 +57,7 @@ listing and passes it to both lookups, which run together. Engine owns filename
 matching; the adapter never parses filenames. An `owned:<fileId>` row resolves
 through `ResolvePlayback`, without `GetFolder`, and never submits; like a
 selected download, it may [request conversion](#playback-and-failure-behavior).
-The [Engine search contract](https://github.com/chill-institute/chill-engine/blob/main/docs/ARCHITECTURE.md)
-owns stable source identity and its fallback limits. Release artwork association
+Engine's search contract owns stable source identity and its fallback limits. Release artwork association
 must remain separate from this acquisition identity.
 
 Catalog, metadata and stream listings, HEAD and OPTIONS are read-only.
@@ -111,9 +110,9 @@ Harness receipts replace credentials with `[credential]`.
 
 ## Playback and failure behavior
 
-The adapter uses
-[contracts v3.3.0](https://github.com/chill-institute/chill-contracts/releases/tag/v3.3.0)
-and requests HLS through `ResolvePlayback`. Engine checks ownership, resolves a
+The adapter uses the
+[chill-contracts](https://github.com/chill-institute/chill-contracts) client
+pinned in [package.json](../package.json) and requests HLS through `ResolvePlayback`. Engine checks ownership, resolves a
 download grant, verifies the HLS master anonymously and returns its HTTPS URL.
 The player fetches playlists and media from put.io; the account OAuth token
 stays in Engine.
