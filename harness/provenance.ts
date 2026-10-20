@@ -3,7 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { Effect, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { versions } from "./versions.ts";
 
 const digest = Schema.Struct({ file: Schema.String, sha256: Schema.String });

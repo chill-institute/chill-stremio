@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { ChildProcess } from "effect/unstable/process";
+import { ChildProcess } from "effect/process";
 
 export class CommandFailure extends Schema.TaggedError<CommandFailure>()(
   "CommandFailure",

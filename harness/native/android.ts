@@ -12,7 +12,7 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Cause, Effect, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { androidVersions as versions } from "./android-versions.ts";
 import {
   startAndroidAudio,
