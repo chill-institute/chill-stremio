@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect, Exit, Schema } from "effect";
+import { Clock, Duration, Effect, Exit, Schema } from "effect";
 import { test, vi } from "vite-plus/test";
 import { readLedger, utcDay } from "../harness/live/allowance.ts";
 import { getFile, type SearchPage } from "../harness/live/putio.ts";
@@ -267,7 +267,11 @@ const Receipt = Schema.fromJsonString(
 );
 
 async function runLane(
-  options: FakeOptions & { reservedBytes?: number; username?: string } = {},
+  options: FakeOptions & {
+    reservedBytes?: number;
+    username?: string;
+    clock?: Clock.Clock;
+  } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "live-search-"));
   const ledger = join(directory, "allowance.json");
@@ -291,24 +295,27 @@ async function runLane(
     const media = join(directory, "movie.mp4");
     await writeFile(media, Buffer.alloc(mediaBytes));
     const journalPath = join(directory, "recovery", "search.json");
+    const lane = runFileSearch({
+      username: options.username ?? "fixture",
+      ledgerDirectory: async () => directory,
+      provider: putio.provider,
+      media: { path: media, bytes: mediaBytes },
+      artifact: join(directory, "artifact"),
+      journal: journalPath,
+      folderName,
+      nonce,
+      timing: {
+        pollIntervalMs: 1,
+        indexDeadlineMs: 40,
+        settleMs,
+        verifyAttempts: 2,
+        verifyIntervalMs: 1,
+      },
+    });
     const exit = await Effect.runPromiseExit(
-      runFileSearch({
-        username: options.username ?? "fixture",
-        ledgerDirectory: async () => directory,
-        provider: putio.provider,
-        media: { path: media, bytes: mediaBytes },
-        artifact: join(directory, "artifact"),
-        journal: journalPath,
-        folderName,
-        nonce,
-        timing: {
-          pollIntervalMs: 1,
-          indexDeadlineMs: 40,
-          settleMs,
-          verifyAttempts: 2,
-          verifyIntervalMs: 1,
-        },
-      }),
+      options.clock
+        ? Effect.provideService(lane, Clock.Clock, options.clock)
+        : lane,
     );
     const receiptText = await readFile(
       join(directory, "artifact", "results.json"),
@@ -521,10 +528,29 @@ test("folder hits record their type and parent, and path matches list the files 
 });
 
 test("the re-read records file types after settling apart from the first sighting", async () => {
+  const clock = Effect.runSync(Clock.clockWith(Effect.succeed));
+  let now = 0;
   // Types settle after the first poll round; paths match only in the re-read.
   const run = await runLane({
     typeSettlesAfterSearches: 8,
     pathsAfterSearches: 27,
+    clock: {
+      currentTimeMillis: Effect.sync(() => now),
+      currentTimeMillisUnsafe: () => now,
+      currentTimeNanos: clock.currentTimeNanos,
+      currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+      monotonicTimeNanos: clock.monotonicTimeNanos,
+      monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+      // Timers may wake before the requested wall-clock deadline.
+      sleep: (duration) => {
+        const milliseconds = Duration.toMillis(duration);
+        return milliseconds > settleMs
+          ? clock.sleep(duration)
+          : Effect.sync(() => {
+              now += Math.max(1, milliseconds - 1);
+            });
+      },
+    },
   });
   assert.equal(run.receipt.status, "passed");
   const { fixtures: first, reread } = run.receipt.proof;
