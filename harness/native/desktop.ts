@@ -17,7 +17,7 @@ import { homedir } from "node:os";
 import { stripTypeScriptTypes } from "node:module";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Effect, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { startFixture, type Fixture } from "../fixture.ts";
 import { startWeb } from "../web.ts";
 import { validateProvenance } from "../provenance.ts";

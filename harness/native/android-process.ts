@@ -3,7 +3,7 @@ import { access, realpath } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { constants } from "node:fs";
 import { Effect, Schema, Stream } from "effect";
-import { ChildProcess } from "effect/unstable/process";
+import { ChildProcess } from "effect/process";
 
 export class AndroidFailure extends Schema.TaggedError<AndroidFailure>()(
   "AndroidFailure",

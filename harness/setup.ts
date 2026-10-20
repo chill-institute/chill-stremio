@@ -1,7 +1,7 @@
 import { mkdir, access, writeFile, rm, rename } from "node:fs/promises";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Effect, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { command } from "./process.ts";
 import { versions } from "./versions.ts";
 import { generateMedia } from "./media.ts";

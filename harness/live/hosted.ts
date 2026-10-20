@@ -598,7 +598,7 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
         | Awaited<ReturnType<typeof startFixtureDiscoveryProxy>>
         | undefined;
       yield* Effect.acquireRelease(Effect.void, () =>
-        Effect.tryPromise(async () => {
+        Effect.promise(async () => {
           let failed = false;
           try {
             await hosted?.close();
