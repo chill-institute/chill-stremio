@@ -37,7 +37,7 @@ description = "Probe two isolated TV boots and client entrypoints; playback stay
 run = "pnpm exec vp run native:android:probe"
 
 [tasks."native:desktop:probe"]
-description = "Probe two isolated headless Linux desktop runs; append `hosted` for the actual hosted adapter"
+description = "Probe two isolated headless Linux desktop runs; append `hosted` or `hosted-hls` for the hosted adapter"
 run = "pnpm exec vp run native:desktop:probe"
 
 [tasks."live:setup"]
