@@ -9,7 +9,7 @@ minimumReleaseAgeExclude:
 overrides:
   "external-editor>tmp": "0.2.7"
   "@effect/platform-node>@effect/platform-node-shared": "4.0.5"
-  "router@1>path-to-regexp": "0.2.5"
+  "router@1>path-to-regexp": "0.1.13"
   vite@*: "catalog:"
 peerDependencyRules:
   allowAny:
