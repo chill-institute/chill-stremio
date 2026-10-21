@@ -8,9 +8,10 @@
   [package.json](../package.json).
 - chill-web: issues add-on links.
 - This repo: Stremio translation and the selected-media download boundary. It
-  keeps no database or key and never receives the put.io OAuth token. Its only
-  memory is in process, keyed by credential-and-selection hashes: shared
-  submissions and owned-video waits, both bounded per [hosted](./hosted.md).
+  keeps no database, key, installation registry or management API and never
+  receives the put.io OAuth token. Its only memory is in process, keyed by
+  credential-and-selection hashes: shared submissions and owned-video waits,
+  both bounded per [hosted](./hosted.md).
 
 The [local adapter](./adapter.md) calls Engine's `UserService` with the chill
 bearer; the [hosted adapter](./hosted.md) calls the same functions with
@@ -54,9 +55,8 @@ click.
 Discovery RPCs get the time left on the request or submission budget, capped by
 the 10-second step, minus 500 ms to receive. `AddTransfer` gets 21 seconds,
 outlasting Engine's 20-second shared add. The submission budget is independent
-of any request; a spent deadline fails without calling Engine. Transfer
-submission is never retried. Waiting is bounded in
-[playback-wait.ts](../src/playback-wait.ts); routes and windows in
+of any request; a spent deadline fails without calling Engine. Waiting is
+bounded in [playback-wait.ts](../src/playback-wait.ts); routes and windows in
 [hosted.ts](../src/hosted.ts).
 
 ## Playback URLs

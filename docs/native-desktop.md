@@ -81,6 +81,5 @@ passed fixture and hosted HLS on 2026-09-21/23 on an older runtime.
 ## CI
 
 [native-desktop.yml](../.github/workflows/native-desktop.yml) is manual and
-read-only on x86_64 Ubuntu. It runs all three modes after one setup, keeps
-`linux-desktop-{fixture,hosted,hosted-hls}-<run_id>` artifacts, has no account
-secrets and does not gate merges.
+read-only on x86_64 Ubuntu. It runs all three modes after one setup, has no
+account secrets and does not gate merges.

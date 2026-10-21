@@ -55,10 +55,9 @@ not manage native runtimes. No put.io transfers belong in these lanes.
 mise run native:android:account
 ```
 
-Maintainer-only. Set `STREMIO_TEST_EMAIL`, `STREMIO_EMAIL` and
-`STREMIO_PASSWORD` for the designated Stremio account; the emails must match,
-and credentials are removed from the child environment before Android or
-Chromium start. It loads no put.io or Engine credentials.
+Maintainer-only; needs the Stremio variables from [live setup](./live.md#setup).
+Credentials are removed from the child environment before Android or Chromium
+start. It loads no put.io or Engine credentials.
 
 It pairs through [link.stremio.com](https://link.stremio.com/) headlessly, adds
 a temporary fixture add-on to the account, syncs it to TV and drives playback

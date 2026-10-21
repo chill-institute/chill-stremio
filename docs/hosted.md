@@ -2,8 +2,7 @@
 
 The multi-user add-on at `https://stremio.chill.institute`. chill-web issues
 each account's add-on link at `/stremio`; the link carries an Engine-issued
-credential that the adapter forwards to Engine on every call. The adapter keeps
-no database, key, installation registry or management API. For isolated
+credential that the adapter forwards to Engine on every call. For isolated
 single-user probes, use the [local adapter](./adapter.md).
 
 ## Run
@@ -54,7 +53,6 @@ fires every catalog request at once and never cancels them.
   The credential is an opaque PASETO `v4.local.` token with an optional key-ID
   footer. [credential.ts](../src/credential.ts) checks only shape and length;
   a malformed one gets `404` without calling Engine.
-- Engine calls send `X-Chill-Stremio-Credential`, never `Authorization`.
 - Anyone with the link can browse the library, play and start downloads. Stremio
   prints the full link in its install dialog; never share that screen.
 - Engine `401`/`403` shows a **Reconnect chill.institute** row or source and
@@ -86,9 +84,8 @@ the library for subtitles.
 
 ## Selected media
 
-Listings, HEAD, OPTIONS and prefetch hints are read-only. GET on
-`/s/<credential>/play/<type>/<id>/<release>.m3u8` looks the release up again
-with `Search` (or a [season pack](#season-packs) with
+GET on `/s/<credential>/play/<type>/<id>/<release>.m3u8` looks the release up
+again with `Search` (or a [season pack](#season-packs) with
 `GetTVShowSeasonDownloads`) and submits it with `AddTransfer`. A release that
 search no longer lists, or whose indexers fail, plays `release-unavailable`.
 Legacy `.mp4` selections get `404`, or `503` on indexer errors.
@@ -119,11 +116,10 @@ Legacy `.mp4` selections get `404`, or `503` on indexer errors.
 - **File choice.** A multi-file download plays only when exactly one video is
   not a sample (last name word `sample`, or under a `Sample`/`Samples` folder);
   otherwise, or past listing limits, it plays `select-file` and the user picks
-  from the library. Never guess by order or size.
+  from the library.
 - Personalized responses use `Cache-Control: no-store` and
   `Referrer-Policy: no-referrer`; request lines over 4,096 characters are
-  rejected. The player fetches media from put.io; the OAuth token stays in
-  Engine.
+  rejected.
 
 ### Videos put.io must convert
 
@@ -161,10 +157,10 @@ whose Engine release info is the selected episode; otherwise `select-file`, or
 
 Movie and episode lists start with up to ten **Play from put.io** rows from
 `FindOwnedVideos` (title and year; for episodes also season and episode).
-Engine matches filenames strictly; the adapter never reads them. The listing
-waits up to 0.5 seconds after release rows, or until 2 seconds after the
-request. Selecting `/s/<credential>/play/<type>/<id>/owned:<fileId>.m3u8`
-calls only `ResolvePlayback` and never submits. A malformed file ID, or an
+Engine matches filenames strictly. The listing waits up to 0.5 seconds after
+release rows, or until 2 seconds after the request. Selecting
+`/s/<credential>/play/<type>/<id>/owned:<fileId>.m3u8` calls only
+`ResolvePlayback` and never submits. A malformed file ID, or an
 `<id>` that is neither the page's ID nor the same file's `chill:file:<fileId>`,
 gets `400`.
 

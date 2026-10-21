@@ -63,9 +63,9 @@ reselection, not automatic continuation or URL refresh.
 
 ## Handoff
 
-Use one writable checkout per task. Report the tested revision, local result
-directory and CI run; a task is done only when its required assertions passed.
-Report missing runners and unavailable native or live checks separately.
+Report the tested revision, local result directory and CI run; a task is done
+only when its required assertions passed. Report missing runners and
+unavailable native or live checks separately.
 
 ## HLS playback
 

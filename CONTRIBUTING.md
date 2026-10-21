@@ -7,18 +7,10 @@ TypeScript, Node.js, Effect and the
 ## Setup and verify
 
 Install the [FFmpeg and browser prerequisites](./docs/harness.md#prerequisites),
-then:
+then run the [setup and verify commands](./AGENTS.md#setup-and-verify).
 
-```sh
-mise trust && mise install && mise run setup
-mise run verify
-mise run fixture:smoke
-```
-
-`mise run fixture:serve` serves fixtures in the foreground; after Ctrl-C,
-`mise run cleanup` removes generated state and keeps `artifacts/`. Run the
-affected playback lane when playback behavior changes, including
-[Renovate](./renovate.json) updates to playback-sensitive dependencies.
+`mise run fixture:serve` serves fixtures in the foreground; stop it before
+`mise run cleanup` ([recovery](./docs/harness.md#results-and-recovery)).
 
 ## Delivery
 
