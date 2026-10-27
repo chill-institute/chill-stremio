@@ -117,7 +117,8 @@ test("an account lookup slower than its grace is left out", async () => {
     f.state.ownedDelayMs = 3_000;
     const { names, elapsedMs } = await timedMovieRows(f);
     assert.deepEqual(names, ["Download to put.io"]);
-    assert.ok(elapsedMs < 2_800, `${elapsedMs} ms`);
+    // The listing gives up at the two-second floor, not later.
+    assert.ok(elapsedMs >= 2_000 && elapsedMs < 2_200, `${elapsedMs} ms`);
   } finally {
     await f.close();
   }
@@ -144,8 +145,9 @@ test("a fast release search does not cut the account and season lookups short", 
   try {
     f.state.ownedVideos = [ownedVideo(77n)];
     f.state.seasonPack = seasonPack;
-    // Search answers at once; both lookups answer after more than its grace.
-    f.state.ownedDelayMs = 1_200;
+    // Search answers at once; both lookups answer after more than its grace,
+    // the account lookup just inside its two-second floor.
+    f.state.ownedDelayMs = 1_800;
     f.state.seasonDelayMs = 1_200;
     assert.deepEqual((await timedMovieRows(f)).names, [
       "Play from put.io",

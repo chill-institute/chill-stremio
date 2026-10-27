@@ -14,7 +14,10 @@ CHILL_PUBLIC_ORIGIN=http://127.0.0.1:7000 mise run hosted:serve
 
 [hosted-run.ts](../src/hosted-run.ts) owns the configuration schema.
 `CHILL_PUBLIC_ORIGIN` must be the exact external origin. Set
-`CHILL_LISTEN_HOST=0.0.0.0` only behind the HTTPS ingress. Run the
+`CHILL_LISTEN_HOST=0.0.0.0` only behind the HTTPS ingress.
+`CHILL_WEB_ORIGIN` and `CHILL_ENGINE_BASE_URL` override the production web and
+Engine origins. `GET /health` reports process liveness only, not capacity or
+Engine reachability. Run the
 [Dockerfile](../Dockerfile) image with a read-only root filesystem, no
 capabilities and no volume; `hosted:container` checks that shape.
 
