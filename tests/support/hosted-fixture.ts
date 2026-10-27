@@ -163,6 +163,9 @@ export async function fixture(
     response.end(JSON.stringify({ code, message: "fixture error" }));
   };
   // Global timers, so a test's fake clock decides this Engine latency.
+  const latency = async (ms: number) => {
+    if (ms) await new Promise((resolve) => setTimeout(resolve, ms));
+  };
   const hold = async () => {
     if (!state.engineDelayMs) return;
     state.heldCalls++;
@@ -391,7 +394,7 @@ export async function fixture(
             );
             return;
           }
-          await sleep(state.seasonDelayMs);
+          await latency(state.seasonDelayMs);
           response.end(
             toJsonString(
               proto.GetTVShowSeasonDownloadsResponseSchema,
@@ -435,7 +438,7 @@ export async function fixture(
             );
             return;
           }
-          await sleep(state.ownedDelayMs);
+          await latency(state.ownedDelayMs);
           response.end(
             toJsonString(
               proto.FindOwnedVideosResponseSchema,
@@ -670,6 +673,33 @@ export async function releaseSelection(f: Fixture) {
 }
 
 // Real time bounds each wait, so a missing limit fails instead of stalling.
+/**
+ * Runs a request on a fake clock: advances fake timers and Date in small steps,
+ * giving sockets a real turn between steps, and returns the fake time the
+ * request took. Deadlines then cost no real time.
+ */
+export async function onFakeClock<T>(request: () => Promise<T>) {
+  const stepMs = 20;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+  try {
+    let settled = false;
+    const pending = request().finally(() => {
+      settled = true;
+    });
+    let elapsedMs = 0;
+    for (;;) {
+      await sleep(2);
+      if (settled) break;
+      assert.ok(elapsedMs < 30_000, "request did not settle on the fake clock");
+      await vi.advanceTimersByTimeAsync(stepMs);
+      elapsedMs += stepMs;
+    }
+    return { value: await pending, elapsedMs };
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 export async function until(condition: () => boolean) {
   const deadline = Date.now() + 2_000;
   while (!condition()) {
@@ -730,10 +760,16 @@ export const packSelection = (f: Fixture, id = seasonPack.id) =>
 export const location = async (url: string) =>
   (await fetch(url, { redirect: "manual" })).headers.get("location");
 
+/** Episode row names and the fake time the listing took. */
 export const timedEpisodeRows = async (f: Fixture) => {
-  const started = performance.now();
-  const names = (await episodeRows(f)).map(({ name }) => name);
-  return { names, elapsedMs: performance.now() - started };
+  const { value, elapsedMs } = await onFakeClock(() => episodeRows(f));
+  return { names: value.map(({ name }) => name), elapsedMs };
+};
+
+/** Movie row names and the fake time the listing took. */
+export const timedMovieRows = async (f: Fixture) => {
+  const { value, elapsedMs } = await onFakeClock(() => movieRows(f));
+  return { names: value.map(({ name }) => name), elapsedMs };
 };
 
 export const ownedVideo = (id: bigint) => ({

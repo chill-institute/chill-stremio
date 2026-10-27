@@ -21,6 +21,8 @@ import {
   rememberWaits,
   seasonPack,
   target,
+  timedEpisodeRows,
+  timedMovieRows,
   until,
 } from "./support/hosted-fixture.ts";
 
@@ -99,10 +101,10 @@ test("the account lookup runs alongside Search, not after it", async () => {
     // that follows Search only if it started with Search.
     f.state.engineDelayMs = 1_000;
     f.state.ownedDelayMs = 1_200;
-    assert.deepEqual(
-      (await movieRows(f)).map(({ name }) => name),
-      ["Play from put.io", "Download to put.io"],
-    );
+    assert.deepEqual((await timedMovieRows(f)).names, [
+      "Play from put.io",
+      "Download to put.io",
+    ]);
   } finally {
     await f.close();
   }
@@ -113,12 +115,9 @@ test("an account lookup slower than its grace is left out", async () => {
   try {
     f.state.ownedVideos = [ownedVideo(77n)];
     f.state.ownedDelayMs = 3_000;
-    const started = performance.now();
-    assert.deepEqual(
-      (await movieRows(f)).map(({ name }) => name),
-      ["Download to put.io"],
-    );
-    assert.ok(performance.now() - started < 2_800);
+    const { names, elapsedMs } = await timedMovieRows(f);
+    assert.deepEqual(names, ["Download to put.io"]);
+    assert.ok(elapsedMs < 2_800, `${elapsedMs} ms`);
   } finally {
     await f.close();
   }
@@ -131,14 +130,14 @@ test("the account lookup keeps its two seconds while a cold season lookup runs l
     f.state.seasonPack = seasonPack;
     f.state.ownedDelayMs = 3_000;
     f.state.seasonDelayMs = 4_000;
-    assert.deepEqual(
-      (await episodeRows(f)).map(({ name }) => name),
-      ["Download to put.io", "Download season to put.io"],
-    );
+    assert.deepEqual((await timedEpisodeRows(f)).names, [
+      "Download to put.io",
+      "Download season to put.io",
+    ]);
   } finally {
     await f.close();
   }
-}, 10_000);
+});
 
 test("a fast release search does not cut the account and season lookups short", async () => {
   const f = await fixture();
@@ -148,14 +147,15 @@ test("a fast release search does not cut the account and season lookups short", 
     // Search answers at once; both lookups answer after more than its grace.
     f.state.ownedDelayMs = 1_200;
     f.state.seasonDelayMs = 1_200;
-    assert.deepEqual(
-      (await movieRows(f)).map(({ name }) => name),
-      ["Play from put.io", "Download to put.io"],
-    );
-    assert.deepEqual(
-      (await episodeRows(f)).map(({ name }) => name),
-      ["Play from put.io", "Download to put.io", "Download season to put.io"],
-    );
+    assert.deepEqual((await timedMovieRows(f)).names, [
+      "Play from put.io",
+      "Download to put.io",
+    ]);
+    assert.deepEqual((await timedEpisodeRows(f)).names, [
+      "Play from put.io",
+      "Download to put.io",
+      "Download season to put.io",
+    ]);
   } finally {
     await f.close();
   }

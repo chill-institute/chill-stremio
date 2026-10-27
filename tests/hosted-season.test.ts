@@ -115,17 +115,14 @@ test("a season lookup Engine refuses or never answers leaves the episode rows", 
     );
     f.state.seasonRejection = undefined;
     f.state.stallSeasonPack = true;
-    const started = performance.now();
-    assert.deepEqual(
-      (await episodeRows(f)).map(({ name }) => name),
-      ["Download to put.io"],
-    );
-    assert.ok(performance.now() - started < 5_500);
+    const { names, elapsedMs } = await timedEpisodeRows(f);
+    assert.deepEqual(names, ["Download to put.io"]);
+    assert.ok(elapsedMs < 5_500, `${elapsedMs} ms`);
     await until(() => f.state.abandonedSeasonLookups === 1);
   } finally {
     await f.close();
   }
-}, 10_000);
+});
 
 test("a season lookup slower than the episode search still lists its pack", async () => {
   const f = await fixture();
@@ -134,10 +131,10 @@ test("a season lookup slower than the episode search still lists its pack", asyn
     // The pack answers after the search, but before the grace that follows it ends.
     f.state.engineDelayMs = 500;
     f.state.seasonDelayMs = 750;
-    assert.deepEqual(
-      (await episodeRows(f)).map(({ name }) => name),
-      ["Download to put.io", "Download season to put.io"],
-    );
+    assert.deepEqual((await timedEpisodeRows(f)).names, [
+      "Download to put.io",
+      "Download season to put.io",
+    ]);
   } finally {
     await f.close();
   }
@@ -162,7 +159,7 @@ test("a cold season lookup still lists its pack within five seconds of the reque
   } finally {
     await f.close();
   }
-}, 10_000);
+});
 
 test("a season lookup slower than five seconds is left out", async () => {
   const f = await fixture();
@@ -175,7 +172,7 @@ test("a season lookup slower than five seconds is left out", async () => {
   } finally {
     await f.close();
   }
-}, 10_000);
+});
 
 test("a season pack plays the one video Engine names as the requested episode", async () => {
   const f = await fixture();
