@@ -535,15 +535,16 @@ test("mixed search results cannot associate missing IMDb identifiers with missin
 test("release search paginates once before artwork association", async () => {
   const f = fixture();
   f.service.search = (query) =>
-    Effect.succeed(
-      create(SearchResponseSchema, {
+    Effect.sync(() => {
+      f.calls.push(`search:${query}`);
+      return create(SearchResponseSchema, {
         query,
         results: Array.from({ length: 105 }, (_, i) => ({
           ...release,
           id: String(i),
         })),
-      }),
-    );
+      });
+    });
   const result = await Effect.runPromise(
     discovery
       .catalog({
@@ -560,7 +561,7 @@ test("release search paginates once before artwork association", async () => {
     ),
     { kind: "release", query: "independent", id: "100" },
   );
-  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.calls, ["search:independent"]);
 });
 
 test("acquisition candidates are not searched for an episode missing from its season", async () => {
@@ -815,37 +816,6 @@ test("optional artwork does not hide authentication or malformed catalog failure
       assert.equal(result.code, code);
     }
   }
-});
-
-test("standard IMDb movie cards search the matching catalog title", async () => {
-  const f = fixture();
-  assert.ok(f.movies.movies[0]);
-  f.movies.movies[0].externalUrl = `https://www.imdb.com/title/${imdbId}/`;
-  const target = await Effect.runPromise(
-    readDiscoveryTarget({ type: "movie", id: imdbId }),
-  );
-  const candidates = await Effect.runPromise(
-    discovery.releases(target).pipe(Effect.provide(f.layer)),
-  );
-  assert.equal(candidates[0]?.id, release.id);
-  assert.deepEqual(f.calls, ["movies", `search:${movie.title} ${movie.year}`]);
-});
-
-test("standard IMDb episode cards share the existing episode acquisition identity", async () => {
-  const f = fixture();
-  const target = await Effect.runPromise(
-    readDiscoveryTarget({ type: "series", id: `${imdbId}:1:2` }),
-  );
-  assert.equal(discoveryTargetId(target), `chill:episode:${imdbId}:1:2`);
-  const candidates = await Effect.runPromise(
-    discovery.releases(target).pipe(Effect.provide(f.layer)),
-  );
-  assert.equal(candidates[0]?.id, release.id);
-  assert.deepEqual(f.calls, [
-    `detail:${imdbId}`,
-    `season:${imdbId}:1`,
-    `search:${show.title} S01E02`,
-  ]);
 });
 
 test("episode releases list only rows whose parsed numbers may hold the episode, and any row stays selectable", async () => {

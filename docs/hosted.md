@@ -218,12 +218,9 @@ mise run hosted:container
   `ResolvePlayback`. No lane covers the wait on the Convert row or live.
 - `hosted:container` runs the image read-only with no capabilities and checks
   the credential never reaches container logs.
-- Releasing commits on `main` cut a semantic-release version.
-  [Publish hosted adapter](../.github/workflows/publish-hosted.yml) is manual
-  and main-only: `build` verifies, tests and pushes the image to GHCR;
-  `publish` runs in the `publish` Environment with no checkout and no token
-  permissions, records the digest and dispatches Engine's deploy; `canary` runs
-  `hosted:public`.
+- Publishing is a manual dispatch of
+  [Publish hosted adapter](../.github/workflows/publish-hosted.yml) from
+  `main`; the workflow owns the build, deploy dispatch and canary.
 - Rollback: dispatch Engine's deploy with an earlier digest. Any v2.0.3+ image
   works; v2.0.0–v2.0.2 reject every issued link. Releases older than the canary
   fail their canary job; dispatch the canary from `main` instead.

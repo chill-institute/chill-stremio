@@ -2,6 +2,13 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite-plus";
 
 export default defineConfig({
+  run: {
+    tasks: {
+      check: { command: "vp check" },
+      // Tests write only scratch files, so a cache hit restores nothing.
+      test: { command: "vp test", cache: { output: [] } },
+    },
+  },
   test: {
     include: ["tests/**/*.test.ts"],
     env: {

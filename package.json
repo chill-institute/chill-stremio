@@ -6,9 +6,6 @@
   "type": "module",
   "scripts": {
     "setup": "node harness/setup.ts",
-    "check": "vp check",
-    "test": "vp test",
-    "verify": "vp check && vp test",
     "fixture:smoke": "node harness/run.ts",
     "fixture:serve": "node harness/serve.ts",
     "hls:smoke": "node harness/hls-smoke.ts",

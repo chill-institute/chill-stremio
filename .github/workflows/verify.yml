@@ -25,12 +25,6 @@ jobs:
       - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
       - run: pnpm install --frozen-lockfile
       - run: mise run verify
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "24.22.1"
-          package-manager-cache: false
-
       - name: Install locked semantic-release
         run: npm ci --prefix .github/release --ignore-scripts --no-audit --no-fund
 

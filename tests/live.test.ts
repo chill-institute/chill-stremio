@@ -98,7 +98,7 @@ function restore(name: string, value: string | undefined) {
   else process.env[name] = value;
 }
 
-test("allowance reserves conservatively and stops on an exhausted ledger", async () => {
+test("allowance reserves conservatively and refuses a transfer count past the safe accounting range", async () => {
   const directory = await mkdtemp(join(tmpdir(), "chill-live-"));
   try {
     await writeFile(

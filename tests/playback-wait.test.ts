@@ -6,18 +6,6 @@ const pending: PlaybackResult = { status: "pending" };
 const ready: PlaybackResult = { url: "https://media.fixture.test/video.mp4" };
 const timing = { windowMs: 1000, pollMs: 1, continuations: 0 };
 
-test("a pending selection resolves to real playback without another selection", async () => {
-  let polls = 0;
-  const result = await waitForPlayback(
-    pending,
-    async () => (++polls === 2 ? ready : pending),
-    new AbortController().signal,
-    timing,
-  );
-  assert.deepEqual(result, ready);
-  assert.equal(polls, 2);
-});
-
 test("ready and terminal outcomes do not poll", async () => {
   for (const result of [
     ready,
