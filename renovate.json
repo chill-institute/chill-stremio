@@ -22,6 +22,11 @@
       "description": "The browser image must carry the @playwright/test release",
       "matchPackageNames": ["@playwright/test", "mcr.microsoft.com/playwright"],
       "groupName": "Playwright"
+    },
+    {
+      "description": "router@1 needs the patched path-to-regexp 0.1.x line; 0.2.x is an older, vulnerable line",
+      "matchPackageNames": ["path-to-regexp"],
+      "allowedVersions": "<0.2.0"
     }
   ]
 }
