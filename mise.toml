@@ -10,7 +10,19 @@ run = ["pnpm install --frozen-lockfile", "pnpm exec vp run setup"]
 
 [tasks.verify]
 description = "Run credential-free type, protocol and workflow checks"
-run = ["pnpm exec vp run verify", "actionlint", "zizmor .github/workflows"]
+depends = ["check", "test", "actions"]
+
+[tasks.check]
+description = "Check formatting, lint and types"
+run = "pnpm exec vp run check"
+
+[tasks.test]
+description = "Run the credential-free test suite"
+run = "pnpm exec vp run test"
+
+[tasks.actions]
+description = "Lint and audit GitHub workflows"
+run = ["actionlint", "zizmor .github/workflows"]
 
 [tasks."fixture:smoke"]
 description = "Run real Stremio Web playback twice from fresh state"

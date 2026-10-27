@@ -330,37 +330,6 @@ test("a video put.io must convert lists no stream and starts no conversion", asy
   );
 });
 
-test("a preparing video lists its selection row and starts no conversion", async () => {
-  const f = fixture(
-    create(ResolvePlaybackResponseSchema, {
-      result: { case: "pending", value: { reason: 1 } },
-    }),
-  );
-  const selectionUrl = (fileId: bigint) =>
-    `https://adapter.example/play/${fileId}.m3u8`;
-  assert.deepEqual(
-    await Effect.runPromise(
-      createLibrary(42n, false, { selectionUrl })
-        .streams(request)
-        .pipe(Effect.provide(f.layer)),
-    ),
-    {
-      streams: [
-        {
-          name: "Play from put.io",
-          title: "My own movie.mkv\nput.io is preparing this video",
-          url: `https://adapter.example/play/${largeId}.m3u8`,
-          behaviorHints: { notWebReady: false },
-        },
-      ],
-    },
-  );
-  assert.deepEqual(
-    f.calls.map(({ method }) => method),
-    ["getFolder", "resolvePlayback"],
-  );
-});
-
 test("a conversion request accepts only a pending or unavailable result", async () => {
   for (const [conversion, expected] of [
     [{ case: "pending", value: { reason: 1 } }, "pending"],

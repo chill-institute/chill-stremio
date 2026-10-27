@@ -11,7 +11,7 @@
   keeps no database, key, installation registry or management API and never
   receives the put.io OAuth token. Its only memory is in process, keyed by
   credential-and-selection hashes: shared submissions and owned-video waits,
-  both bounded per [hosted](./hosted.md).
+  both bounded in [hosted.ts](../src/hosted.ts).
 
 The [local adapter](./adapter.md) calls Engine's `UserService` with the chill
 bearer; the [hosted adapter](./hosted.md) calls the same functions with
