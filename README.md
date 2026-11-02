@@ -30,8 +30,9 @@ the add-on shows **Reconnect chill.institute**, install it again from
   ready; an episode can also offer **Download season to put.io**. If playback
   can't start, a short clip says what to do next.
 
-Supported clients are Stremio Web and Stremio for Linux (Flathub 1.2.0,
-x86_64). Other Stremio apps are unverified.
+Supported clients are Stremio Web and Stremio for Linux on x86_64. The
+[desktop harness pin](./harness/native/desktop-versions.ts) identifies the
+tested Linux build. Other Stremio apps are unverified.
 
 ## Develop
 

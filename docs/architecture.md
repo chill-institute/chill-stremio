@@ -52,12 +52,10 @@ click.
 
 ## Deadlines
 
-Discovery RPCs get the time left on the request or submission budget, capped by
-the 10-second step, minus 500 ms to receive. `AddTransfer` gets 21 seconds,
-outlasting Engine's 20-second shared add. The submission budget is independent
-of any request; a spent deadline fails without calling Engine. Waiting is
-bounded in [playback-wait.ts](../src/playback-wait.ts); routes and windows in
-[hosted.ts](../src/hosted.ts).
+The submission budget is independent of any request, so an abandoned player
+request does not cancel an in-flight add. A spent deadline fails before calling
+Engine. Deadline values and waiting rules live in
+[playback-wait.ts](../src/playback-wait.ts) and [hosted.ts](../src/hosted.ts).
 
 ## Playback URLs
 

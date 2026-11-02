@@ -60,15 +60,6 @@ frame, and the harness rejects retained text containing the credential.
 [Installation screenshots](../tests/fixtures/desktop-installation) show the
 states it matches.
 
-## Current Linux result
-
-Manual CI on 2026-10-11 (x86_64, client 1.2.0, GNOME runtime 50.5) passed all
-three modes in both trials:
-[run 38160488734](https://github.com/chill-institute/chill-stremio/actions/runs/38160488734).
-Client 1.2.2 passed both hosted modes but failed Next Video in three of four
-fixture trials, so the lane stays on 1.2.0. ARM64 has no CI runner; it last
-passed fixture and hosted HLS on 2026-09-21/23 on an older runtime.
-
 ## Ownership and recovery
 
 - Stop only the Flatpak instance IDs this attempt started; never kill by app

@@ -77,6 +77,4 @@ default fixture bundles English audio in the video variant.
 a pinned-client worker defect (`ReferenceError: e is not defined`): the worker
 fallback creates only the video buffer and fails when audio arrives. Bundling
 audio avoids it without changing the client or assertions; it is not a fix to
-Stremio. The
-[checked Web revision](https://github.com/Stremio/stremio-web/commit/afbc05e3d99cb30779d889ee0b1c86b927af3a95)
-still has the affected build.
+Stremio. Check [versions.ts](../harness/versions.ts) for the pinned build.
