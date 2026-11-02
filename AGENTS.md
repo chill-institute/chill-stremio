@@ -47,11 +47,10 @@ mise run fixture:smoke
 
 Gaps:
 
-- Playback lanes run in CI only on manual dispatch; run the affected lane,
-  including for [Renovate](./renovate.json) updates to playback dependencies.
+- Run the affected playback lane, including for
+  [Renovate](./renovate.json) updates to playback dependencies.
 - Android TV playback is unproven and its lanes exit `blocked`.
 - Engine deploys go unchecked until the next canary; dispatch it after one.
-- CI artifacts expire after 7 days; archive evidence you need.
 
 ## Code
 

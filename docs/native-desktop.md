@@ -71,6 +71,4 @@ states it matches.
 
 ## CI
 
-[native-desktop.yml](../.github/workflows/native-desktop.yml) is manual and
-read-only on x86_64 Ubuntu. It runs all three modes after one setup, has no
-account secrets and does not gate merges.
+[Native desktop workflow](../.github/workflows/native-desktop.yml).
