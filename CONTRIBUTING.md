@@ -14,11 +14,9 @@ then run the [setup and verify commands](./AGENTS.md#setup-and-verify).
 
 ## Delivery
 
-Use Conventional Commits. The commit-analyzer `releaseRules` in
-[.releaserc.json](./.releaserc.json) decide what releases from `main`;
-[smoke.mjs](./.github/release/smoke.mjs) fails when they drift from the other
-chill.institute packages. Publishing and rollback:
-[hosted release](./docs/hosted.md#release).
+[Release rules](./.releaserc.json) ·
+[release check](./.github/release/smoke.mjs) ·
+[publishing and rollback](./docs/hosted.md#release).
 
 Code and docs are [MIT licensed](./LICENSE); dependencies and the
 [fixture font](./harness/fonts/LICENSE) keep their own licenses.

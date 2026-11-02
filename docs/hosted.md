@@ -47,9 +47,7 @@ mise run hosted:container
 
 - Read the `hosted:smoke` receipt before claiming playback or cleanup. Its
   recording is shareable only because the lane is fake.
-- Publish by dispatching
-  [Publish hosted adapter](../.github/workflows/publish-hosted.yml) from
-  `main`; the workflow owns the build, deploy dispatch and canary.
+- [Publishing workflow](../.github/workflows/publish-hosted.yml).
 - **Rollback:** dispatch Engine's deploy with an earlier image digest. Any
   v2.0.3+ image works; v2.0.0–v2.0.2 reject every issued link. A release older
   than the canary fails its canary job, so dispatch the canary from `main`
