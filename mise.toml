@@ -2,7 +2,7 @@
 node = "24.22.2"
 pnpm = "12.16.1"
 actionlint = "1.7.12"
-zizmor = "1.31.1"
+zizmor = "1.32.0"
 
 [tasks.setup]
 description = "Install locked dependencies, pinned Web client, browser and fixture media"
