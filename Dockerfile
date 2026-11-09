@@ -11,7 +11,7 @@ COPY src/status-media.ts ./src/status-media.ts
 RUN node scripts/status-media.ts
 
 # Browser lanes on hosts without Chromium libraries; see docs/harness.md.
-FROM mcr.microsoft.com/playwright:v1.64.1-noble@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f AS browser
+FROM mcr.microsoft.com/playwright:v1.65.0-noble@sha256:6e3fb709361521eb27161606e6da6d2674e5e89fa16516cb37d6fdd91372273d AS browser
 COPY --from=dependencies /usr/local/bin/node /usr/local/bin/node
 RUN apt-get update && apt-get install --yes --no-install-recommends ffmpeg fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
 COPY package.json /tmp/package.json
