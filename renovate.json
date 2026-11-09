@@ -9,6 +9,14 @@
       "matchStrings": ["\\beffect: \"(?<currentValue>[^\"]+)\""],
       "depNameTemplate": "effect",
       "datasourceTemplate": "npm"
+    },
+    {
+      "description": "The harness pins Playwright again in versions.ts; setup refuses a mismatch",
+      "customType": "regex",
+      "managerFilePatterns": ["/^harness/versions\\.ts$/"],
+      "matchStrings": ["\\bplaywright: \"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "@playwright/test",
+      "datasourceTemplate": "npm"
     }
   ],
   "packageRules": [
