@@ -1,6 +1,6 @@
 # chill-stremio
 
-![chill.institute stremio](https://chill.institute/banner.png)
+![chill.institute stremio](https://raw.githubusercontent.com/chill-institute/.github/main/assets/banner.png)
 
 The Stremio add-on for [chill.institute](https://chill.institute). Browse
 movies and TV shows, download releases to put.io, and play your put.io library
