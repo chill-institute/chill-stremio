@@ -61,7 +61,14 @@ export async function decode<A, I>(
 }
 
 export async function fixture(
-  options: { selectionReuseMs?: number; selectionPendingMs?: number } = {},
+  options: {
+    selectionReuseMs?: number;
+    selectionPendingMs?: number;
+    origins?: Pick<
+      Parameters<typeof startHostedAdapter>[0],
+      "publicOrigin" | "webOrigin" | "additionalOrigins"
+    >;
+  } = {},
 ) {
   const calls: {
     method: string;
@@ -631,6 +638,7 @@ export async function fixture(
       webOrigin,
       selectionReuseMs: options.selectionReuseMs,
       selectionPendingMs: options.selectionPendingMs,
+      ...options.origins,
     });
   let hosted = await start();
   return {
@@ -641,6 +649,9 @@ export async function fixture(
     state,
     get origin() {
       return hosted.origin;
+    },
+    get listenOrigin() {
+      return hosted.listenOrigin;
     },
     base(value = ownerCredential) {
       return `${hosted.origin}/s/${value}`;
