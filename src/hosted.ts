@@ -8,6 +8,7 @@ import sdk, {
 } from "stremio-addon-sdk";
 import { acquisitionEngineLayer } from "./acquisition-engine.ts";
 import { createAdmission, type Lease, type Refusal } from "./admission.ts";
+import { hostedAuthority } from "./hosted-config.ts";
 import { credentialPattern } from "./credential.ts";
 import { manifestDescriptions } from "./manifest-descriptions.ts";
 import {
@@ -131,7 +132,7 @@ export async function startHostedAdapter(options: {
   const configuredHosts = [
     options.publicOrigin,
     ...additionalOrigins.map(({ publicOrigin }) => publicOrigin),
-  ].flatMap((value) => (value ? [new URL(value).host] : []));
+  ].flatMap((value) => (value ? [hostedAuthority(new URL(value).host)] : []));
   if (new Set(configuredHosts).size !== configuredHosts.length)
     throw new Error("Duplicate hosted origin");
   const statusMedia = options.statusMedia ?? (await loadStatusMedia());
@@ -340,7 +341,7 @@ export async function startHostedAdapter(options: {
       return result.ok ? result.value : fail(result.code);
     };
     const handle = async () => {
-      const host = request.headers.host?.toLowerCase();
+      const host = hostedAuthority(request.headers.host ?? "");
       const site = sites.find((candidate) => candidate.host === host);
       if (!site || (request.url?.length ?? 0) > 4096) return fail("not_found");
       const origin = site.origin;
@@ -884,7 +885,7 @@ export async function startHostedAdapter(options: {
       ...additionalOrigins,
     ].map((pair) => ({
       origin: pair.publicOrigin,
-      host: new URL(pair.publicOrigin).host,
+      host: hostedAuthority(new URL(pair.publicOrigin).host),
       webOrigin: pair.webOrigin,
     }));
   } catch {
