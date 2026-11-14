@@ -6,6 +6,7 @@ import { isCredential, redactCredentials } from "../../src/credential.ts";
 import { createEngineRpc, EngineError } from "../../src/engine.ts";
 import { reserve } from "./allowance.ts";
 import { sameAccountRoot } from "./binding.ts";
+import { liveEndpoints } from "./endpoints.ts";
 import {
   createLiveAttempt,
   trackAcquisition,
@@ -227,12 +228,11 @@ export const runTransferReuse = Effect.fn("live.runTransferReuse")(function* (
 
 if (import.meta.main) {
   const stamp = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
+  const { engine } = await liveEndpoints();
   NodeRuntime.runMain(
     runTransferReuse({
       credential: process.env.CHILL_STREMIO_CREDENTIAL?.trim() ?? "",
-      engineBaseUrl:
-        process.env.CHILL_ENGINE_BASE_URL?.trim() ||
-        "https://api.chill.institute/v4",
+      engineBaseUrl: engine,
       username: process.env[liveVersions.usernameEnv]?.trim(),
       ledgerDirectory: () => liveRunnerDirectory(),
       provider: putio,

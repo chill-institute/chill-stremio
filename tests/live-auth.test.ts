@@ -240,6 +240,10 @@ for (const scenario of ["valid", "wrong-account", "unavailable"] as const) {
     vi.stubEnv(liveVersions.usernameEnv, "fixture-user");
     vi.stubEnv(liveVersions.passwordEnv, "fixture-password");
     vi.stubEnv(liveVersions.otpEnv, rfcSecret);
+    vi.stubEnv(
+      "CHILL_PUBLIC_STREMIO_ORIGIN",
+      "https://stremio.chill.institute",
+    );
     let validations = 0;
     vi.stubGlobal(
       "fetch",

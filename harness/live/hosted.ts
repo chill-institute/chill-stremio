@@ -15,6 +15,7 @@ import { createEngineRpc, EngineError } from "../../src/engine.ts";
 import { startHostedAdapter } from "../../src/hosted.ts";
 import { discoveryTargetId } from "../../src/discovery.ts";
 import { authorizeChill } from "./auth.ts";
+import { liveEndpoints } from "./endpoints.ts";
 import {
   AllowanceFailure,
   allowanceLimits,
@@ -171,7 +172,7 @@ export async function startFixtureDiscoveryProxy(
   bytes: number,
   destination: bigint,
   observeTransfer: (transfer: proto.Transfer) => Promise<void>,
-  engineBaseUrl = "https://api.chill.institute/v4",
+  engineBaseUrl: string,
 ) {
   const rpc = await Effect.runPromise(
     createEngineRpc({ baseUrl: engineBaseUrl, token }),
@@ -475,8 +476,9 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
       const chillToken = yield* Effect.tryPromise((signal) =>
         authorizeChill({ signal }),
       );
+      const { engine } = yield* Effect.tryPromise(() => liveEndpoints());
       const rpc = yield* createEngineRpc({
-        baseUrl: "https://api.chill.institute/v4",
+        baseUrl: engine,
         token: chillToken,
       });
       const profile = yield* rpc.call((options) =>
@@ -624,6 +626,7 @@ export const runHostedAcquisition = Effect.fn("live.runHostedAcquisition")(
           source.bytes,
           destination,
           observeTransfer,
+          engine,
         ),
       );
       const engineBaseUrl = proxy.origin;

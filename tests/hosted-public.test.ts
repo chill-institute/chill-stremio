@@ -335,6 +335,20 @@ test("public check fails at configuration without a credential", async () => {
   }
 });
 
+test("public check with a pinned unreachable origin fails without another domain", async () => {
+  const unreachable = createServer();
+  const origin = await listen(unreachable);
+  await close(unreachable);
+  const run = await runPublic(origin, credential, origin);
+  assert.equal(run.code, 1);
+  assert.equal(run.receipt.passed, false);
+  assert.ok(!run.output.includes("institute"));
+  assert.deepEqual(
+    run.receipt.steps.map((step) => step.name),
+    ["endpoints", "unexpected"],
+  );
+});
+
 test("public check redacts credential material an endpoint echoes back", async () => {
   const echo = createServer((request, response) => {
     if (request.url === "/manifest.json") {

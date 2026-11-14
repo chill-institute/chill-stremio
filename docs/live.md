@@ -15,7 +15,10 @@ Supply these through a private process environment, never this checkout:
   `STREMIO_PASSWORD`.
 - Deployed-adapter lanes: `CHILL_STREMIO_CREDENTIAL`, minted as in
   [canary credential](./hosted.md#canary-credential).
-  `CHILL_PUBLIC_STREMIO_ORIGIN` and `CHILL_ENGINE_BASE_URL` override endpoints.
+  `CHILL_PUBLIC_STREMIO_ORIGIN` and `CHILL_ENGINE_BASE_URL` pin endpoints;
+  otherwise lanes use the first domain in
+  [endpoints.ts](../harness/live/endpoints.ts) that answers at the network
+  level and warn about any that do not. Domain monitoring lives elsewhere.
 
 Run `mise run live:setup` first; it encodes the fixture and calls nothing.
 Live state lives in `~/.local/state/chill-stremio/live/runner` (`0700`), shared

@@ -12,6 +12,7 @@ import { validateProvenance } from "../provenance.ts";
 import { createLibrary } from "../../src/library.ts";
 import { engineLayer } from "../../src/engine.ts";
 import { authorizeChill } from "./auth.ts";
+import { liveEndpoints } from "./endpoints.ts";
 import { reserve } from "./allowance.ts";
 import { liveRunnerDirectory } from "./runner.ts";
 import {
@@ -108,6 +109,7 @@ const work = Effect.gen(function* () {
   const chillToken = yield* Effect.tryPromise((signal) =>
     authorizeChill({ signal }),
   );
+  const { engine } = yield* Effect.tryPromise(() => liveEndpoints());
   const playback = yield* createLibrary(BigInt(folder.id))
     .streams({
       type: "movie",
@@ -116,7 +118,7 @@ const work = Effect.gen(function* () {
     .pipe(
       Effect.provide(
         engineLayer({
-          baseUrl: "https://api.chill.institute/v4",
+          baseUrl: engine,
           token: chillToken,
         }),
       ),

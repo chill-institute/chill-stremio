@@ -4,6 +4,7 @@ import { credentialPattern } from "../../src/credential.ts";
 import { AllowanceFailure } from "./allowance.ts";
 import { AuthSessionFailure } from "./auth-session.ts";
 import { authorizeChill, ChillAuthorizationFailure } from "./auth.ts";
+import { liveEndpoints } from "./endpoints.ts";
 
 // Mints the designated account's add-on credential for the post-deploy canary.
 // The value goes only to stdout, and only when stdout is a pipe or an
@@ -40,7 +41,7 @@ export async function issueCredential(options: {
   let response: Response;
   try {
     response = await fetch(
-      `${options.apiOrigin ?? "https://api.chill.institute"}/stremio/credential`,
+      `${options.apiOrigin ?? (await liveEndpoints()).api}/stremio/credential`,
       {
         method: "POST",
         headers: { Authorization: `Bearer ${options.token}` },

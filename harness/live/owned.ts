@@ -14,6 +14,7 @@ import {
   writeRecoveryJournal,
 } from "./lifecycle.ts";
 import { decodeVideo } from "./playback.ts";
+import { isProductionStremioOrigin, liveEndpoints } from "./endpoints.ts";
 import * as putio from "./putio.ts";
 import { liveRunnerDirectory } from "./runner.ts";
 import { ensureConvertSource, ensureLiveSource } from "./source.ts";
@@ -919,10 +920,9 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
             `${JSON.stringify(
               {
                 status: outcome.status,
-                endpoint:
-                  options.origin === "https://stremio.chill.institute"
-                    ? "default"
-                    : "override",
+                endpoint: isProductionStremioOrigin(options.origin)
+                  ? "default"
+                  : "override",
                 proof,
                 primary: outcome.primary,
                 cleanup: outcome.cleanup,
@@ -941,15 +941,12 @@ export const runOwnedPlayback = Effect.fn("live.runOwnedPlayback")(function* (
 
 if (import.meta.main) {
   const stamp = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
+  const endpoints = await liveEndpoints();
   NodeRuntime.runMain(
     runOwnedPlayback({
       credential: process.env.CHILL_STREMIO_CREDENTIAL?.trim() ?? "",
-      origin:
-        process.env.CHILL_PUBLIC_STREMIO_ORIGIN?.trim() ||
-        "https://stremio.chill.institute",
-      engineBaseUrl:
-        process.env.CHILL_ENGINE_BASE_URL?.trim() ||
-        "https://api.chill.institute/v4",
+      origin: endpoints.stremio,
+      engineBaseUrl: endpoints.engine,
       username: process.env[liveVersions.usernameEnv]?.trim(),
       ledgerDirectory: () => liveRunnerDirectory(),
       provider: putio,
