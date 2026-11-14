@@ -1,5 +1,8 @@
 export function hostAuthority(host: string, protocol: string) {
-  const match = /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.?)(?::([0-9]{1,5}))?$/.exec(host);
+  const match =
+    /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.?)(?::([0-9]{1,5}))?$/.exec(
+      host,
+    );
   if (!match) return undefined;
   const hostname = match[1]!.toLowerCase().replace(/\.$/, "");
   const port = match[2];
