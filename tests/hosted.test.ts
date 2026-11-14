@@ -1221,7 +1221,7 @@ test("public catalog entry requires configuration and never accesses an account"
     });
     const listing = {
       logo: `${f.origin}/configure-assets/logo.png`,
-      contactEmail: "chillardinho@chill.institute",
+      contactEmail: "chill-institute@proton.me",
     };
     const supportedClients = (copy: string) => {
       assert.match(copy, /Tested in Stremio Web and Stremio for Linux[.;]/);
