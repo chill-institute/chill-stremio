@@ -4,6 +4,7 @@ import { chromium, type Browser } from "@playwright/test";
 import { Effect, Schema } from "effect";
 import { createEngineRpc, EngineError } from "../../src/engine.ts";
 import { cachedAuthorization } from "./auth-session.ts";
+import { productionLiveEndpoints } from "./endpoints.ts";
 import { liveRunnerDirectory } from "./runner.ts";
 import { liveVersions } from "./versions.ts";
 
@@ -137,20 +138,23 @@ async function authorizeWithBrowser(
     signal.throwIfAborted();
     const page = await browser.newPage();
     page.setDefaultTimeout(20000);
+    const { api, web } = await productionLiveEndpoints();
     let capturedToken: string | undefined;
     // Engine's state cookie remains in this fresh browser throughout normal OAuth.
     page.on("framenavigated", (frame) => {
       if (frame !== page.mainFrame()) return;
       try {
         const url = new URL(frame.url());
-        if (url.origin !== "https://chill.institute") return;
+        if (url.origin !== web) return;
         const value = new URLSearchParams(url.hash.slice(1)).get("auth_token");
         if (value) capturedToken = Schema.decodeUnknownSync(Token)(value);
       } catch {
         /* Ignore unrelated navigation and malformed callback values. */
       }
     });
-    await page.goto("https://api.chill.institute/auth/putio/start", {
+    const start = new URL("/auth/putio/start", api);
+    start.searchParams.set("success_url", `${web}/auth/success`);
+    await page.goto(start.href, {
       waitUntil: "domcontentloaded",
       timeout: 30000,
     });
@@ -230,8 +234,11 @@ export async function authorizeChill(
       options.signal?.throwIfAborted();
       const result = await Effect.runPromise(
         Effect.gen(function* () {
+          const { engine } = yield* Effect.tryPromise(() =>
+            productionLiveEndpoints(),
+          );
           const rpc = yield* createEngineRpc({
-            baseUrl: "https://api.chill.institute/v4",
+            baseUrl: engine,
             token,
           });
           return yield* rpc.call((request) =>

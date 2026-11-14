@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { isCredential, redactCredentials } from "../../src/credential.ts";
 import { manifestDescriptions } from "../../src/manifest-descriptions.ts";
+import { liveEndpoints } from "./endpoints.ts";
 import { redactLive } from "./redact.ts";
 
 // Read-only proof that the deployed adapter serves the designated account
@@ -8,12 +9,8 @@ import { redactLive } from "./redact.ts";
 // release results, and check that Engine lets the credential look up season
 // packs and videos already in the account. No stream is consumed, so no
 // transfer or allowance is used.
-const origin = new URL(
-  process.env.CHILL_PUBLIC_STREMIO_ORIGIN ?? "https://stremio.chill.institute",
-).origin;
-const engineBaseUrl = (
-  process.env.CHILL_ENGINE_BASE_URL ?? "https://api.chill.institute/v4"
-).replace(/\/+$/, "");
+let origin = "";
+let engineBaseUrl = "";
 const credential = process.env.CHILL_STREMIO_CREDENTIAL?.trim() ?? "";
 const stamp = new Date().toISOString().replaceAll(":", "-");
 const artifact = `artifacts/public-${stamp}`;
@@ -57,6 +54,9 @@ let passed = false;
 try {
   if (!isCredential(credential))
     fail("configuration", "designated add-on credential absent");
+  const endpoints = await liveEndpoints();
+  origin = endpoints.stremio;
+  engineBaseUrl = endpoints.engine;
   const engine = URL.canParse(engineBaseUrl) ? new URL(engineBaseUrl) : null;
   if (
     engine?.protocol !== "https:" &&
@@ -66,6 +66,7 @@ try {
     )
   )
     fail("configuration", "Engine base URL must use HTTPS");
+  pass("endpoints", `${origin} with ${engine?.origin}`);
   const health = await read("/health");
   if (health.status !== 200) fail("health", `status ${health.status}`);
   pass("health");

@@ -24,6 +24,7 @@ import {
   listSubtitles,
   uploadFile,
 } from "./putio.ts";
+import { liveEndpoints } from "./endpoints.ts";
 import { removeOwnedAddon } from "./stremio-account.ts";
 import { liveRunnerDirectory } from "./runner.ts";
 import {
@@ -301,6 +302,7 @@ export const runAuthenticatedAdapter = Effect.fn(
     stage = "start-services";
     const web = yield* startWeb;
     webOrigin = web.origin;
+    const endpoints = yield* Effect.tryPromise(() => liveEndpoints());
     const layer = Layer.effect(
       Engine,
       Effect.gen(function* () {
@@ -354,7 +356,7 @@ export const runAuthenticatedAdapter = Effect.fn(
     ).pipe(
       Layer.provide(
         engineLayer({
-          baseUrl: "https://api.chill.institute/v4",
+          baseUrl: endpoints.engine,
           token: credentials.chillToken,
         }),
       ),

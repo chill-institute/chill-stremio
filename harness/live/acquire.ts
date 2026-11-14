@@ -21,6 +21,7 @@ import {
   type OwnedWebCleanup,
 } from "./owned.ts";
 import { decodeVideo } from "./playback.ts";
+import { isProductionStremioOrigin, liveEndpoints } from "./endpoints.ts";
 import * as putio from "./putio.ts";
 import { liveRunnerDirectory } from "./runner.ts";
 import { liveVersions } from "./versions.ts";
@@ -1107,10 +1108,9 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
               {
                 status: outcome.status,
                 lane: "hosted acquisition",
-                endpoint:
-                  options.origin === "https://stremio.chill.institute"
-                    ? "default"
-                    : "override",
+                endpoint: isProductionStremioOrigin(options.origin)
+                  ? "default"
+                  : "override",
                 proof,
                 primary: outcome.primary,
                 cleanup: outcome.cleanup,
@@ -1130,13 +1130,12 @@ export const runAcquisition = Effect.fn("live.runAcquisition")(function* (
 if (import.meta.main) {
   const stamp = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID().slice(0, 8)}`;
   const env = (name: string) => process.env[name]?.trim();
+  const endpoints = await liveEndpoints();
   NodeRuntime.runMain(
     runAcquisition({
       credential: env("CHILL_STREMIO_CREDENTIAL") ?? "",
-      origin:
-        env("CHILL_PUBLIC_STREMIO_ORIGIN") || "https://stremio.chill.institute",
-      engineBaseUrl:
-        env("CHILL_ENGINE_BASE_URL") || "https://api.chill.institute/v4",
+      origin: endpoints.stremio,
+      engineBaseUrl: endpoints.engine,
       username: env(liveVersions.usernameEnv),
       pin: {
         imdbId: env("LIVE_ACQUIRE_IMDB_ID"),
