@@ -101,6 +101,10 @@ export async function startHostedAdapter(options: {
   engineBaseUrl: string;
   webOrigin: string;
   publicOrigin?: string;
+  additionalOrigins?: ReadonlyArray<{
+    publicOrigin: string;
+    webOrigin: string;
+  }>;
   host?: string;
   port?: number;
 }) {
@@ -114,11 +118,22 @@ export async function startHostedAdapter(options: {
           ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
     );
   };
+  const additionalOrigins = options.additionalOrigins ?? [];
   if (
     !validOrigin(options.webOrigin) ||
-    (options.publicOrigin && !validOrigin(options.publicOrigin))
+    (options.publicOrigin && !validOrigin(options.publicOrigin)) ||
+    (additionalOrigins.length > 0 && !options.publicOrigin) ||
+    !additionalOrigins.every(
+      (pair) => validOrigin(pair.publicOrigin) && validOrigin(pair.webOrigin),
+    )
   )
     throw new Error("Invalid hosted origin");
+  const configuredHosts = [
+    options.publicOrigin,
+    ...additionalOrigins.map(({ publicOrigin }) => publicOrigin),
+  ].flatMap((value) => (value ? [new URL(value).host] : []));
+  if (new Set(configuredHosts).size !== configuredHosts.length)
+    throw new Error("Duplicate hosted origin");
   const statusMedia = options.statusMedia ?? (await loadStatusMedia());
   const controllers = new Set<AbortController>();
   // A unit is an open request or an unsettled submission. Stremio requests
@@ -201,9 +216,9 @@ export async function startHostedAdapter(options: {
         `${credential}\n${choice.type}\n${choice.id}\n${choice.releaseId}`,
       )
       .digest("hex");
-  let origin = options.publicOrigin ?? "";
+  let primaryOrigin = options.publicOrigin ?? "";
   let listenOrigin = "";
-  const reconnectUrl = `${options.webOrigin}/stremio`;
+  let sites: { origin: string; host: string; webOrigin: string }[] = [];
   const idPrefixes = [
     ...(adapterManifest.idPrefixes ?? []),
     ...discoveryIdPrefixes,
@@ -235,25 +250,25 @@ export async function startHostedAdapter(options: {
     ],
     behaviorHints: { configurable: true, configurationRequired: false },
   };
-  const reconnectMeta = (type: ContentType) => ({
+  const reconnectMeta = (type: ContentType, reconnectUrl: string) => ({
     id: "chill:reconnect",
     type,
     name: "Reconnect chill.institute",
     description: `This add-on link is no longer accepted. Open ${reconnectUrl} and install the add-on again.`,
     behaviorHints: { defaultVideoId: "chill:reconnect" },
   });
-  const reconnectStream = {
+  const reconnectStream = (reconnectUrl: string) => ({
     name: "chill.institute",
     title: `Reconnect at ${reconnectUrl}`,
     externalUrl: reconnectUrl,
-  };
+  });
   const rejected = (error: unknown) =>
     error instanceof HttpFailure &&
     (error.code === "unauthenticated" || error.code === "permission_denied");
   // Parsed as routing parses it, so dot segments cannot escape a link's limit.
   const personalRoute = (target = "/") => {
-    const match = URL.canParse(target, origin)
-      ? /^\/s\/([^/]+)\/([a-z]*)/.exec(new URL(target, origin).pathname)
+    const match = URL.canParse(target, primaryOrigin)
+      ? /^\/s\/([^/]+)\/([a-z]*)/.exec(new URL(target, primaryOrigin).pathname)
       : null;
     // Status clips never contact Engine, and HLS players give up on a 4xx.
     if (
@@ -325,11 +340,11 @@ export async function startHostedAdapter(options: {
       return result.ok ? result.value : fail(result.code);
     };
     const handle = async () => {
-      if (
-        request.headers.host !== new URL(origin).host ||
-        (request.url?.length ?? 0) > 4096
-      )
-        return fail("not_found");
+      const host = request.headers.host?.toLowerCase();
+      const site = sites.find((candidate) => candidate.host === host);
+      if (!site || (request.url?.length ?? 0) > 4096) return fail("not_found");
+      const origin = site.origin;
+      const reconnectUrl = `${site.webOrigin}/stremio`;
       const url = new URL(request.url ?? "/", origin);
       if (url.origin !== origin) return fail("not_found");
       if (url.pathname === "/health" && request.method === "GET") {
@@ -365,7 +380,7 @@ export async function startHostedAdapter(options: {
             behaviorHints: { configurable: true, configurationRequired: true },
           });
         } else if (url.pathname === "/configure") {
-          const page = configurePage(options.webOrigin);
+          const page = configurePage(site.webOrigin);
           response.writeHead(200, {
             "Content-Type": "text/html; charset=utf-8",
             "Content-Security-Policy": page.contentSecurityPolicy,
@@ -759,13 +774,14 @@ export async function startHostedAdapter(options: {
             ? await run(library.catalog(input).pipe(Effect.provide(layer)))
             : await run(discovery.catalog(input).pipe(Effect.provide(layer)));
         } catch (error) {
-          if (rejected(error)) return { metas: [reconnectMeta(type)] };
+          if (rejected(error))
+            return { metas: [reconnectMeta(type, reconnectUrl)] };
           throw error;
         }
       });
       builder.defineMetaHandler(async (input) => {
         if (input.id === "chill:reconnect")
-          return { meta: reconnectMeta(input.type) };
+          return { meta: reconnectMeta(input.type, reconnectUrl) };
         const result = input.id.startsWith("chill:file:")
           ? await run(library.meta(input).pipe(Effect.provide(layer)))
           : await run(discovery.meta(input).pipe(Effect.provide(layer)));
@@ -775,13 +791,14 @@ export async function startHostedAdapter(options: {
       });
       builder.defineStreamHandler(async (input) => {
         if (input.id === "chill:reconnect")
-          return { streams: [reconnectStream] };
+          return { streams: [reconnectStream(reconnectUrl)] };
         try {
           return input.id.startsWith("chill:file:")
             ? await run(library.streams(input).pipe(Effect.provide(layer)))
             : await run(selection.streams(input).pipe(Effect.provide(layer)));
         } catch (error) {
-          if (rejected(error)) return { streams: [reconnectStream] };
+          if (rejected(error))
+            return { streams: [reconnectStream(reconnectUrl)] };
           throw error;
         }
       });
@@ -861,7 +878,15 @@ export async function startHostedAdapter(options: {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("No listener");
     listenOrigin = `http://${address.address.includes(":") ? `[${address.address}]` : address.address}:${address.port}`;
-    origin ||= listenOrigin;
+    primaryOrigin ||= listenOrigin;
+    sites = [
+      { publicOrigin: primaryOrigin, webOrigin: options.webOrigin },
+      ...additionalOrigins,
+    ].map((pair) => ({
+      origin: pair.publicOrigin,
+      host: new URL(pair.publicOrigin).host,
+      webOrigin: pair.webOrigin,
+    }));
   } catch {
     server.closeAllConnections();
     server.close();
@@ -869,7 +894,7 @@ export async function startHostedAdapter(options: {
   }
   let closing: Promise<void> | undefined;
   return {
-    origin,
+    origin: primaryOrigin,
     /** The bound listener, which differs from `origin` behind an ingress. */
     listenOrigin,
     close: () =>

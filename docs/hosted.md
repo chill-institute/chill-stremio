@@ -12,11 +12,16 @@ The multi-user add-on at `https://stremio.chill.institute`. Behaviour lives in
 CHILL_PUBLIC_ORIGIN=http://127.0.0.1:7000 mise run hosted:serve
 ```
 
-[hosted-run.ts](../src/hosted-run.ts) owns the configuration schema.
-`CHILL_PUBLIC_ORIGIN` must be the exact external origin. Set
-`CHILL_LISTEN_HOST=0.0.0.0` only behind the HTTPS ingress.
-`CHILL_WEB_ORIGIN` and `CHILL_ENGINE_BASE_URL` override the production web and
-Engine origins. `GET /health` reports process liveness only, not capacity or
+[hosted-config.ts](../src/hosted-config.ts) owns the configuration schema.
+`CHILL_PUBLIC_ORIGIN` must be the exact external origin; `CHILL_WEB_ORIGIN`
+overrides its web origin. To serve several front doors, set
+`CHILL_PUBLIC_ORIGINS` to comma-separated `public=web` origin pairs. Requests
+whose `Host` matches no listed public origin get 404, and every URL a response
+carries comes from the matched pair. With the list set, the single-origin
+variables may stay only if they name a listed pair, so older images keep
+starting from the same environment. Set `CHILL_LISTEN_HOST=0.0.0.0` only behind
+the HTTPS ingress. `CHILL_ENGINE_BASE_URL` overrides the production Engine
+origin. `GET /health` reports process liveness only, not capacity or
 Engine reachability. Run the
 [Dockerfile](../Dockerfile) image with a read-only root filesystem, no
 capabilities and no volume; `hosted:container` checks that shape.
