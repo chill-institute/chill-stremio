@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { originIdentity } from "./hosts.ts";
 
 const Configuration = Schema.Struct({
   CHILL_PUBLIC_ORIGINS: Schema.optional(Schema.NonEmptyString),
@@ -34,12 +35,15 @@ function originPairs(config: typeof Configuration.Type) {
       throw new Error("Conflicting public origin configuration");
     return pairs;
   }
+  const primaryIdentity = originIdentity(config.CHILL_PUBLIC_ORIGIN);
   const primary = pairs.find(
-    ({ publicOrigin }) => publicOrigin === config.CHILL_PUBLIC_ORIGIN,
+    ({ publicOrigin }) => originIdentity(publicOrigin) === primaryIdentity,
   );
   if (
     !primary ||
-    (config.CHILL_WEB_ORIGIN && config.CHILL_WEB_ORIGIN !== primary.webOrigin)
+    (config.CHILL_WEB_ORIGIN &&
+      originIdentity(config.CHILL_WEB_ORIGIN) !==
+        originIdentity(primary.webOrigin))
   )
     throw new Error("Conflicting public origin configuration");
   return [primary, ...pairs.filter((pair) => pair !== primary)];

@@ -8,8 +8,8 @@ import sdk, {
 } from "stremio-addon-sdk";
 import { acquisitionEngineLayer } from "./acquisition-engine.ts";
 import { createAdmission, type Lease, type Refusal } from "./admission.ts";
+import { configureAssets, configurePage } from "./configure-page.ts";
 import { credentialPattern } from "./credential.ts";
-import { manifestDescriptions } from "./manifest-descriptions.ts";
 import {
   createDiscovery,
   discoveryCatalogs,
@@ -18,7 +18,9 @@ import {
 } from "./discovery.ts";
 import { DiscoveryDeadline, discoveryEngineLayer } from "./discovery-engine.ts";
 import { engineLayer } from "./engine.ts";
+import { configuredOrigin, hostAuthority } from "./hosts.ts";
 import { createLibrary } from "./library.ts";
+import { manifestDescriptions } from "./manifest-descriptions.ts";
 import {
   createSelection,
   ownedFileId,
@@ -38,7 +40,6 @@ import {
   type StatusMedia,
 } from "./status-media.ts";
 import { adapterManifest } from "./server.ts";
-import { configureAssets, configurePage } from "./configure-page.ts";
 
 class HttpFailure extends Error {
   readonly code: string;
@@ -128,11 +129,16 @@ export async function startHostedAdapter(options: {
     )
   )
     throw new Error("Invalid hosted origin");
-  const configuredHosts = [
-    options.publicOrigin,
-    ...additionalOrigins.map(({ publicOrigin }) => publicOrigin),
-  ].flatMap((value) => (value ? [new URL(value).host] : []));
-  if (new Set(configuredHosts).size !== configuredHosts.length)
+  const sites = options.publicOrigin
+    ? [
+        { publicOrigin: options.publicOrigin, webOrigin: options.webOrigin },
+        ...additionalOrigins,
+      ].map(configuredOrigin)
+    : [];
+  if (
+    sites.some((site) => site.host === undefined) ||
+    new Set(sites.map((site) => site.listener)).size !== sites.length
+  )
     throw new Error("Duplicate hosted origin");
   const statusMedia = options.statusMedia ?? (await loadStatusMedia());
   const controllers = new Set<AbortController>();
@@ -218,7 +224,6 @@ export async function startHostedAdapter(options: {
       .digest("hex");
   let primaryOrigin = options.publicOrigin ?? "";
   let listenOrigin = "";
-  let sites: { origin: string; host: string; webOrigin: string }[] = [];
   const idPrefixes = [
     ...(adapterManifest.idPrefixes ?? []),
     ...discoveryIdPrefixes,
@@ -340,13 +345,22 @@ export async function startHostedAdapter(options: {
       return result.ok ? result.value : fail(result.code);
     };
     const handle = async () => {
-      const host = request.headers.host?.toLowerCase();
-      const site = sites.find((candidate) => candidate.host === host);
+      const site = sites.find((candidate) => {
+        const presented = hostAuthority(
+          request.headers.host ?? "",
+          candidate.protocol,
+        );
+        return presented !== undefined && presented === candidate.host;
+      });
       if (!site || (request.url?.length ?? 0) > 4096) return fail("not_found");
       const origin = site.origin;
       const reconnectUrl = `${site.webOrigin}/stremio`;
       const url = new URL(request.url ?? "/", origin);
-      if (url.origin !== origin) return fail("not_found");
+      if (
+        url.protocol !== site.protocol ||
+        hostAuthority(url.host, url.protocol) !== site.host
+      )
+        return fail("not_found");
       if (url.pathname === "/health" && request.method === "GET") {
         json(response, 200, { status: "ok" });
         return;
@@ -879,14 +893,13 @@ export async function startHostedAdapter(options: {
     if (!address || typeof address === "string") throw new Error("No listener");
     listenOrigin = `http://${address.address.includes(":") ? `[${address.address}]` : address.address}:${address.port}`;
     primaryOrigin ||= listenOrigin;
-    sites = [
-      { publicOrigin: primaryOrigin, webOrigin: options.webOrigin },
-      ...additionalOrigins,
-    ].map((pair) => ({
-      origin: pair.publicOrigin,
-      host: new URL(pair.publicOrigin).host,
-      webOrigin: pair.webOrigin,
-    }));
+    if (sites.length === 0)
+      sites.push(
+        configuredOrigin({
+          publicOrigin: primaryOrigin,
+          webOrigin: options.webOrigin,
+        }),
+      );
   } catch {
     server.closeAllConnections();
     server.close();
