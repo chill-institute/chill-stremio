@@ -216,6 +216,7 @@ test("invalid or repeated public origins refuse to start", async () => {
   for (const CHILL_PUBLIC_ORIGINS of [
     `${binge.publicOrigin}=${binge.webOrigin},${binge.publicOrigin}=${chill.webOrigin}`,
     `${binge.publicOrigin}=${binge.webOrigin},${binge.publicOrigin}.=${chill.webOrigin}`,
+    `https://example.test:8443=${binge.webOrigin},https://example.test.:8443=${chill.webOrigin}`,
     `http://stremio.binge.institute=${binge.webOrigin}`,
     `${binge.publicOrigin}/=${binge.webOrigin}`,
     `${binge.publicOrigin}=${binge.webOrigin}/stremio`,
@@ -227,4 +228,65 @@ test("invalid or repeated public origins refuse to start", async () => {
         statusMedia: new Map(),
       }),
     );
+});
+
+test("configured schemes retain nondefault ports and normalize dotted hosts", async () => {
+  for (const [publicOrigin, allowed, denied] of [
+    [
+      "http://localhost:443",
+      ["LOCALHOST.:443", "localhost:443"],
+      ["localhost", "localhost:80"],
+    ],
+    ["http://localhost", ["LOCALHOST.", "localhost.:80"], ["localhost:443"]],
+    [
+      "https://example.test:8443",
+      ["EXAMPLE.TEST.:8443"],
+      ["example.test", "example.test:443"],
+    ],
+    [
+      "https://example.test:80",
+      ["EXAMPLE.TEST.:80"],
+      ["example.test", "example.test:443"],
+    ],
+    ["https://[::1]:8443", ["[::1]:8443"], ["[::1]", "[::1]:443"]],
+  ] as const) {
+    const f = await adapterFrom({ CHILL_PUBLIC_ORIGIN: publicOrigin });
+    try {
+      for (const host of allowed)
+        assert.equal(
+          (await send(f.listenOrigin, host, "/manifest.json")).status,
+          200,
+        );
+      for (const host of denied)
+        assert.equal(
+          (await send(f.listenOrigin, host, "/manifest.json")).status,
+          404,
+        );
+    } finally {
+      await f.close();
+    }
+  }
+});
+
+test("legacy origins match equivalent listed authorities", async () => {
+  const f = await adapterFrom({
+    ...bothSites,
+    CHILL_PUBLIC_ORIGIN: "https://STREMIO.Chill.Institute.:443",
+    CHILL_WEB_ORIGIN: "https://CHILL.Institute.:443",
+  });
+  try {
+    assert.equal(f.origin, chill.publicOrigin);
+    assert.equal(
+      (await send(f.listenOrigin, "stremio.chill.institute", "/")).location,
+      "https://chill.institute/stremio",
+    );
+  } finally {
+    await f.close();
+  }
+  assert.throws(() =>
+    hostedConfiguration({
+      CHILL_PUBLIC_ORIGINS: "http://localhost:443=https://example.test",
+      CHILL_PUBLIC_ORIGIN: "http://localhost",
+    }),
+  );
 });

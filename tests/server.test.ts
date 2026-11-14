@@ -49,6 +49,23 @@ test("installation capability protects catalog and rejects malformed keys withou
       },
     );
     expect(forgedHost).toBe(404);
+    const dottedHost = await new Promise<number | undefined>(
+      (resolve, reject) => {
+        const url = new URL(adapter.origin);
+        const outgoing = get(
+          adapter.manifestUrl,
+          {
+            headers: { host: `${url.hostname}.:${url.port}` },
+          },
+          (response) => {
+            response.resume();
+            resolve(response.statusCode);
+          },
+        );
+        outgoing.on("error", reject);
+      },
+    );
+    expect(dottedHost).toBe(200);
     const key = new URL(adapter.manifestUrl).pathname.split("/")[1] ?? "";
     const wrongKey = `${key.startsWith("A") ? "B" : "A"}${key.slice(1)}`;
     expect(

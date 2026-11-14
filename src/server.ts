@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { Effect, ManagedRuntime, type Layer } from "effect";
 import sdk, { type Manifest } from "stremio-addon-sdk";
 import { Engine, type EngineError } from "./engine.ts";
+import { hostAuthority } from "./hosts.ts";
 import { createLibrary } from "./library.ts";
 
 // Stremio clients compare manifest versions to detect add-on updates, so the
@@ -92,6 +93,7 @@ export async function startAdapter(options: {
   const capability = randomBytes(32).toString("base64url");
   const prefix = `/${capability}`;
   let origin = "";
+  let expectedHost: string | undefined;
   const server = createServer((request, response) => {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Referrer-Policy", "no-referrer");
@@ -99,9 +101,8 @@ export async function startAdapter(options: {
     response.setHeader("Access-Control-Allow-Origin", "*");
     const path = request.url ?? "";
     const presented = path.split("/")[1] ?? "";
-    const expectedHost = new URL(origin).host;
     if (
-      request.headers.host !== expectedHost ||
+      hostAuthority(request.headers.host ?? "", "http:") !== expectedHost ||
       path.length > 4096 ||
       Buffer.byteLength(presented) !== Buffer.byteLength(capability) ||
       !timingSafeEqual(Buffer.from(presented), Buffer.from(capability))
@@ -146,6 +147,7 @@ export async function startAdapter(options: {
     if (!address || typeof address === "string")
       throw new Error("Adapter did not listen");
     origin = `http://127.0.0.1:${address.port}`;
+    expectedHost = hostAuthority(new URL(origin).host, "http:");
   } catch {
     server.closeAllConnections();
     server.close();
