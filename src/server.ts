@@ -102,6 +102,7 @@ export async function startAdapter(options: {
     const path = request.url ?? "";
     const presented = path.split("/")[1] ?? "";
     if (
+      expectedHost === undefined ||
       hostAuthority(request.headers.host ?? "", "http:") !== expectedHost ||
       path.length > 4096 ||
       Buffer.byteLength(presented) !== Buffer.byteLength(capability) ||

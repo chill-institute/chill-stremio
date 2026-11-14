@@ -139,6 +139,9 @@ test("hosts outside the allowlist get 404 and never reach Engine", async () => {
       "evilstremio.chill.institute.",
       "stremio.binge.institute..:443",
       "stremio.chill.institute:443:443",
+      "stremio.chill.institute@stremio.binge.institute",
+      "stremio.chill institute",
+      "stremio.chill.institute/x",
       "chill.institute",
       "127.0.0.1",
     ])
@@ -228,6 +231,19 @@ test("invalid or repeated public origins refuse to start", async () => {
         statusMedia: new Map(),
       }),
     );
+});
+
+test("an origin without a scheme refuses to start without echoing the value", () => {
+  assert.throws(
+    () =>
+      hostedConfiguration({
+        ...bothSites,
+        CHILL_PUBLIC_ORIGIN: "stremio.binge.institute",
+      }),
+    (error: Error) =>
+      error.message === "Invalid hosted origin" &&
+      !JSON.stringify(error).includes("stremio.binge.institute"),
+  );
 });
 
 test("configured schemes retain nondefault ports and normalize dotted hosts", async () => {

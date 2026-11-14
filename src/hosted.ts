@@ -135,7 +135,10 @@ export async function startHostedAdapter(options: {
         ...additionalOrigins,
       ].map(configuredOrigin)
     : [];
-  if (new Set(sites.map((site) => site.host)).size !== sites.length)
+  if (
+    sites.some((site) => site.host === undefined) ||
+    new Set(sites.map((site) => site.listener)).size !== sites.length
+  )
     throw new Error("Duplicate hosted origin");
   const statusMedia = options.statusMedia ?? (await loadStatusMedia());
   const controllers = new Set<AbortController>();
@@ -342,16 +345,22 @@ export async function startHostedAdapter(options: {
       return result.ok ? result.value : fail(result.code);
     };
     const handle = async () => {
-      const site = sites.find(
-        (candidate) =>
-          candidate.host ===
-          hostAuthority(request.headers.host ?? "", candidate.protocol),
-      );
+      const site = sites.find((candidate) => {
+        const presented = hostAuthority(
+          request.headers.host ?? "",
+          candidate.protocol,
+        );
+        return presented !== undefined && presented === candidate.host;
+      });
       if (!site || (request.url?.length ?? 0) > 4096) return fail("not_found");
       const origin = site.origin;
       const reconnectUrl = `${site.webOrigin}/stremio`;
       const url = new URL(request.url ?? "/", origin);
-      if (url.origin !== origin) return fail("not_found");
+      if (
+        url.protocol !== site.protocol ||
+        hostAuthority(url.host, url.protocol) !== site.host
+      )
+        return fail("not_found");
       if (url.pathname === "/health" && request.method === "GET") {
         json(response, 200, { status: "ok" });
         return;
