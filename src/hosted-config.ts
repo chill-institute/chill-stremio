@@ -1,5 +1,9 @@
 import { Schema } from "effect";
 
+export function hostedAuthority(host: string) {
+  return host.toLowerCase().replace(/:443$/, "").replace(/\.$/, "");
+}
+
 const Configuration = Schema.Struct({
   CHILL_PUBLIC_ORIGINS: Schema.optional(Schema.NonEmptyString),
   CHILL_PUBLIC_ORIGIN: Schema.optional(Schema.NonEmptyString),

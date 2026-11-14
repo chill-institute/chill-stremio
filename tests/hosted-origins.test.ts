@@ -77,6 +77,12 @@ test("each allowed host builds its own add-on and reconnect URLs", async () => {
     for (const [site, host] of [
       [binge, "stremio.binge.institute"],
       [chill, "STREMIO.Chill.Institute"],
+      [binge, "stremio.binge.institute:443"],
+      [chill, "stremio.chill.institute:443"],
+      [binge, "stremio.binge.institute."],
+      [chill, "stremio.chill.institute."],
+      [binge, "STREMIO.Binge.Institute.:443"],
+      [chill, "STREMIO.Chill.Institute.:443"],
     ] as const) {
       const manifest = await send(f.listenOrigin, host, "/manifest.json");
       assert.equal(manifest.status, 200);
@@ -126,6 +132,13 @@ test("hosts outside the allowlist get 404 and never reach Engine", async () => {
       "stremio.binge.institute.example",
       "evilstremio.binge.institute",
       "stremio.chill.institute:8443",
+      "stremio.binge.institute:8443",
+      "stremio.chill.institute.:8443",
+      "stremio.binge.institute.:8443",
+      "stremio.chill.institute.example:443",
+      "evilstremio.chill.institute.",
+      "stremio.binge.institute..:443",
+      "stremio.chill.institute:443:443",
       "chill.institute",
       "127.0.0.1",
     ])
@@ -202,6 +215,7 @@ test("a legacy single origin alongside the list must name a listed pair", async 
 test("invalid or repeated public origins refuse to start", async () => {
   for (const CHILL_PUBLIC_ORIGINS of [
     `${binge.publicOrigin}=${binge.webOrigin},${binge.publicOrigin}=${chill.webOrigin}`,
+    `${binge.publicOrigin}=${binge.webOrigin},${binge.publicOrigin}.=${chill.webOrigin}`,
     `http://stremio.binge.institute=${binge.webOrigin}`,
     `${binge.publicOrigin}/=${binge.webOrigin}`,
     `${binge.publicOrigin}=${binge.webOrigin}/stremio`,
