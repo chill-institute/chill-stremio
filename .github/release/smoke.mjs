@@ -13,6 +13,7 @@ const releaseRules = [
   { revert: true, release: "patch" },
   { type: "feat", release: "minor" },
   { type: "fix", release: "patch" },
+  { type: "deps", release: "patch" },
   { type: "perf", release: "patch" },
   { type: "refactor", release: "patch" },
   { type: "revert", release: "patch" },
@@ -21,6 +22,7 @@ const presetConfig = {
   types: [
     { type: "feat", section: "Features" },
     { type: "fix", section: "Bug Fixes" },
+    { type: "deps", section: "Dependencies" },
     { type: "perf", section: "Performance Improvements" },
     { type: "refactor", section: "Code Refactoring" },
     { type: "revert", section: "Reverts" },
@@ -114,7 +116,6 @@ try {
     "build: smoke build",
     "chore: smoke chore",
     "ci: smoke ci",
-    "deps: smoke deps",
     "docs: smoke docs",
     "test: smoke test",
   );
@@ -140,8 +141,21 @@ try {
   ) {
     throw new Error(`Unexpected smoke refactor: ${JSON.stringify(refactor)}`);
   }
+  git("-c", "tag.gpgSign=false", "tag", refactor.gitTag);
+  git("push", "--quiet", "origin", refactor.gitTag);
+  commit("deps: update runtime security patch");
+  const dependency = await plan();
+  if (
+    !dependency ||
+    dependency.version !== "1.0.3" ||
+    !dependency.notes.includes("runtime security patch")
+  ) {
+    throw new Error(
+      `Unexpected dependency release: ${JSON.stringify(dependency)}`,
+    );
+  }
   console.log(
-    `release smoke ok: ${first.gitTag}, ${patch.gitTag}, ${refactor.gitTag}`,
+    `release smoke ok: ${first.gitTag}, ${patch.gitTag}, ${refactor.gitTag}, ${dependency.gitTag}`,
   );
 } finally {
   rmSync(work, { recursive: true, force: true });

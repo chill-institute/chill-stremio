@@ -23,6 +23,10 @@
             "release": "patch"
           },
           {
+            "type": "deps",
+            "release": "patch"
+          },
+          {
             "type": "perf",
             "release": "patch"
           },
@@ -50,6 +54,10 @@
             {
               "type": "fix",
               "section": "Bug Fixes"
+            },
+            {
+              "type": "deps",
+              "section": "Dependencies"
             },
             {
               "type": "perf",
