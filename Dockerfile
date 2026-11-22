@@ -1,4 +1,4 @@
-FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS dependencies
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 AS dependencies
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN node -e 'const {execFileSync}=require("node:child_process"); const p=require("./package.json").packageManager; execFileSync("npm",["install","--global",p],{stdio:"inherit"})' \
@@ -18,7 +18,7 @@ COPY package.json /tmp/package.json
 RUN node -e 'const {execFileSync}=require("node:child_process"); const p=require("/tmp/package.json").packageManager; execFileSync("npm",["install","--global",p],{stdio:"inherit"})' \
     && rm /tmp/package.json && pnpm --version
 
-FROM node:24.22.3-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
+FROM node:26.13.1-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1
 ARG VERSION=0.0.0
 LABEL org.opencontainers.image.source="https://github.com/chill-institute/chill-stremio"
 ENV NODE_ENV=production CHILL_LISTEN_HOST=0.0.0.0 CHILL_LISTEN_PORT=7000 CHILL_ADAPTER_VERSION=$VERSION
