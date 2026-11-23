@@ -52,7 +52,7 @@ jobs:
         with:
           ref: ${{ steps.tag.outputs.sha }}
           persist-credentials: false
-      - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
       - run: pnpm install --frozen-lockfile
       - run: mise run verify
       - name: Install fixture encoder and fonts
@@ -126,7 +126,7 @@ jobs:
           [[ "$IMAGE_REF" =~ ^"$IMAGE_NAME"@sha256:[0-9a-f]{64}$ ]] || { echo "::error::invalid image digest reference"; exit 1; }
       - name: Mint a chill-ci token for chill-engine
         id: releaser
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.CHILL_CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CHILL_CI_APP_PRIVATE_KEY }}
@@ -135,7 +135,7 @@ jobs:
           permission-actions: write
       - name: Mint a chill-ci token for this repository
         id: notes
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           client-id: ${{ vars.CHILL_CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.CHILL_CI_APP_PRIVATE_KEY }}
